@@ -1049,15 +1049,15 @@ class TradingClient:
                 wcut = watch_current_min_score
                 pp_cut = pp_current_min_score
                 if ls >= cut and ls >= ss:
-                    bg = "#d8f5d8"
+                    bg = "#6fe08a"
                 elif ss >= cut:
-                    bg = "#fbdada"
+                    bg = "#f5807d"
                 elif pp >= pp_cut and pp >= ps:
-                    bg = "#dbe9fb"   # 파랑 계열: 아직 안 터진 매집 구간(prepump) 대기
+                    bg = "#7fbdf5"   # 파랑 계열: 아직 안 터진 매집 구간(prepump) 대기
                 elif ps >= pp_cut:
-                    bg = "#f1ddf5"   # 보라 계열: 고점 분산(preshort) 대기
+                    bg = "#d38ff2"   # 보라 계열: 고점 분산(preshort) 대기
                 elif ls >= wcut or ss >= wcut:
-                    bg = "#fdf6d8"   # 연노랑: 진입 컷엔 못 미치지만 "관심" 구간(65점대)
+                    bg = "#f2e070"   # 진노랑: 진입 컷엔 못 미치지만 "관심" 구간(65점대)
                 else:
                     bg = "white"
                 display_ticker = f"[{ticker}]" if ticker in self.pinned_tickers else ticker
