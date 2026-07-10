@@ -400,6 +400,17 @@ class TradingClient:
         self.pos_canvas.bind("<ButtonPress-1>", self._pos_press)
         self.pos_canvas.bind("<B1-Motion>", self._pos_motion)
         self.pos_canvas.bind("<MouseWheel>", lambda e: self.pos_canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+        # 드래그 스크롤이 안 되는 환경(VNC 등)을 위한 위/아래 버튼
+        pos_scroll_btns = tk.Frame(self.pos_panel, bg="#16181d")
+        pos_scroll_btns.pack(side="right", fill="y")
+        btn_pos_up = tk.Label(pos_scroll_btns, text="\u25b2", bg="#333333", fg="white",
+                               relief="raised", bd=1, cursor="hand2", width=2, font=("Arial", 12, "bold"))
+        btn_pos_up.pack(side="top", fill="x", pady=(0, 1))
+        btn_pos_up.bind("<ButtonRelease-1>", lambda e: self.pos_canvas.yview_scroll(-1, "units"))
+        btn_pos_down = tk.Label(pos_scroll_btns, text="\u25bc", bg="#333333", fg="white",
+                                 relief="raised", bd=1, cursor="hand2", width=2, font=("Arial", 12, "bold"))
+        btn_pos_down.pack(side="top", fill="x")
+        btn_pos_down.bind("<ButtonRelease-1>", lambda e: self.pos_canvas.yview_scroll(1, "units"))
         self.pos_cards = {}
         self._score_hist = {}  # ticker -> {'long': deque, 'short': deque} — 포지션 신호등(추세) 판단용
         self._price_hist = {}  # ticker -> deque(price) — Predict Score의 가격 기울기(Slope) 계산용
@@ -495,6 +506,17 @@ class TradingClient:
         self.card_canvas.bind("<Configure>", self._on_card_canvas_configure)
         self._card_drag_state = {"y": 0, "view_top": 0.0, "dragged": False}
         self.card_canvas.bind("<MouseWheel>", lambda e: self.card_canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"), add="+")
+        # 드래그 스크롤이 안 되는 환경(VNC 등)을 위한 위/아래 버튼
+        card_scroll_btns = tk.Frame(tree_container)
+        card_scroll_btns.grid(row=0, column=1, sticky="ns")
+        btn_card_up = tk.Label(card_scroll_btns, text="\u25b2", bg="#dddddd", fg="black",
+                                relief="raised", bd=1, cursor="hand2", width=2, font=("Arial", 12, "bold"))
+        btn_card_up.pack(side="top", fill="x", pady=(0, 1))
+        btn_card_up.bind("<ButtonRelease-1>", lambda e: self.card_canvas.yview_scroll(-5, "units"))
+        btn_card_down = tk.Label(card_scroll_btns, text="\u25bc", bg="#dddddd", fg="black",
+                                  relief="raised", bd=1, cursor="hand2", width=2, font=("Arial", 12, "bold"))
+        btn_card_down.pack(side="top", fill="x")
+        btn_card_down.bind("<ButtonRelease-1>", lambda e: self.card_canvas.yview_scroll(5, "units"))
         self.card_widgets = {}
         self._last_table_order = []
         self._last_reorder_time = 0.0
@@ -947,6 +969,13 @@ class TradingClient:
             need = sum(c.winfo_reqheight() + 6 for c in cards[:show_n])
             if need > 0 and need != self.pos_canvas.winfo_height():
                 self.pos_canvas.config(height=need)
+            # 스크롤 버튼(▲/▼)이 카드 1개 높이만큼 딱 움직이도록, 카드 실측 높이를
+            # yscrollincrement로 맞춰준다. 이게 없으면 tkinter 기본 "unit"이 카드
+            # 높이와 안 맞아서 버튼 눌러도 반 개만 움직이거나 훌쩍 넘어가 버린다.
+            if cards:
+                one_card_h = cards[0].winfo_reqheight() + 6
+                if one_card_h > 0:
+                    self.pos_canvas.configure(yscrollincrement=one_card_h)
         except Exception:
             pass
 
