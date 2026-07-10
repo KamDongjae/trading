@@ -9,7 +9,6 @@ import os
 import csv
 import time
 import random
-from datetime import datetime
 from collections import deque
 
 # ============================================================
@@ -19,44 +18,23 @@ DEFAULT_LEVERAGE = 5
 FALLBACK_MIN_SCORE = 75
 FALLBACK_PP_MIN_SCORE = 80
 FALLBACK_WATCH_MIN_SCORE = 65
-STALE_SEC = 25  # 서버 SCORE_INTERVAL(10초)의 약 2.5배. 너무 빡빡하면(15초) 정상적인
-                 # 사이클 지연(네트워크 지연 등)에도 '연결 끊김'이 깜빡여서 여유를 더 뒀다.
+STALE_SEC = 15
 
 try:
     _fallback_dir = os.path.dirname(os.path.abspath(__file__))
 except NameError:
     _fallback_dir = os.getcwd()
 
-# 스크립트 폴더의 path_config.txt가 있으면 최우선으로 그 경로를 쓴다 — 아래
-# "경로 변경" 버튼이 이 파일을 쓴다. trading_server.py도 같은 파일을 확인하므로
-# server/client를 같은 폴더에 두고 쓰면 둘 다 같은 경로를 보게 된다.
-SCRIPT_DIR = None
-_PATH_CONFIG_FILE = os.path.join(_fallback_dir, "path_config.txt")
-if os.path.exists(_PATH_CONFIG_FILE):
-    try:
-        with open(_PATH_CONFIG_FILE, "r", encoding="utf-8") as _f:
-            _custom_path = _f.read().strip()
-        if _custom_path:
-            os.makedirs(_custom_path, exist_ok=True)
-            _t = os.path.join(_custom_path, ".write_test")
-            with open(_t, "w") as _f:
-                _f.write("ok")
-            os.remove(_t)
-            SCRIPT_DIR = _custom_path
-    except Exception:
-        SCRIPT_DIR = None
-
-if SCRIPT_DIR is None:
-    _ANDROID_PUBLIC_DIR = "/storage/emulated/0/Documents"
-    try:
-        os.makedirs(_ANDROID_PUBLIC_DIR, exist_ok=True)
-        _t = os.path.join(_ANDROID_PUBLIC_DIR, ".write_test")
-        with open(_t, "w") as _f:
-            _f.write("ok")
-        os.remove(_t)
-        SCRIPT_DIR = _ANDROID_PUBLIC_DIR
-    except Exception:
-        SCRIPT_DIR = _fallback_dir
+_ANDROID_PUBLIC_DIR = "/storage/emulated/0/Documents"
+try:
+    os.makedirs(_ANDROID_PUBLIC_DIR, exist_ok=True)
+    _t = os.path.join(_ANDROID_PUBLIC_DIR, ".write_test")
+    with open(_t, "w") as _f:
+        _f.write("ok")
+    os.remove(_t)
+    SCRIPT_DIR = _ANDROID_PUBLIC_DIR
+except Exception:
+    SCRIPT_DIR = _fallback_dir
 
 MARKET_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_market.csv")
 ACCOUNT_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_account.csv")
@@ -69,7 +47,6 @@ current_min_score = FALLBACK_MIN_SCORE
 pp_current_min_score = FALLBACK_PP_MIN_SCORE
 watch_current_min_score = FALLBACK_WATCH_MIN_SCORE
 current_interval = "1h"
-macro_state = {"btc_ema_l": 0, "btc_ema_s": 0, "fng_value": None, "fng_class": ""}
 current_margin_mode = "cross"  # 서버 기본값과 동일. read_account_snapshot이 실제 값으로 갱신함
 bank_balance = 0.0
 bank_total_deposit = 0.0
@@ -83,7 +60,7 @@ def _f(v, default=0.0):
         return default
 
 def read_market_snapshot():
-    global current_min_score, pp_current_min_score, watch_current_min_score, current_interval, macro_state
+    global current_min_score, pp_current_min_score, watch_current_min_score, current_interval
     try:
         with open(MARKET_SNAPSHOT, 'r', newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
@@ -99,11 +76,6 @@ def read_market_snapshot():
                     # 신설: 출발 전 매집 구간 탐지 점수 (없는 구버전 CSV라도 안전하게 0 처리)
                     'prepump_score': int(_f(r.get('prepump_score'), 0)),
                     'preshort_score': int(_f(r.get('preshort_score'), 0)),
-                    # v5 하드필터 통과 여부 — 구버전 서버가 보낸 CSV(컬럼 없음)는
-                    # 기본값 1(통과)로 처리해서, 필터 체크박스를 켜도 예전처럼
-                    # 전부 안 보이는 일이 없게 한다.
-                    'filters_ok_long': bool(int(_f(r.get('filters_ok_long'), 1))),
-                    'filters_ok_short': bool(int(_f(r.get('filters_ok_short'), 1))),
                     'rsi': _f(r.get('rsi')),
                     'rsi_delta': _f(r.get('rsi_delta')),
                     'vol_z': _f(r.get('vol_z')),
@@ -118,26 +90,6 @@ def read_market_snapshot():
                     'ls_ratio': _f(r.get('ls_ratio')) if r.get('ls_ratio') not in (None, '',) else None,
                     'ema20': _f(r.get('ema20')) if r.get('ema20') not in (None, '',) else None,
                     'ema60': _f(r.get('ema60')) if r.get('ema60') not in (None, '',) else None,
-                    'ema120': _f(r.get('ema120')) if r.get('ema120') not in (None, '',) else None,
-                    'extension_pct': _f(r.get('extension_pct'), 0),
-                    # v6 세부 컴포넌트 (구버전 CSV엔 없을 수 있어 기본값 0)
-                    'ema_l': int(_f(r.get('ema_l'), 0)), 'ema_s': int(_f(r.get('ema_s'), 0)),
-                    'pp_l': int(_f(r.get('pp_l'), 0)), 'pp_s': int(_f(r.get('pp_s'), 0)),
-                    'cvd_l': int(_f(r.get('cvd_l'), 0)), 'cvd_s': int(_f(r.get('cvd_s'), 0)),
-                    'oi_l': int(_f(r.get('oi_l'), 0)), 'oi_s': int(_f(r.get('oi_s'), 0)),
-                    'm30_l': int(_f(r.get('m30_l'), 0)), 'm30_s': int(_f(r.get('m30_s'), 0)),
-                    'volz_sc': int(_f(r.get('volz_sc'), 0)), 'liquidity_sc': int(_f(r.get('liquidity_sc'), 0)),
-                    # Pre-Pump/Pre-Short 세부 컴포넌트
-                    'div_l': int(_f(r.get('div_l'), 0)), 'div_s': int(_f(r.get('div_s'), 0)),
-                    'lsx_l': int(_f(r.get('lsx_l'), 0)), 'lsx_s': int(_f(r.get('lsx_s'), 0)),
-                    'bb_comp_sc': int(_f(r.get('bb_comp_sc'), 0)), 'stealth_sc': int(_f(r.get('stealth_sc'), 0)),
-                    # v5 하드필터 개별 통과여부(1/0) — 구버전 CSV는 기본값 1(통과)
-                    'filt_ema_oi_l': int(_f(r.get('filt_ema_oi_l'), 1)), 'filt_ema_oi_s': int(_f(r.get('filt_ema_oi_s'), 1)),
-                    'filt_cvd_l': int(_f(r.get('filt_cvd_l'), 1)), 'filt_cvd_s': int(_f(r.get('filt_cvd_s'), 1)),
-                    'filt_volz_ok': int(_f(r.get('filt_volz_ok'), 1)),
-                    'filt_m30_l': int(_f(r.get('filt_m30_l'), 1)), 'filt_m30_s': int(_f(r.get('filt_m30_s'), 1)),
-                    'filt_liquidity_ok': int(_f(r.get('filt_liquidity_ok'), 1)),
-                    'passes_all_l': int(_f(r.get('passes_all_l'), 1)), 'passes_all_s': int(_f(r.get('passes_all_s'), 1)),
                 })
                 cut = r.get('min_cut')
                 if cut:
@@ -151,11 +103,6 @@ def read_market_snapshot():
                 iv = r.get('interval')
                 if iv:
                     current_interval = iv
-                macro_state['btc_ema_l'] = int(_f(r.get('btc_ema_l'), 0))
-                macro_state['btc_ema_s'] = int(_f(r.get('btc_ema_s'), 0))
-                fng_raw = r.get('fng_value')
-                macro_state['fng_value'] = int(_f(fng_raw)) if fng_raw not in (None, '') else None
-                macro_state['fng_class'] = r.get('fng_class', '') or ''
                 score_time = r.get('score_time', '') or score_time
                 price_time = r.get('price_time', '') or price_time
         return rows, score_time, price_time
@@ -266,7 +213,6 @@ class TradingClient:
 
         self.history_win = None
         self.pinned_tickers = set()
-        self.custom_filter_rules = [None, None, None]  # 각 원소: None 또는 {'field','cmp','value'}
         self._last_render_data = []
         self._tap_state = {"last_time": 0.0, "last_ticker": None}
         self.DOUBLE_TAP_MS = 450
@@ -342,8 +288,6 @@ class TradingClient:
         self.total_label.pack(side="left", padx=LABEL_PADX)
         self.server_label = tk.Label(row2, text="서버: 연결 대기...", font=("Arial", FONT_SMALL), fg="gray")
         self.server_label.pack(side="left", padx=LABEL_PADX)
-        self.macro_label = tk.Label(row2, text="", font=("Arial", FONT_SMALL, "bold"), fg="gray")
-        self.macro_label.pack(side="right", padx=LABEL_PADX)
 
         # 버튼
         btn_frame = tk.Frame(self.root)
@@ -363,13 +307,6 @@ class TradingClient:
                             width=BTN_EXIT_WIDTH, relief="raised", bd=1, cursor="hand2")
         btn_exit.pack(side="right", padx=BTN_PADX, ipady=BTN_IPADY)
         btn_exit.bind("<ButtonRelease-1>", lambda e: self.safe_exit())
-        # 종료 버튼 바로 왼쪽: 포지션 카드 패널 수동 보이기/숨기기 토글.
-        # 포지션이 없으면 패널은 원래 자동으로 숨겨지므로, 이 토글은 "포지션이 있을 때
-        # 일부러 숨겨서 마켓 리스트를 더 넓게 보고 싶은" 경우를 위한 것이다.
-        self.btn_toggle_pos = tk.Label(btn_frame, text="포지션 숨기기", bg="#444444", fg="white",
-                                        font=lbl_font, relief="raised", bd=1, cursor="hand2")
-        self.btn_toggle_pos.pack(side="right", padx=BTN_PADX, ipady=BTN_IPADY)
-        self.btn_toggle_pos.bind("<ButtonRelease-1>", lambda e: self._toggle_pos_panel())
 
         # 입력
         input_frame = tk.Frame(self.root, bd=1, relief="groove")
@@ -387,10 +324,9 @@ class TradingClient:
         self.leverage_entry.insert(0, str(DEFAULT_LEVERAGE))
         self.leverage_entry.grid(row=0, column=5, padx=(0, 2))
 
-        # 포지션 패널
+        # 포지션 패널 (코인/포지션 뷰 전환 버튼이 pack 여부를 제어 — 여기선 만들기만 함)
         self.pos_panel = tk.Frame(self.root, bd=1, relief="groove", bg="#16181d")
-        self.pos_panel.pack(side="bottom", fill="x", padx=6, pady=(2, 1))
-        self.pos_canvas = tk.Canvas(self.pos_panel, height=280, bg="#16181d", highlightthickness=0)
+        self.pos_canvas = tk.Canvas(self.pos_panel, bg="#16181d", highlightthickness=0)
         self.pos_canvas.pack(side="left", fill="both", expand=True)
         self.pos_inner = tk.Frame(self.pos_canvas, bg="#16181d")
         self._pos_window = self.pos_canvas.create_window((0, 0), window=self.pos_inner, anchor="nw")
@@ -400,25 +336,27 @@ class TradingClient:
         self.pos_canvas.bind("<ButtonPress-1>", self._pos_press)
         self.pos_canvas.bind("<B1-Motion>", self._pos_motion)
         self.pos_canvas.bind("<MouseWheel>", lambda e: self.pos_canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
-        # 드래그 스크롤이 안 되는 환경(VNC 등)을 위한 위/아래 버튼
-        pos_scroll_btns = tk.Frame(self.pos_panel, bg="#16181d")
-        pos_scroll_btns.pack(side="right", fill="y")
-        btn_pos_up = tk.Label(pos_scroll_btns, text="\u25b2", bg="#333333", fg="white",
-                               relief="raised", bd=1, cursor="hand2", width=2, font=("Arial", 12, "bold"))
-        btn_pos_up.pack(side="top", fill="x", pady=(0, 1))
-        btn_pos_up.bind("<ButtonRelease-1>", lambda e: self.pos_canvas.yview_scroll(-1, "units"))
-        btn_pos_down = tk.Label(pos_scroll_btns, text="\u25bc", bg="#333333", fg="white",
-                                 relief="raised", bd=1, cursor="hand2", width=2, font=("Arial", 12, "bold"))
-        btn_pos_down.pack(side="top", fill="x")
-        btn_pos_down.bind("<ButtonRelease-1>", lambda e: self.pos_canvas.yview_scroll(1, "units"))
         self.pos_cards = {}
         self._score_hist = {}  # ticker -> {'long': deque, 'short': deque} — 포지션 신호등(추세) 판단용
         self._price_hist = {}  # ticker -> deque(price) — Predict Score의 가격 기울기(Slope) 계산용
         self._latest_row_by_ticker = {}
         self._last_pos_order = None
-        self._pos_panel_visible = True
-        self._pos_panel_user_hidden = False  # 종료 왼쪽 토글 버튼으로 사용자가 직접 숨긴 상태
-        self._hide_pos_panel()
+        self._pos_panel_visible = False
+        self.view_mode = 'coins'  # 'coins' | 'positions' — 뷰 전환 버튼으로 바뀜
+
+        # 코인 목록 / 포지션 목록 뷰 전환 버튼 — 둘을 아예 별개 화면으로 분리
+        view_bar = tk.Frame(self.root)
+        view_bar.pack(side="top", fill="x", padx=4, pady=(2, 0))
+        self.btn_view_coins = tk.Label(view_bar, text="코인", font=("Arial", self.FONT_SMALL, "bold"),
+                                        bg="#1a7abf", fg="white", relief="raised", bd=1, cursor="hand2",
+                                        padx=10, pady=3)
+        self.btn_view_coins.pack(side="left", padx=(0, 3), fill="x", expand=True)
+        self.btn_view_coins.bind("<ButtonRelease-1>", lambda e: self.switch_view('coins'))
+        self.btn_view_positions = tk.Label(view_bar, text="포지션 (0)", font=("Arial", self.FONT_SMALL, "bold"),
+                                            bg="#eeeeee", fg="black", relief="raised", bd=1, cursor="hand2",
+                                            padx=10, pady=3)
+        self.btn_view_positions.pack(side="left", padx=(3, 0), fill="x", expand=True)
+        self.btn_view_positions.bind("<ButtonRelease-1>", lambda e: self.switch_view('positions'))
 
         # 타임프레임(계산 기준 캔들) 전환 버튼 — 테이블 바로 위
         tf_bar = tk.Frame(self.root)
@@ -442,32 +380,8 @@ class TradingClient:
         btn_search_clear.pack(side="left", padx=2)
         btn_search_clear.bind("<ButtonRelease-1>", self._clear_search)
 
-        # v5 하드필터(EMA/OI방향·CVD·VolZ·30분모멘텀·유동성) 적용 여부를 직접 고를 수 있는
-        # 체크박스. 서버는 필터로 점수를 강제 0점 처리하지 않고 통과여부만 같이 내려주므로,
-        # 여기서 체크를 껐다 켰다 하면서 필터가 실제로 도움되는지 바로 비교해볼 수 있다.
-        self.filter_enabled = tk.BooleanVar(value=True)
-        filter_chk = tk.Checkbutton(tf_bar, text="필터 적용", variable=self.filter_enabled,
-                                     font=("Arial", self.FONT_SMALL, "bold"),
-                                     command=self._on_filter_toggle)
-        filter_chk.pack(side="left", padx=(10, 2))
-
-        btn_pdf = tk.Label(tf_bar, text="PDF 리포트", font=("Arial", self.FONT_SMALL, "bold"),
-                            bg="#3a6fd8", fg="white", relief="raised", bd=1, cursor="hand2", padx=5, pady=1)
-        btn_pdf.pack(side="left", padx=(6, 2))
-        btn_pdf.bind("<ButtonRelease-1>", lambda e: self.export_indicator_report_pdf())
-
-        btn_custom_filter = tk.Label(tf_bar, text="조건필터", font=("Arial", self.FONT_SMALL, "bold"),
-                                      bg="#7a4fc9", fg="white", relief="raised", bd=1, cursor="hand2", padx=5, pady=1)
-        btn_custom_filter.pack(side="left", padx=(6, 2))
-        btn_custom_filter.bind("<ButtonRelease-1>", lambda e: self.show_custom_filter_dialog())
-
-        btn_change_path = tk.Label(tf_bar, text="경로 변경", font=("Arial", self.FONT_SMALL, "bold"),
-                                    bg="#555555", fg="white", relief="raised", bd=1, cursor="hand2", padx=5, pady=1)
-        btn_change_path.pack(side="left", padx=(6, 2))
-        btn_change_path.bind("<ButtonRelease-1>", lambda e: self.show_change_path_dialog())
-
         # 정렬 버튼
-        sortbar = tk.Frame(self.root)
+        self.sortbar = sortbar = tk.Frame(self.root)
         sortbar.pack(side="top", fill="x", padx=4, pady=(0, 2))
         sort_btn_font = ("Arial", self.FONT_SMALL)
         sort_buttons = [
@@ -493,7 +407,7 @@ class TradingClient:
             sortbar.grid_columnconfigure(c, weight=1)
 
         # 메인 카드
-        tree_container = tk.Frame(self.root)
+        self.tree_container = tree_container = tk.Frame(self.root)
         tree_container.pack(fill="both", expand=True, padx=4, pady=2)
         self.card_canvas = tk.Canvas(tree_container, highlightthickness=0)
         self.card_canvas.grid(row=0, column=0, sticky="nsew")
@@ -506,17 +420,6 @@ class TradingClient:
         self.card_canvas.bind("<Configure>", self._on_card_canvas_configure)
         self._card_drag_state = {"y": 0, "view_top": 0.0, "dragged": False}
         self.card_canvas.bind("<MouseWheel>", lambda e: self.card_canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"), add="+")
-        # 드래그 스크롤이 안 되는 환경(VNC 등)을 위한 위/아래 버튼
-        card_scroll_btns = tk.Frame(tree_container)
-        card_scroll_btns.grid(row=0, column=1, sticky="ns")
-        btn_card_up = tk.Label(card_scroll_btns, text="\u25b2", bg="#dddddd", fg="black",
-                                relief="raised", bd=1, cursor="hand2", width=2, font=("Arial", 12, "bold"))
-        btn_card_up.pack(side="top", fill="x", pady=(0, 1))
-        btn_card_up.bind("<ButtonRelease-1>", lambda e: self.card_canvas.yview_scroll(-5, "units"))
-        btn_card_down = tk.Label(card_scroll_btns, text="\u25bc", bg="#dddddd", fg="black",
-                                  relief="raised", bd=1, cursor="hand2", width=2, font=("Arial", 12, "bold"))
-        btn_card_down.pack(side="top", fill="x")
-        btn_card_down.bind("<ButtonRelease-1>", lambda e: self.card_canvas.yview_scroll(5, "units"))
         self.card_widgets = {}
         self._last_table_order = []
         self._last_reorder_time = 0.0
@@ -636,8 +539,33 @@ class TradingClient:
 
     def _show_pos_panel(self):
         if not self._pos_panel_visible:
-            self.pos_panel.pack(side="bottom", fill="x", padx=6, pady=(2, 1))
+            self.pos_panel.pack(fill="both", expand=True, padx=6, pady=(2, 1))
             self._pos_panel_visible = True
+
+    def switch_view(self, mode):
+        """코인 목록 화면과 포지션 목록 화면을 서로 다른 화면처럼 완전히 분리해서 보여준다."""
+        if mode == self.view_mode:
+            return
+        self.view_mode = mode
+        if mode == 'coins':
+            self._hide_pos_panel()
+            self.sortbar.pack(side="top", fill="x", padx=4, pady=(0, 2))
+            self.tree_container.pack(fill="both", expand=True, padx=4, pady=2)
+        else:
+            self.tree_container.pack_forget()
+            self.sortbar.pack_forget()
+            self._show_pos_panel()
+            _, _, pos_list = self._account
+            self._render_pos_panel(pos_list)
+        self._highlight_view_buttons()
+
+    def _highlight_view_buttons(self):
+        if self.view_mode == 'coins':
+            self._cfg(self.btn_view_coins, bg="#1a7abf", fg="white")
+            self._cfg(self.btn_view_positions, bg="#eeeeee", fg="black")
+        else:
+            self._cfg(self.btn_view_coins, bg="#eeeeee", fg="black")
+            self._cfg(self.btn_view_positions, bg="#1a7abf", fg="white")
 
     def _update_score_history(self, data_list):
         """매 스냅샷마다 티커별 '유효 점수'를 기록해둔다(값이 실제로 바뀔 때만 추가).
@@ -777,31 +705,31 @@ class TradingClient:
         return {'score': total, 'tier_label': tier_label, 'tier_color': tier_color,
                 'trend': trend, 'risk': risk}
 
-    def _toggle_pos_panel(self):
-        self._pos_panel_user_hidden = not self._pos_panel_user_hidden
-        if self._pos_panel_user_hidden:
-            self.btn_toggle_pos.config(text="포지션 보이기")
-            self._hide_pos_panel()
-        else:
-            self.btn_toggle_pos.config(text="포지션 숨기기")
-            self._show_pos_panel()  # 실제 포지션이 없으면 다음 자동 갱신 때 다시 숨겨짐
+    def _show_empty_pos_message(self):
+        if not hasattr(self, '_empty_pos_label') or not self._empty_pos_label.winfo_exists():
+            self._empty_pos_label = tk.Label(self.pos_inner, text="보유 중인 포지션이 없습니다",
+                                              font=("Arial", self.ui_font_base), bg="#16181d", fg="#888888")
+            self._empty_pos_label.pack(pady=30)
+
+    def _clear_empty_pos_message(self):
+        if hasattr(self, '_empty_pos_label') and self._empty_pos_label.winfo_exists():
+            self._empty_pos_label.destroy()
 
     def _render_pos_panel(self, pos_list):
+        self._cfg(self.btn_view_positions, text=f"포지션 ({len(pos_list)})")
         if not pos_list:
-            self._hide_pos_panel()
             for t in list(self.pos_cards.keys()):
                 self.pos_cards[t].destroy()
                 del self.pos_cards[t]
             self._last_pos_order = None
+            if self.view_mode == 'positions':
+                self._show_empty_pos_message()
             return
+        self._clear_empty_pos_message()
 
-        # 사용자가 수동으로 숨긴 상태면 패널 자체는 안 띄우지만, 카드 내용은 계속
-        # 최신으로 갱신해둔다 — 나중에 "포지션 보이기"를 눌렀을 때 바로 정상 표시되도록.
-        if not self._pos_panel_user_hidden:
-            self._show_pos_panel()
-
-        # 높이는 아래에서 실제 카드 높이를 측정해 '최대 2개'에 딱 맞게 설정한다.
-        # (고정 픽셀 추정은 고밀도 화면에서 카드가 잘리는 원인이었음)
+        # 뷰 전환 버튼이 패널 표시 여부를 관리한다 — 코인 화면에서는 포지션이 있어도 안 보여준다.
+        if self.view_mode != 'positions':
+            return
 
         fs = self.ui_font_base
         fs_small = max(fs - 1, 4)
@@ -961,23 +889,9 @@ class TradingClient:
 
         self.pos_inner.update_idletasks()
         self.pos_canvas.configure(scrollregion=self.pos_canvas.bbox("all"))
-        # 실제 렌더링된 카드 높이를 측정해 '최대 2개'가 딱 보이는 높이로 설정.
-        # pack(pady=3)의 상하 여백(6px)도 포함해야 잘리지 않는다.
-        try:
-            cards = [self.pos_cards[p['ticker']] for p in pos_list if p['ticker'] in self.pos_cards]
-            show_n = min(2, len(cards))
-            need = sum(c.winfo_reqheight() + 6 for c in cards[:show_n])
-            if need > 0 and need != self.pos_canvas.winfo_height():
-                self.pos_canvas.config(height=need)
-            # 스크롤 버튼(▲/▼)이 카드 1개 높이만큼 딱 움직이도록, 카드 실측 높이를
-            # yscrollincrement로 맞춰준다. 이게 없으면 tkinter 기본 "unit"이 카드
-            # 높이와 안 맞아서 버튼 눌러도 반 개만 움직이거나 훌쩍 넘어가 버린다.
-            if cards:
-                one_card_h = cards[0].winfo_reqheight() + 6
-                if one_card_h > 0:
-                    self.pos_canvas.configure(yscrollincrement=one_card_h)
-        except Exception:
-            pass
+        # 이제 포지션 화면이 전체를 차지하므로(코인 화면과 분리됨) 높이를 2개로 제한할
+        # 필요가 없다 — pos_canvas 자체가 fill=both/expand=True라 알아서 채워지고,
+        # 카드가 더 많으면 기존 드래그/휠 스크롤(_pos_press/_pos_motion)로 넘겨본다.
 
     def poll_files(self):
         try:
@@ -996,18 +910,7 @@ class TradingClient:
         if age > STALE_SEC:
             self.server_label.config(text="서버: 연결 끊김 (trading_server.py 실행 확인)", fg="red")
         else:
-            self.server_label.config(
-                text=f"서버: 정상 (기준봉 {current_interval} / 관심 {watch_current_min_score}·컷 {current_min_score}점 / "
-                     f"매집·분산 컷 {pp_current_min_score}점, {age:.0f}초 전 갱신)",
-                fg="gray")
-        btc_dir = ("BTC↓추세" if macro_state.get('btc_ema_s') == 30
-                   else "BTC↑추세" if macro_state.get('btc_ema_l') == 30 else "BTC중립")
-        fng_v = macro_state.get('fng_value')
-        fng_txt = f"공포탐욕 {fng_v}({macro_state.get('fng_class','')})" if fng_v is not None else "공포탐욕 N/A"
-        is_risky = (macro_state.get('btc_ema_s') == 30 or macro_state.get('btc_ema_l') == 30
-                    or (fng_v is not None and (fng_v >= 80 or fng_v <= 20)))
-        self.macro_label.config(text=f"{'⚠️ ' if is_risky else ''}{btc_dir} | {fng_txt}",
-                                 fg="#cc4400" if is_risky else "gray")
+            self.server_label.config(text=f"서버: 정상 (기준봉 {current_interval} / 관심 {watch_current_min_score}·컷 {current_min_score}점 / 매집·분산 컷 {pp_current_min_score}점, {age:.0f}초 전 갱신)", fg="gray")
         acc = read_account_snapshot()
         if acc:
             self._account = acc
@@ -1077,304 +980,12 @@ class TradingClient:
         self.search_entry.delete(0, tk.END)
         self._on_search_change()
 
-    # 조건필터에서 고를 수 있는 항목들 (표시이름 -> row 딕셔너리 키)
-    CUSTOM_FILTER_FIELDS = [
-        ("(선택안함)", None),
-        ("롱스코어", "long_score"), ("숏스코어", "short_score"),
-        ("매집", "prepump_score"), ("분산", "preshort_score"),
-        ("RSI", "rsi"), ("RSI Delta", "rsi_delta"), ("VolZ", "vol_z"), ("BB%", "bb_percent"),
-        ("CVD Delta", "cvd_diff"), ("ATR%", "atr_pct"), ("OI변화%", "oi_change_pct"),
-        ("30분변동%", "chg_30m"), ("L/S비율", "ls_ratio"), ("Extension%", "extension_pct"),
-        ("Funding%", "funding"), ("24h거래대금(M)", "vol_24h_m"),
-        ("ema_l", "ema_l"), ("ema_s", "ema_s"), ("pp_l", "pp_l"), ("pp_s", "pp_s"),
-        ("cvd_l", "cvd_l"), ("cvd_s", "cvd_s"), ("oi_l", "oi_l"), ("oi_s", "oi_s"),
-        ("m30_l", "m30_l"), ("m30_s", "m30_s"), ("volz_sc", "volz_sc"), ("liquidity_sc", "liquidity_sc"),
-    ]
-    CUSTOM_FILTER_FIELD_MAP = dict(CUSTOM_FILTER_FIELDS)
-
-    def _row_passes_custom_filters(self, row):
-        """조건필터 3줄 중 값이 채워진 것만 전부 AND로 통과해야 True. 하나도 안 채워져 있으면
-        항상 True(필터 없음과 동일)."""
-        for rule in self.custom_filter_rules:
-            if not rule:
-                continue
-            field, cmp_op, value = rule['field'], rule['cmp'], rule['value']
-            row_val = row.get(field)
-            if row_val is None:
-                return False  # 값 자체가 없는 코인(N/A)은 조건 비교 불가 → 탈락
-            try:
-                row_val = float(row_val)
-            except (TypeError, ValueError):
-                return False
-            if cmp_op == '>' and not (row_val > value):
-                return False
-            elif cmp_op == '=' and not (abs(row_val - value) < 1e-9):
-                return False
-            elif cmp_op == '<' and not (row_val < value):
-                return False
-            elif cmp_op == '구간':
-                lo, hi = (value, rule.get('value2', value))
-                if lo > hi:
-                    lo, hi = hi, lo
-                if not (lo <= row_val <= hi):
-                    return False
-        return True
-
-    def _custom_filter_rule_text(self, rule):
-        name = next((n for n, k in self.CUSTOM_FILTER_FIELDS if k == rule['field']), rule['field'])
-        if rule['cmp'] == '구간':
-            return f"{name} 구간 {rule['value']}~{rule.get('value2', rule['value'])}"
-        return f"{name} {rule['cmp']} {rule['value']}"
-
-    def _apply_custom_filter(self, data_list):
-        if not any(self.custom_filter_rules):
-            return data_list
-        return [r for r in data_list
-                if self._row_passes_custom_filters(r) or r['ticker'] in self.pinned_tickers]
-
-    def show_custom_filter_dialog(self):
-        """리셋 버튼 + (조건/부등호/값) 3줄 + 오른쪽에 현재 필터 상태/통과 현황 패널."""
-        if getattr(self, 'custom_filter_win', None) and self.custom_filter_win.winfo_exists():
-            self.custom_filter_win.lift()
-            return
-        win = tk.Toplevel(self.root)
-        self.custom_filter_win = win
-        win.title("조건필터")
-        sw = self.root.winfo_screenwidth()
-        win.geometry(f"{sw}x{360}")
-
-        top_bar = tk.Frame(win)
-        top_bar.pack(fill="x", padx=6, pady=6)
-        tk.Label(top_bar, text="조건필터 (최대 3개, 전부 만족해야 통과 / AND)",
-                 font=("Arial", self.FONT_SMALL, "bold")).pack(side="left")
-        btn_reset = tk.Label(top_bar, text="리셋", bg="#cc4444", fg="white", relief="raised", bd=1,
-                              cursor="hand2", padx=8, pady=2, font=("Arial", self.FONT_SMALL, "bold"))
-        btn_reset.pack(side="right")
-
-        # 본문을 좌(입력 3줄) / 우(상태 패널)로 나눈다 — "옆에 창으로 상태 보여달라"는 요청 반영
-        body = tk.Frame(win)
-        body.pack(fill="both", expand=True, padx=6, pady=4)
-        left = tk.Frame(body)
-        left.pack(side="left", fill="both", expand=True)
-        right = tk.Frame(body, bd=1, relief="sunken", bg="#f5f5f5")
-        right.pack(side="right", fill="both", padx=(8, 0))
-
-        tk.Label(right, text="현재 필터 상태", font=("Arial", self.FONT_SMALL, "bold"),
-                 bg="#f5f5f5").pack(anchor="w", padx=6, pady=(6, 2))
-        status_label = tk.Label(right, text="", font=("Arial", self.FONT_SMALL), bg="#f5f5f5",
-                                 justify="left", anchor="nw", wraplength=int(sw * 0.42))
-        status_label.pack(anchor="nw", padx=6, pady=2, fill="both", expand=True)
-
-        field_names = [name for name, _ in self.CUSTOM_FILTER_FIELDS]
-        row_widgets = []  # [(field_var, cmp_var, value_entry, value2_entry, value2_row), ...]
-
-        def make_row(i):
-            row = tk.Frame(left)
-            row.pack(fill="x", pady=4)
-            cur = self.custom_filter_rules[i]
-            cur_field_name = "(선택안함)"
-            if cur:
-                for name, key in self.CUSTOM_FILTER_FIELDS:
-                    if key == cur['field']:
-                        cur_field_name = name
-                        break
-
-            field_var = tk.StringVar(value=cur_field_name)
-            field_menu = tk.OptionMenu(row, field_var, *field_names)
-            field_menu.config(width=12, font=("Arial", self.FONT_SMALL))
-            field_menu.pack(side="left", padx=(0, 4))
-
-            cmp_var = tk.StringVar(value=(cur['cmp'] if cur else '>'))
-            cmp_menu = tk.OptionMenu(row, cmp_var, '>', '=', '<', '구간')
-            cmp_menu.config(width=3, font=("Arial", self.FONT_SMALL))
-            cmp_menu.pack(side="left", padx=(0, 4))
-
-            value_entry = tk.Entry(row, width=8, font=("Arial", self.FONT_SMALL))
-            if cur:
-                value_entry.insert(0, str(cur['value']))
-            value_entry.pack(side="left")
-
-            tilde_label = tk.Label(row, text="~", font=("Arial", self.FONT_SMALL))
-            value2_entry = tk.Entry(row, width=8, font=("Arial", self.FONT_SMALL))
-            if cur and cur['cmp'] == '구간':
-                value2_entry.insert(0, str(cur.get('value2', '')))
-
-            def update_value2_visibility(*_args):
-                if cmp_var.get() == '구간':
-                    tilde_label.pack(side="left", padx=(2, 2))
-                    value2_entry.pack(side="left")
-                else:
-                    tilde_label.pack_forget()
-                    value2_entry.pack_forget()
-
-            cmp_var.trace_add('write', update_value2_visibility)
-            update_value2_visibility()
-
-            row_widgets.append((field_var, cmp_var, value_entry, value2_entry))
-
-        for i in range(3):
-            make_row(i)
-
-        def build_rules_or_none():
-            new_rules = []
-            for field_var, cmp_var, value_entry, value2_entry in row_widgets:
-                field_key = self.CUSTOM_FILTER_FIELD_MAP.get(field_var.get())
-                val_txt = value_entry.get().strip()
-                if not field_key or not val_txt:
-                    new_rules.append(None)
-                    continue
-                try:
-                    val = float(val_txt)
-                except ValueError:
-                    return None, f"'{val_txt}'은(는) 숫자가 아닙니다."
-                rule = {'field': field_key, 'cmp': cmp_var.get(), 'value': val}
-                if cmp_var.get() == '구간':
-                    val2_txt = value2_entry.get().strip()
-                    if not val2_txt:
-                        return None, "구간을 선택했으면 두 번째 값(~까지)도 입력하세요."
-                    try:
-                        rule['value2'] = float(val2_txt)
-                    except ValueError:
-                        return None, f"'{val2_txt}'은(는) 숫자가 아닙니다."
-                new_rules.append(rule)
-            return new_rules, None
-
-        def refresh_status_panel():
-            active = [r for r in self.custom_filter_rules if r]
-            lines = []
-            if not active:
-                lines.append("적용된 조건 없음 (전체 표시)")
-            else:
-                for r in active:
-                    lines.append(f"• {self._custom_filter_rule_text(r)}")
-            data = self._last_render_data or []
-            total = len(data)
-            passed = sum(1 for row in data if self._row_passes_custom_filters(row))
-            lines.append("")
-            lines.append(f"통과: {passed} / 전체 {total}개 코인")
-            status_label.config(text="\n".join(lines))
-
-        def apply_rules():
-            new_rules, err = build_rules_or_none()
-            if err:
-                messagebox.showwarning("입력 오류", err)
-                return
-            self.custom_filter_rules = new_rules
-            if self._last_render_data:
-                self._render_table(self._last_render_data)
-            refresh_status_panel()
-
-        def reset_rules():
-            self.custom_filter_rules = [None, None, None]
-            win.destroy()
-            self.custom_filter_win = None
-            self.show_custom_filter_dialog()
-            if self._last_render_data:
-                self._render_table(self._last_render_data)
-
-        btn_reset.bind("<ButtonRelease-1>", lambda e: reset_rules())
-
-        btn_apply = tk.Label(win, text="적용", bg="#2f9e44", fg="white", relief="raised", bd=1,
-                              cursor="hand2", padx=8, pady=4, font=("Arial", self.FONT_SMALL, "bold"))
-        btn_apply.pack(pady=10)
-        btn_apply.bind("<ButtonRelease-1>", lambda e: apply_rules())
-
-        refresh_status_panel()
-
-    def show_change_path_dialog(self):
-        """데이터 저장 경로를 사용자가 직접 지정할 수 있는 창. path_config.txt에 써서
-        trading_server.py/data_collector.py/simulation_cli.py가 재시작 시 같이 따라가게 한다.
-        (같은 폴더에 이 스크립트들을 두고 쓰는 걸 전제로 함)"""
-        if getattr(self, 'change_path_win', None) and self.change_path_win.winfo_exists():
-            self.change_path_win.lift()
-            return
-        win = tk.Toplevel(self.root)
-        self.change_path_win = win
-        win.title("데이터 저장 경로 변경")
-        sw = self.root.winfo_screenwidth()
-        win.geometry(f"{sw}x220")
-
-        tk.Label(win, text="현재 저장 경로:", font=("Arial", self.FONT_SMALL, "bold")).pack(
-            anchor="w", padx=10, pady=(10, 0))
-        tk.Label(win, text=SCRIPT_DIR, font=("Arial", self.FONT_SMALL), fg="#555555",
-                 wraplength=int(sw - 20), justify="left").pack(anchor="w", padx=10)
-
-        tk.Label(win, text="새 경로 (예: D:\\TradingData):", font=("Arial", self.FONT_SMALL, "bold")).pack(
-            anchor="w", padx=10, pady=(14, 0))
-        path_entry = tk.Entry(win, font=("Arial", self.FONT_SMALL))
-        path_entry.insert(0, SCRIPT_DIR)
-        path_entry.pack(fill="x", padx=10, pady=4)
-
-        def browse_folder():
-            try:
-                from tkinter import filedialog
-                chosen = filedialog.askdirectory(initialdir=SCRIPT_DIR)
-                if chosen:
-                    path_entry.delete(0, tk.END)
-                    path_entry.insert(0, chosen)
-            except Exception:
-                messagebox.showinfo("안내", "이 환경에서는 폴더 선택창을 지원하지 않습니다.\n"
-                                     "위 입력칸에 경로를 직접 입력해주세요.")
-
-        btn_browse = tk.Label(win, text="폴더 선택...", bg="#dddddd", fg="black", relief="raised",
-                               bd=1, cursor="hand2", padx=6, pady=3, font=("Arial", self.FONT_SMALL))
-        btn_browse.pack(anchor="w", padx=10, pady=(0, 8))
-        btn_browse.bind("<ButtonRelease-1>", lambda e: browse_folder())
-
-        def save_path():
-            new_path = path_entry.get().strip()
-            if not new_path:
-                messagebox.showwarning("입력 오류", "경로를 입력하세요.")
-                return
-            try:
-                os.makedirs(new_path, exist_ok=True)
-                test_file = os.path.join(new_path, ".write_test")
-                with open(test_file, "w") as f:
-                    f.write("ok")
-                os.remove(test_file)
-            except Exception as e:
-                messagebox.showerror("오류", f"이 경로에 쓸 수 없습니다:\n{e}")
-                return
-            try:
-                with open(_PATH_CONFIG_FILE, "w", encoding="utf-8") as f:
-                    f.write(new_path)
-            except Exception as e:
-                messagebox.showerror("오류", f"설정 파일 저장 실패:\n{e}")
-                return
-            messagebox.showinfo(
-                "저장 완료",
-                f"새 경로가 저장됐습니다:\n{new_path}\n\n"
-                "⚠️ 지금 실행 중인 trading_client.py와 trading_server.py를 모두 종료했다가 "
-                "다시 켜야 반영됩니다. (data_collector.py/simulation_cli.py를 쓰고 있다면 그것들도 "
-                "같은 폴더에 있어야 같이 따라갑니다)"
-            )
-            win.destroy()
-            self.change_path_win = None
-
-        btn_save = tk.Label(win, text="저장", bg="#2f9e44", fg="white", relief="raised", bd=1,
-                             cursor="hand2", padx=8, pady=4, font=("Arial", self.FONT_SMALL, "bold"))
-        btn_save.pack(pady=6)
-        btn_save.bind("<ButtonRelease-1>", lambda e: save_path())
-
-    def _on_filter_toggle(self):
-        # 다음 서버 갱신을 기다리지 않고, 마지막으로 받은 데이터로 바로 다시 그린다.
-        if self._last_render_data:
-            self._render_table(self._last_render_data)
-
     def _apply_sort(self, data_list):
         pinned = [r for r in data_list if r['ticker'] in self.pinned_tickers]
         non_pinned = [r for r in data_list if r['ticker'] not in self.pinned_tickers]
         cut = current_min_score
         pp_cut = pp_current_min_score
-        filt_on = self.filter_enabled.get()
-
-        def long_ok(r):
-            return r['long_score'] >= cut and (not filt_on or r.get('filters_ok_long', True))
-
-        def short_ok(r):
-            return r['short_score'] >= cut and (not filt_on or r.get('filters_ok_short', True))
-
-        colored = [r for r in non_pinned if long_ok(r) or short_ok(r)
+        colored = [r for r in non_pinned if r['long_score'] >= cut or r['short_score'] >= cut
                    or r.get('prepump_score', 0) >= pp_cut or r.get('preshort_score', 0) >= pp_cut]
         colored_tickers = {r['ticker'] for r in colored}
         plain = [r for r in non_pinned if r['ticker'] not in colored_tickers]
@@ -1401,7 +1012,6 @@ class TradingClient:
             self._update_score_history(data_list)
             yview_top = self.card_canvas.yview()[0]
             data_list = self._apply_search_filter(data_list)
-            data_list = self._apply_custom_filter(data_list)
             data_list = self._apply_sort(data_list)
             seen = set()
             new_order = []
@@ -1425,39 +1035,20 @@ class TradingClient:
                 cut = current_min_score
                 wcut = watch_current_min_score
                 pp_cut = pp_current_min_score
-                filt_on = self.filter_enabled.get()
-                long_pass = ls >= cut and (not filt_on or row.get('filters_ok_long', True))
-                short_pass = ss >= cut and (not filt_on or row.get('filters_ok_short', True))
-                # 컷은 넘었는데 필터에 막힌 경우 — 진짜 "관심(65점대)"과 색을 분리해서
-                # 65점짜리 애매한 코인과 76점인데 필터만 막힌 코인이 똑같은 노랑으로
-                # 뭉뚱그려지지 않게 한다.
-                filt_blocked = filt_on and (
-                    (ls >= cut and not row.get('filters_ok_long', True)) or
-                    (ss >= cut and not row.get('filters_ok_short', True))
-                )
-                if long_pass and ls >= ss:
+                if ls >= cut and ls >= ss:
                     bg = "#d8f5d8"
-                elif short_pass:
+                elif ss >= cut:
                     bg = "#fbdada"
                 elif pp >= pp_cut and pp >= ps:
                     bg = "#dbe9fb"   # 파랑 계열: 아직 안 터진 매집 구간(prepump) 대기
                 elif ps >= pp_cut:
                     bg = "#f1ddf5"   # 보라 계열: 고점 분산(preshort) 대기
-                elif filt_blocked:
-                    bg = "#fbdfc0"   # 살구색: 컷은 넘었지만 v5 필터에 막힘 (관심과 별개 색)
                 elif ls >= wcut or ss >= wcut:
-                    bg = "#fdf6d8"   # 연노랑: 필터와 무관하게 진짜 "관심" 구간(65점대)
+                    bg = "#fdf6d8"   # 연노랑: 진입 컷엔 못 미치지만 "관심" 구간(65점대)
                 else:
                     bg = "white"
                 display_ticker = f"[{ticker}]" if ticker in self.pinned_tickers else ticker
-                # 컷은 넘었지만 v5 하드필터에 걸려서(체크박스 켜짐 기준) 색칠 안 된
-                # 경우를 표시 — 필터를 껐을 때와 비교하며 필터 효과를 직접 확인할 수 있다.
-                filt_warn = ""
-                if ls >= cut and not row.get('filters_ok_long', True):
-                    filt_warn += " ⚠️롱필터"
-                if ss >= cut and not row.get('filters_ok_short', True):
-                    filt_warn += " ⚠️숏필터"
-                line1 = f"{display_ticker}  {usd_str} ({krw_str})  롱{ls} 숏{ss}  매집{pp} 분산{ps}{filt_warn}"
+                line1 = f"{display_ticker}  {usd_str} ({krw_str})  롱{ls} 숏{ss}  매집{pp} 분산{ps}"
                 lsr = row.get('ls_ratio')
                 ls_str = f"{lsr:.2f}" if lsr is not None else "N/A"
                 line2 = (f"RSI {row['rsi']}({row['rsi_delta']:+}) BB {row['bb_percent']:.0f}% "
@@ -1700,296 +1291,6 @@ class TradingClient:
                 messagebox.showinfo("Leverage", f"{ticker} 현재 배율: {p['leverage']}x\n(배율 변경은 신규 진입 시 설정하세요.)")
                 return
 
-    def export_indicator_report_pdf(self):
-        """
-        버튼 클릭 시 PDF 리포트 생성:
-          1페이지 = 롱스코어 상위 10개 코인(가로) × 지표(세로) 표, 5pt
-          2페이지 = 숏스코어 상위 10개 코인(가로) × 지표(세로) 표, 5pt
-          3페이지 이후 = 지표 설명(show_help()와 동일 내용), 10pt
-        안드로이드 다운로드 폴더에 저장.
-        """
-        try:
-            from fpdf import FPDF
-        except ImportError:
-            messagebox.showerror("오류", "fpdf2가 설치되어 있지 않습니다.\n"
-                                  "Termux에서 설치: pip install fpdf2 --break-system-packages")
-            return
-        try:
-            from fpdf.enums import XPos, YPos
-        except ImportError:
-            # 구버전 fpdf2는 fpdf.enums가 없다 — XPos.LMARGIN/YPos.NEXT를 그냥 문자열로
-            # 흉내 낸 자리표시자를 써서, 아래 cell(new_x=..., new_y=...) 호출이 죽지 않게 한다.
-            class _XPosShim:
-                LMARGIN = "LMARGIN"
-            class _YPosShim:
-                NEXT = "NEXT"
-            XPos, YPos = _XPosShim, _YPosShim
-
-        data = list(self._last_render_data or [])
-        if not data:
-            messagebox.showwarning("경고", "아직 표시할 마켓 데이터가 없습니다.")
-            return
-
-        try:
-            self._build_and_save_pdf(FPDF, XPos, YPos, data)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            messagebox.showerror("PDF 생성 실패", f"{type(e).__name__}: {e}")
-
-    def _build_and_save_pdf(self, FPDF, XPos, YPos, data):
-        # PDF 내용을 전부 영어로 바꾼 뒤로는 fpdf2 기본 내장 폰트(Helvetica)만으로 충분해서,
-        # 한글 TTF 폰트를 따로 찾아 설치할 필요가 없어졌다.
-
-        top_long = sorted(data, key=lambda r: r.get('long_score', 0), reverse=True)[:10]
-        top_short = sorted(data, key=lambda r: r.get('short_score', 0), reverse=True)[:10]
-
-        def fmt_price(r):
-            v = r.get('price_usd')
-            if v is None:
-                return "N/A"
-            return f"{v:,.2f}" if v >= 1 else f"{v:,.4f}"
-
-        # (표시 이름, row -> 문자열 값 변환 함수, 설명). 세로 인덱스(행)로 쓰인다.
-        # 51개 컬럼 중 기본정보(timestamp/ticker)·원화가격(price_krw)·최종점수
-        # (long/short/prepump/preshort_score)만 빼고 나머지 세부항목을 전부 넣는다.
-        # 3번째 값(설명)은 3페이지 이후 "지표 설명"에 그대로 쓰여서, 표에 실제로
-        # 나오는 44개 행과 설명이 1:1로 절대 안 어긋나게 한다.
-        indicator_rows = [
-            ("Price(USD)", fmt_price, "Binance futures last traded price (USD)."),
-            # --- raw indicators ---
-            ("RSI", lambda r: f"{r.get('rsi', 0):.1f}",
-             "Relative Strength Index (0-100). 70+ overbought, 30- oversold."),
-            ("RSI Delta", lambda r: f"{r.get('rsi_delta', 0):+.1f}",
-             "RSI change vs. 5 candles ago. A large value means a sharp move just happened."),
-            ("VolZ", lambda r: f"{r.get('vol_z', 0):+.1f}",
-             "Volume Z-score: how much current volume deviates from the last 20-candle average. "
-             "Higher means volume has 'already spiked' (chasing risk)."),
-            ("BB%", lambda r: f"{r.get('bb_percent', 0):.0f}",
-             "Price position within Bollinger Bands (0-100%). 0=lower band, 100=upper band."),
-            ("CVD Delta", lambda r: f"{r.get('cvd_diff', 0):+.2f}",
-             "Cumulative Volume Delta change over the last 2 candles. + means buyers dominant, - means sellers."),
-            ("ATR%", lambda r: f"{r.get('atr_pct', 0):.2f}",
-             "Average True Range on the 1h candle (% of price). Used for the volatility/liquidity filter."),
-            ("OI Delta%", lambda r: f"{r.get('oi_change_pct', 0):+.2f}",
-             "Open Interest 1h change rate. Combined with price direction to judge 'genuine new inflow'."),
-            ("30m Delta%", lambda r: f"{r.get('chg_30m', 0):+.2f}",
-             "Price change over the last 30 minutes. A large move already (overheated) signals chase risk."),
-            ("L/S", lambda r: (f"{r.get('ls_ratio'):.2f}" if r.get('ls_ratio') is not None else "N/A"),
-             "Binance-wide account long/short ratio. Used in the 'position contrarian' component of the "
-             "accumulation/distribution score."),
-            ("Ext%", lambda r: f"{r.get('extension_pct', 0):+.2f}",
-             "How far price has already moved over the last 10 candles (%). If large, treated as a late-stage "
-             "'EMA alignment already extended' setup and penalized."),
-            ("Funding%", lambda r: f"{r.get('funding', 0):+.3f}",
-             "Funding rate (%). + means longs are crowded, - means shorts are crowded. Display only, not scored."),
-            ("24h Volume(M)", lambda r: f"{r.get('vol_24h_m', 0):,}",
-             "24h cumulative trading value (millions KRW). Used as the liquidity filter threshold."),
-            ("EMA20", lambda r: (f"{r.get('ema20'):,.4f}" if r.get('ema20') is not None else "N/A"),
-             "20-period exponential moving average (short-term trend line)."),
-            ("EMA60", lambda r: (f"{r.get('ema60'):,.4f}" if r.get('ema60') is not None else "N/A"),
-             "60-period exponential moving average (medium-term trend line)."),
-            ("EMA120", lambda r: (f"{r.get('ema120'):,.4f}" if r.get('ema120') is not None else "N/A"),
-             "120-period exponential moving average (long-term trend line). EMA20>60>120 aligned = uptrend."),
-            # --- v6 sub-components (make up the 85-point long/short score) ---
-            ("ema_l", lambda r: str(r.get('ema_l', 0)),
-             "EMA+price-position long score (max 30). Early alignment=30 / not-yet-extended alignment=25 / "
-             "already overheated chase=12 / pullback zone=18 / reverse alignment=0."),
-            ("ema_s", lambda r: str(r.get('ema_s', 0)), "EMA+price-position short score (max 30). Mirrors ema_l."),
-            ("pp_l", lambda r: str(r.get('pp_l', 0)),
-             "RSI+BB% filter long score (max 10). Penalized if RSI_delta is explosive (prevents chasing a spike)."),
-            ("pp_s", lambda r: str(r.get('pp_s', 0)), "RSI+BB% filter short score (max 10). Mirrors pp_l."),
-            ("cvd_l", lambda r: str(r.get('cvd_l', 0)),
-             "CVD long score (max 10). Reflects both direction match and strength (increase relative to volume)."),
-            ("cvd_s", lambda r: str(r.get('cvd_s', 0)), "CVD short score (max 10). Mirrors cvd_l."),
-            ("oi_l", lambda r: str(r.get('oi_l', 0)),
-             "OI Synergy long score (max 20). Full marks only when price up + OI up together (confirms genuine "
-             "new capital inflow)."),
-            ("oi_s", lambda r: str(r.get('oi_s', 0)), "OI Synergy short score (max 20). Mirrors oi_l (price down + OI up)."),
-            ("m30_l", lambda r: str(r.get('m30_l', 0)),
-             "30-minute momentum long score (max 5). Rewards 'not yet moved', zero once it's 'already run'."),
-            ("m30_s", lambda r: str(r.get('m30_s', 0)), "30-minute momentum short score (max 5). Mirrors m30_l."),
-            ("volz_sc", lambda r: str(r.get('volz_sc', 0)),
-             "VolZ score (max 5, shared by long/short). Penalized once volume has already spiked (anti-chase)."),
-            ("liquidity_sc", lambda r: str(r.get('liquidity_sc', 0)),
-             "ATR/trading-value liquidity filter score (max 5, shared). Penalized if volatility is too dead or too hot."),
-            # --- Pre-Pump/Pre-Short sub-components (make up the 100-point accumulation/distribution score) ---
-            ("div_l", lambda r: str(r.get('div_l', 0)),
-             "Accumulation divergence score (max 35). Detects hidden bullish divergence: price low holds while "
-             "RSI/CVD lows rise."),
-            ("div_s", lambda r: str(r.get('div_s', 0)), "Distribution divergence score (max 35). Mirrors div_l (based on highs)."),
-            ("lsx_l", lambda r: str(r.get('lsx_l', 0)),
-             "Position-contrarian long score (max 25). Rewarded more the more retail is crowded short (low L/S) "
-             "- short-squeeze potential."),
-            ("lsx_s", lambda r: str(r.get('lsx_s', 0)), "Position-contrarian short score (max 25). Mirrors lsx_l (crowded long)."),
-            ("bb_comp_sc", lambda r: str(r.get('bb_comp_sc', 0)),
-             "Price-stagnation (volatility compression) score (max 20, shared). Rewarded when Bollinger Band "
-             "width is narrow relative to recent range."),
-            ("stealth_sc", lambda r: str(r.get('stealth_sc', 0)),
-             "Stealth-accumulation VolZ score (max 20, shared). Catches the zone where price stays flat but "
-             "volume quietly builds."),
-            # --- v5 hard filter pass/fail per condition (1=pass, 0=blocked by this condition) ---
-            ("filt_ema_oi_l", lambda r: str(r.get('filt_ema_oi_l', 1)),
-             "Long filter: EMA aligned AND OI direction matches (both must be nonzero for 1)."),
-            ("filt_ema_oi_s", lambda r: str(r.get('filt_ema_oi_s', 1)), "Short filter: short-side version of filt_ema_oi_l."),
-            ("filt_cvd_l", lambda r: str(r.get('filt_cvd_l', 1)), "Long filter: CVD direction matches long (cvd_l != 0)."),
-            ("filt_cvd_s", lambda r: str(r.get('filt_cvd_s', 1)), "Short filter: CVD direction matches short (cvd_s != 0)."),
-            ("filt_volz_ok", lambda r: str(r.get('filt_volz_ok', 1)),
-             "Shared filter: VolZ below 2.0 (prevents chasing an already-spiked volume move)."),
-            ("filt_m30_l", lambda r: str(r.get('filt_m30_l', 1)), "Long filter: 30-min momentum condition met (m30_l != 0)."),
-            ("filt_m30_s", lambda r: str(r.get('filt_m30_s', 1)), "Short filter: 30-min momentum condition met (m30_s != 0)."),
-            ("filt_liquidity_ok", lambda r: str(r.get('filt_liquidity_ok', 1)),
-             "Shared filter: liquidity filter passed (liquidity_sc != 0)."),
-            ("passes_all_l", lambda r: str(r.get('passes_all_l', 1)),
-             "Final long verdict: all 5 long filters above passed (1=pass, 0=at least one failed -> excluded "
-             "from coloring when the filter toggle is on)."),
-            ("passes_all_s", lambda r: str(r.get('passes_all_s', 1)),
-             "Final short verdict: all 5 short filters above passed (1=pass, 0=at least one failed -> excluded "
-             "from coloring when the filter toggle is on)."),
-        ]
-
-        pdf = FPDF(orientation="L", unit="mm", format="A4")
-        pdf.set_auto_page_break(False)
-        
-        def add_table_page(title, rows_data):
-            pdf.add_page()
-            pdf.set_font("Helvetica", "", 12)
-            title_h = 8
-            pdf.cell(0, title_h, title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-            pdf.set_font("Helvetica", "", 5)
-            n_cols = len(rows_data) + 1  # 지표명 열 + 코인 열들
-            page_w = pdf.w - 2 * pdf.l_margin
-            col_w = page_w / max(n_cols, 1)
-            # 지표(행) 개수가 늘어나도 한 페이지 안에 다 들어가도록 행 높이를 동적으로 계산.
-            # 5pt 글자가 읽히는 최소한도(3.0mm)는 지키되, 그 밑으로는 안 내려간다 —
-            # 지표가 너무 많아 3.0mm로도 못 채우면 페이지 아래로 넘칠 수 있다(참고용 안전장치).
-            n_data_rows = len(indicator_rows) + 1  # +1은 코인 티커 헤더행
-            available_h = (pdf.h - pdf.t_margin - pdf.b_margin) - title_h
-            row_h = max(3.0, available_h / n_data_rows)
-
-            pdf.cell(col_w, row_h, "Indicator", border=1, align='C')
-            for r in rows_data:
-                pdf.cell(col_w, row_h, str(r.get('ticker', '')), border=1, align='C')
-            pdf.ln(row_h)
-
-            for label, getter, _desc in indicator_rows:
-                pdf.cell(col_w, row_h, label, border=1)
-                for r in rows_data:
-                    try:
-                        val = getter(r)
-                    except Exception:
-                        val = ""
-                    pdf.cell(col_w, row_h, str(val), border=1, align='C')
-                pdf.ln(row_h)
-
-        add_table_page(f"Top 10 by Long Score  ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})", top_long)
-        add_table_page(f"Top 10 by Short Score  ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})", top_short)
-
-        # 3페이지 이후: 표에 나온 44개 지표 항목 설명 (indicator_rows의 3번째 값과 1:1 매칭), 10pt
-        # 표 페이지는 한 페이지 안에 다 들어가서 auto_page_break를 꺼놨지만,
-        # 설명 텍스트는 길이가 들쭉날쭉해서 fpdf2의 자동 페이지분할에 맡기는 게 안전하다.
-        pdf.set_auto_page_break(True, margin=15)
-        pdf.add_page()
-        pdf.set_font("Helvetica", "", 16)
-        pdf.cell(0, 10, "Indicator Descriptions (44 items shown in the tables above)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_font("Helvetica", "", 10)
-        desc_width = pdf.w - 2 * pdf.l_margin  # w=0 자동계산에 기대지 않고 폭을 직접 지정
-        for title, _getter, desc in indicator_rows:
-            pdf.set_font("Helvetica", "", 10)
-            pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(desc_width, 6, f"- {title}")
-            pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(desc_width, 6, desc)
-            pdf.ln(2)
-
-        out_dir = "/storage/emulated/0/Download"
-        try:
-            os.makedirs(out_dir, exist_ok=True)
-        except Exception:
-            out_dir = SCRIPT_DIR
-        fname = f"indicator_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-        out_path = os.path.join(out_dir, fname)
-        try:
-            pdf.output(out_path)
-            messagebox.showinfo("완료", f"PDF 저장 완료:\n{out_path}")
-        except Exception as e:
-            messagebox.showerror("오류", f"PDF 저장 실패: {e}")
-
-
-    def _help_entries(self):
-        """지표 설명 (title, desc) 목록. show_help() 팝업과 PDF 리포트가 공유해서 쓴다."""
-        helps = [
-            ("구조", "이 앱은 주문 전용입니다. 실시간 계산(지표/점수)과 계좌(잔고/포지션/강제청산)는 "
-                    "trading_server.py 가 담당하고, 이 앱은 서버가 갱신하는 CSV를 읽어 표시하며 "
-                    "주문 명령만 보냅니다. 이 앱을 꺼도 포지션은 서버가 계속 감시합니다."),
-            ("카드 색깔", "🟢 초록=롱 신호(long_score≥컷) | 🔴 빨강=숏 신호(short_score≥컷) | "
-                        "🔵 파랑=매집(prepump_score≥80) | 🟣 보라=분산(preshort_score≥80) | "
-                        "🟠 살구=컷은 넘었지만 v5 필터에 막힘(⚠️ 표시 참고) | "
-                        "🟡 노랑=관심(65점은 넘었지만 진입 컷 미달, 참고만 할 것) | 흰색=신호 없음. "
-                        "롱/숏이 매집/분산보다 우선순위 높음(둘 다 해당하면 롱/숏 색이 뜸)."),
-            ("필터 적용 체크박스", "v5 하드필터(EMA/OI 방향 일치, CVD 방향 일치, VolZ<2.0, 30분모멘텀 조건, "
-                        "유동성 통과)를 롱/숏 색칠에 적용할지 직접 켜고 끌 수 있다. 서버는 필터로 "
-                        "점수를 강제로 0점 처리하지 않고 원점수와 필터 통과여부를 같이 내려주므로, "
-                        "체크박스를 껐다 켰다 하면서 필터가 실제로 성능에 도움되는지 바로 비교해볼 수 "
-                        "있다. 켜져 있을 때 컷은 넘었지만 필터에 걸려 색이 안 뜬 코인은 카드 첫 줄에 "
-                        "⚠️롱필터/⚠️숏필터 표시가 붙는다(체크 여부와 무관하게 항상 표시)."),
-            ("거시 필터 (BTC추세/공포탐욕)", "개별 코인 지표만으론 '시장 전체가 한 번에 롤오버하는' 리스크를 "
-                        "못 잡아서 추가했다. BTC 자체의 EMA 추세와 alternative.me 공포탐욕지수(0~100, "
-                        "하루 1회 갱신)를 화면 상단 오른쪽에 항상 표시한다(위험 상태면 주황색+⚠️). "
-                        "롱 진입은 BTC가 완전 하락추세거나 공포탐욕지수≥80(극단적 탐욕, 조정 위험)이면 "
-                        "거부되고, 숏 진입은 BTC가 완전 상승추세거나 공포탐욕지수≤20(극단적 공포, 반등 "
-                        "위험)이면 거부된다 — 개별 신호가 아무리 좋아도 이 상태면 진입이 막힌다."),
-            ("현재가", "바이낸스 선물 최종 체결가(USD) 기준. 괄호 안은 빗썸 원화 실시간 가격. "
-                      "바이낸스 미상장 코인은 N/A로 표시. 두 가격 차이는 김치프리미엄."),
-            ("RSI", "상대강도지수(0~100). 30 이하 과매도(롱 유리), 70 이상 과매수(숏 유리). "
-                    "괄호 안은 5캔들 전 대비 변화량(RSI△, 표시용, v3에서 점수 미반영)."),
-            ("BB%", "볼린저밴드 폭 대비 가격 위치. 0%=하단 밴드, 100%=상단 밴드. "
-                    "마이너스면 하단 밴드 아래로 이탈(극단적 과매도→롱 유리), "
-                    "100% 초과면 상단 이탈(극단적 과매수→숏 유리)."),
-            ("VolZ", "거래량 Z-스코어. 최근 20캔들 평균 대비 현재 캔들 거래량이 얼마나 튀는지. "
-                     "롱/숏 Score 반영(v3): 2.0 이상→15점, 1.2 이상→10점, 그 외→3점."),
-            ("CVD", "누적 볼륨 델타(최근 2시간, OHLCV 추정). +면 매수세 우위, -면 매도세 우위."),
-            ("30m%", "최근 30분간 가격 변동률. 롱은 0.5~2.5%가 만점(안정적 양봉), "
-                     "4% 초과는 과열(꼬리물림 위험)로 감점. 숏은 대칭(음수 구간)."),
-            ("ATR%", "1시간봉 기준 평균 변동폭(현재가 대비 %). v3에서는 등급 점수가 아니라 "
-                     "24h거래대금과 묶어 '최소 유동성 필터'로만 쓰인다(통과 시 5점, 미통과 0점). "
-                     "전 코인 평균 ATR%로 진입 컷도 자동 조정됨(추세장 70 / 보통 75 / 횡보장 80)."),
-            ("OI%", "미체결약정 1시간 변동률. ΔOI≥3%→15점, ≥1%→7점, 그 외 0점(v3, 방향/CVD게이팅 없이 "
-                    "OI 자체 증가 강도만 봄)."),
-            ("L/S", "바이낸스 전체 계정 롱/숏 비율. 표시용이며 롱/숏 Score엔 미반영(v3에서 제외됨). "
-                    "매집/분산(prepump/preshort) 점수의 '포지션 역발상' 25점 항목에서만 쓰인다 — "
-                    "롱 쏠림(개미 과열)이면 분산(숏 매집)에 가점, 숏 쏠림이면 매집(롱 매집)에 가점."),
-            ("Fund", "펀딩레이트(%). +면 롱 과열, -면 숏 과열. 표시용이며 어떤 점수에도 미반영(v3에서 제외됨)."),
-            ("롱/숏 Score", f"85점 만점(v6, 추세추종형): EMA+가격위치 30(정배열 초입=30 / 안 뻗은 정배열=25 / "
-                          f"이미 과열 추격=12 / 눌림목=18) + OI Synergy 20(가격·OI 방향 일치) + CVD 10 "
-                          f"+ RSI+BB%% 필터 10(RSI_delta 폭발적이면 감점) + VolZ 5 + 30분모멘텀 5 "
-                          f"+ ATR/거래대금 유동성필터 5 → /85×100 환산. "
-                          f"진입 컷은 시장 상태에 따라 70(추세장)~80(횡보장) 자동 조정(현재 {current_min_score}점, "
-                          f"참고용 관심선 {watch_current_min_score}점). 필터 체크박스가 켜져 있으면 EMA/OI 방향일치, "
-                          f"CVD 방향일치, VolZ<2.0, 30분모멘텀 조건, 유동성 통과까지 5개를 다 만족해야만 "
-                          f"컷 이상이어도 초록/빨강으로 색칠된다(하나라도 걸리면 ⚠️필터 표시만 뜨고 살구색)."),
-            ("매집/분산", f"prepump_score(매집)/preshort_score(분산), 100점 만점(v2): 고래매집/분산(CVD+RSI 히든 "
-                        f"다이버전스) 35 + 포지션역발상(L/S) 25 + 가격정체(볼린저밴드폭 압축) 20 + 수급선행(VolZ) 20. "
-                        f"'아직 안 터졌지만 거래량만 몰래 붙는' 구간을 찾는 신호라 롱/숏 Score와는 배점 구조가 다름. "
-                        f"컷 {pp_current_min_score}점 이상이면 카드 색칠(파랑=매집, 보라=분산)."),
-            ("Predict Score (P##)", "포지션 카드의 'Cross Nx' 옆 P##▲▼ 표시. 지금 수익(PNL)과는 완전 별개로, "
-                        "'보유 방향이 앞으로도 유지될지'만 100점 만점(v2, 차감식)으로 예측한 값이다 — "
-                        "가격 기울기(Slope) 30 + 가속도(Acceleration) 25 + CVD 방향일치 20 "
-                        "+ EMA 방향일치 15 + Level(진입 당시 원본 점수) 10. "
-                        "Slope/Accel은 점수가 아니라 '가격 자체'의 최근 변화 추세를 본다 — "
-                        "기울기가 유지/가속되면 고득점, 완만해지거나 CVD가 반대로 틀면 감점. "
-                        "화살표는 ▲유리한 방향 유지/▼불리하게 전환/‒횡보. 점수가 낮으면(특히 50 미만) "
-                        "지금 수익이 나 있어도 우측에 PRED⚠ 경고가 뜬다 — 이건 오류가 아니라, "
-                        "'수익 중일 때일수록 근거가 식어가는 걸 미리 알려주는' 게 원래 목적이다. "
-                        "히스토리가 아직 안 쌓인 직후(서버/앱 재시작 직후)엔 중간값으로 보수적 처리된다."),
-            ("카드 조작", "탭 1번: 티커 자동 입력. 더블탭: 상단 고정/해제. "
-                        "고정 코인은 [코인명]으로 표시되고 항상 맨 위."),
-            ("포지션 패널", "화면 하단 검은 패널. 한 번에 최대 2개 표시, 나머지는 위아래 드래그로 스크롤. "
-                          "카드 탭 → 티커 자동 입력, Close 버튼 → 즉시 청산, "
-                          "청산가는 증거금 소진 지점(진입가 ∓ 진입가/배율)."),
-        ]
-        return helps
-
     def show_help(self):
         """각 지표에 대한 설명 팝업 (스크롤 가능)"""
         if getattr(self, 'help_win', None) and self.help_win.winfo_exists():
@@ -2019,7 +1320,60 @@ class TradingClient:
             canvas.yview_moveto(max(0.0, min(1.0, drag["top"] - (dy / h) * yspan)))
         wrap = max(sw - 40, 200)
         fs = self.ui_font_base
-        helps = self._help_entries()
+        helps = [
+            ("구조", "이 앱은 주문 전용입니다. 실시간 계산(지표/점수)과 계좌(잔고/포지션/강제청산)는 "
+                    "trading_server.py 가 담당하고, 이 앱은 서버가 갱신하는 CSV를 읽어 표시하며 "
+                    "주문 명령만 보냅니다. 이 앱을 꺼도 포지션은 서버가 계속 감시합니다."),
+            ("카드 색깔", "🟢 초록=롱 신호(long_score≥컷) | 🔴 빨강=숏 신호(short_score≥컷) | "
+                        "🔵 파랑=매집(prepump_score≥80) | 🟣 보라=분산(preshort_score≥80) | "
+                        "🟡 노랑=관심(65점은 넘었지만 진입 컷 미달, 참고만 할 것) | 흰색=신호 없음. "
+                        "롱/숏이 매집/분산보다 우선순위 높음(둘 다 해당하면 롱/숏 색이 뜸)."),
+            ("현재가", "바이낸스 선물 최종 체결가(USD) 기준. 괄호 안은 빗썸 원화 실시간 가격. "
+                      "바이낸스 미상장 코인은 N/A로 표시. 두 가격 차이는 김치프리미엄."),
+            ("RSI", "상대강도지수(0~100). 30 이하 과매도(롱 유리), 70 이상 과매수(숏 유리). "
+                    "괄호 안은 5캔들 전 대비 변화량(RSI△, 표시용, v3에서 점수 미반영)."),
+            ("BB%", "볼린저밴드 폭 대비 가격 위치. 0%=하단 밴드, 100%=상단 밴드. "
+                    "마이너스면 하단 밴드 아래로 이탈(극단적 과매도→롱 유리), "
+                    "100% 초과면 상단 이탈(극단적 과매수→숏 유리)."),
+            ("VolZ", "거래량 Z-스코어. 최근 20캔들 평균 대비 현재 캔들 거래량이 얼마나 튀는지. "
+                     "롱/숏 Score 반영(v3): 2.0 이상→15점, 1.2 이상→10점, 그 외→3점."),
+            ("CVD", "누적 볼륨 델타(최근 2시간, OHLCV 추정). +면 매수세 우위, -면 매도세 우위."),
+            ("30m%", "최근 30분간 가격 변동률. 롱은 0.5~2.5%가 만점(안정적 양봉), "
+                     "4% 초과는 과열(꼬리물림 위험)로 감점. 숏은 대칭(음수 구간)."),
+            ("ATR%", "1시간봉 기준 평균 변동폭(현재가 대비 %). v3에서는 등급 점수가 아니라 "
+                     "24h거래대금과 묶어 '최소 유동성 필터'로만 쓰인다(통과 시 5점, 미통과 0점). "
+                     "전 코인 평균 ATR%로 진입 컷도 자동 조정됨(추세장 70 / 보통 75 / 횡보장 80)."),
+            ("OI%", "미체결약정 1시간 변동률. ΔOI≥3%→15점, ≥1%→7점, 그 외 0점(v3, 방향/CVD게이팅 없이 "
+                    "OI 자체 증가 강도만 봄)."),
+            ("L/S", "바이낸스 전체 계정 롱/숏 비율. 표시용이며 롱/숏 Score엔 미반영(v3에서 제외됨). "
+                    "매집/분산(prepump/preshort) 점수의 '포지션 역발상' 25점 항목에서만 쓰인다 — "
+                    "롱 쏠림(개미 과열)이면 분산(숏 매집)에 가점, 숏 쏠림이면 매집(롱 매집)에 가점."),
+            ("Fund", "펀딩레이트(%). +면 롱 과열, -면 숏 과열. 표시용이며 어떤 점수에도 미반영(v3에서 제외됨)."),
+            ("롱/숏 Score", f"105점 만점(v3, 추세추종형): EMA삼중(20/60/120) 20 + 가격위치(RSI+BB% 결합) 20 "
+                          f"+ CVD 15 + OI 15 + VolZ 15 + 30분모멘텀 15 + ATR/거래대금 유동성필터 5 → /105×100 환산. "
+                          f"L/S·Funding·RSIDelta는 '노이즈 유발'로 v3에서 완전 제외. "
+                          f"진입 컷은 시장 상태에 따라 70(추세장)~80(횡보장) 자동 조정(현재 {current_min_score}점, "
+                          f"참고용 관심선 {watch_current_min_score}점), 컷 이상이면 카드 색칠 (초록=롱, 빨강=숏)."),
+            ("매집/분산", f"prepump_score(매집)/preshort_score(분산), 100점 만점(v2): 고래매집/분산(CVD+RSI 히든 "
+                        f"다이버전스) 35 + 포지션역발상(L/S) 25 + 가격정체(볼린저밴드폭 압축) 20 + 수급선행(VolZ) 20. "
+                        f"'아직 안 터졌지만 거래량만 몰래 붙는' 구간을 찾는 신호라 롱/숏 Score와는 배점 구조가 다름. "
+                        f"컷 {pp_current_min_score}점 이상이면 카드 색칠(파랑=매집, 보라=분산)."),
+            ("Predict Score (P##)", "포지션 카드의 'Cross Nx' 옆 P##▲▼ 표시. 지금 수익(PNL)과는 완전 별개로, "
+                        "'보유 방향이 앞으로도 유지될지'만 100점 만점(v2, 차감식)으로 예측한 값이다 — "
+                        "가격 기울기(Slope) 30 + 가속도(Acceleration) 25 + CVD 방향일치 20 "
+                        "+ EMA 방향일치 15 + Level(진입 당시 원본 점수) 10. "
+                        "Slope/Accel은 점수가 아니라 '가격 자체'의 최근 변화 추세를 본다 — "
+                        "기울기가 유지/가속되면 고득점, 완만해지거나 CVD가 반대로 틀면 감점. "
+                        "화살표는 ▲유리한 방향 유지/▼불리하게 전환/‒횡보. 점수가 낮으면(특히 50 미만) "
+                        "지금 수익이 나 있어도 우측에 PRED⚠ 경고가 뜬다 — 이건 오류가 아니라, "
+                        "'수익 중일 때일수록 근거가 식어가는 걸 미리 알려주는' 게 원래 목적이다. "
+                        "히스토리가 아직 안 쌓인 직후(서버/앱 재시작 직후)엔 중간값으로 보수적 처리된다."),
+            ("카드 조작", "탭 1번: 티커 자동 입력. 더블탭: 상단 고정/해제. "
+                        "고정 코인은 [코인명]으로 표시되고 항상 맨 위."),
+            ("포지션 패널", "화면 하단 검은 패널. 한 번에 최대 2개 표시, 나머지는 위아래 드래그로 스크롤. "
+                          "카드 탭 → 티커 자동 입력, Close 버튼 → 즉시 청산, "
+                          "청산가는 증거금 소진 지점(진입가 ∓ 진입가/배율)."),
+        ]
         for title, desc in helps:
             t = tk.Label(inner, text=f"■ {title}", font=("Arial", fs, "bold"), anchor="w", fg="#1a5fb4")
             t.pack(fill="x", padx=8, pady=(8, 0))
