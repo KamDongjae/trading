@@ -1316,6 +1316,7 @@ def process_ticker(ticker):
             "box_high": round(box_high, 8) if box_high is not None else None,
             "box_low": round(box_low, 8) if box_low is not None else None,
             "recent_pct": round(recent_pct, 3),
+            "extension_pct": round(extension_pct, 3) if extension_pct is not None else None,
             "components": components,
         }
     except Exception as e:
@@ -1645,15 +1646,23 @@ _REPORT_INDICATORS = [
     ("OI Delta%", lambda r: _report_fmt_num(r.get('oi_change_pct', 0), 2)),
     ("30m Delta%", lambda r: _report_fmt_num(r.get('chg_30m', 0), 2)),
     ("L/S", lambda r: f"{r['ls_ratio']:.2f}" if r.get('ls_ratio') else "N/A"),
+    ("Ext%", lambda r: _report_fmt_num(r.get('extension_pct', 0), 2)),
     ("Funding%", lambda r: _report_fmt_num(r.get('funding', 0), 3)),
     ("24h Volume(M)", lambda r: f"{r.get('vol_24h_m', 0):,.0f}"),
     ("EMA20", lambda r: _report_fmt_price(r.get('ema20'))),
     ("EMA60", lambda r: _report_fmt_price(r.get('ema60'))),
     ("EMA120", lambda r: _report_fmt_price(r.get('ema120'))),
-    ("Long Score", lambda r: str(r.get('long_score', 0))),
-    ("Short Score", lambda r: str(r.get('short_score', 0))),
-    ("Prepump Score", lambda r: str(r.get('prepump_score', 0))),
-    ("Preshort Score", lambda r: str(r.get('preshort_score', 0))),
+    ("ema_l", lambda r: str(r.get('components', {}).get('ema_l', 0))),
+    ("ema_s", lambda r: str(r.get('components', {}).get('ema_s', 0))),
+    ("pp_l", lambda r: str(r.get('components', {}).get('pp_l', 0))),
+    ("pp_s", lambda r: str(r.get('components', {}).get('pp_s', 0))),
+    ("cvd_l", lambda r: str(r.get('components', {}).get('cvd_l', 0))),
+    ("cvd_s", lambda r: str(r.get('components', {}).get('cvd_s', 0))),
+    ("oi_sc", lambda r: str(r.get('components', {}).get('oi_sc', 0))),
+    ("m30_l", lambda r: str(r.get('components', {}).get('m30_l', 0))),
+    ("m30_s", lambda r: str(r.get('components', {}).get('m30_s', 0))),
+    ("volz_sc", lambda r: str(r.get('components', {}).get('volz_sc', 0))),
+    ("liquidity_sc", lambda r: str(r.get('components', {}).get('liquidity_sc', 0))),
 ]
 
 _REPORT_DESCRIPTIONS = [
@@ -1667,14 +1676,20 @@ _REPORT_DESCRIPTIONS = [
     ("ATR%", "Average True Range on the current base candle (% of price). Feeds the liquidity filter."),
     ("OI Delta%", "Open Interest change rate over the last base candle. Used raw (no direction gating) in v3."),
     ("30m Delta%", "Price change over the last 30 minutes, independent of the base candle interval."),
-    ("L/S", "Binance-wide account long/short ratio. Used in the accumulation/distribution 'position contrarian' score."),
-    ("Funding%", "Funding rate (%). Display only — not used in any score as of v3."),
-    ("24h Volume(M)", "24h cumulative trading value (millions KRW). Feeds the liquidity filter and 매집/분산 sizing."),
+    ("L/S", "Binance-wide account long/short ratio. Display only in Long/Short Score v3 (used in the accumulation/distribution scoring instead)."),
+    ("Ext%", "How far price has already moved over the last 10 candles (%). Not used directly in v3 scoring, shown for reference."),
+    ("Funding%", "Funding rate (%). Display only - not used in any score as of v3."),
+    ("24h Volume(M)", "24h cumulative trading value (millions KRW). Feeds the liquidity filter."),
     ("EMA20/60/120", "Exponential moving averages on the base candle. EMA20>60>120 = uptrend alignment."),
-    ("Long/Short Score", "105-point trend-following score (v3), normalized to 0-100. See in-app '설명' tab for full breakdown."),
-    ("Prepump/Preshort Score", "100-point long-cycle accumulation/distribution score (v3) — OI persistence, cumulative CVD, "
-                                "EMA compression, ATR, VolZ, box position, RSI, recent-move penalty. Different logic than Long/Short Score: "
-                                "EMA 'alignment' is actually penalized here (treated as accumulation already finished)."),
+    ("ema_l / ema_s", "Long/Short Score component (max 20): EMA20/60/120 triple-alignment check. "
+                       "Full marks = perfect alignment + price above EMA20, partial = pullback zone, 0 = reverse alignment."),
+    ("pp_l / pp_s", "Long/Short Score component (max 20): combined RSI+BB% price-position condition."),
+    ("cvd_l / cvd_s", "Long/Short Score component (max 15): CVD direction match (full/partial/none)."),
+    ("oi_sc", "Long/Short Score component (max 15). Raw OI 1h change-rate tier, direction-agnostic in v3 - "
+              "the same value is added to both the long and short totals (no price-direction gating)."),
+    ("m30_l / m30_s", "Long/Short Score component (max 15): 30-minute momentum tier (healthy range scores highest, overheated range is penalized)."),
+    ("volz_sc", "Long/Short Score component (max 15, shared by long/short): VolZ tier."),
+    ("liquidity_sc", "Long/Short Score component (max 5, shared): ATR + 24h volume liquidity pass/fail filter."),
 ]
 
 def _report_draw_table(pdf, rows, title):
