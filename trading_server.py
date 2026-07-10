@@ -34,7 +34,7 @@ MIN_SCORE = 75  # 기본 진입 컷("일반장 진입"). 개편안 v2 권장 기
                  # 시장 상태(평균 ATR%)에 따라 70(추세장)~80(횡보장)로 자동 조정됨
 WATCH_MIN_SCORE = 65  # "관심" 참고용 하한선. 실제 진입 필터(current_min_score)에는 안 쓰고 클라이언트 표시용으로만 내려준다.
 INITIAL_BALANCE = 10000  # USD (달러 기준 계좌)
-DEFAULT_LEVERAGE = 5
+DEFAULT_LEVERAGE = 10
 FEE_RATE = 0.0004
 SLIPPAGE_RATE = 0.003
 # 크로스 마진 모드: 바이낸스 크로스 마진처럼, 개별 포지션 손실이 그 포지션에 배정한
@@ -1313,6 +1313,9 @@ def process_ticker(ticker):
             "ema20": round(ema20, 8) if ema20 is not None else None,
             "ema60": round(ema60, 8) if ema60 is not None else None,
             "ema120": round(ema120, 8) if ema120 is not None else None,
+            "box_high": round(box_high, 8) if box_high is not None else None,
+            "box_low": round(box_low, 8) if box_low is not None else None,
+            "recent_pct": round(recent_pct, 3),
             "components": components,
         }
     except Exception as e:
@@ -1417,6 +1420,8 @@ MARKET_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_market.csv")
 ACCOUNT_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_account.csv")
 CMD_DIR = os.path.join(SCRIPT_DIR, "server_cmds")
 RESULTS_FILE = os.path.join(SCRIPT_DIR, "server_results.csv")
+REPORT_SAVE_DIR = SCRIPT_DIR  # PDF 리포트 저장 경로. 기본값은 SCRIPT_DIR(안드로이드 공용 문서함).
+                               # srv_set_report_dir()로 실행 중에도 바꿀 수 있다.
 os.makedirs(CMD_DIR, exist_ok=True)
 
 def _atomic_write_csv(path, rows):
@@ -1673,39 +1678,46 @@ _REPORT_DESCRIPTIONS = [
 ]
 
 def _report_draw_table(pdf, rows, title):
-    from fpdf import FPDF  # noqa: F401 (호출부에서 이미 import 확인함)
+    full_w = pdf.w - pdf.l_margin - pdf.r_margin
     pdf.set_font('Helvetica', 'B', 14)
-    pdf.cell(0, 8, title, ln=1)
+    pdf.cell(full_w, 8, title, ln=1)
     pdf.ln(1)
     if not rows:
         pdf.set_font('Helvetica', '', 10)
-        pdf.cell(0, 6, "(no data)", ln=1)
+        pdf.cell(full_w, 6, "(no data)", ln=1)
         return
     n_cols = len(rows)
     label_w = 32
-    page_w = pdf.w - pdf.l_margin - pdf.r_margin
-    col_w = max((page_w - label_w) / n_cols, 18)
+    col_w = max((full_w - label_w) / n_cols, 18)
     row_h = 5
 
     pdf.set_font('Helvetica', 'B', 8)
+    pdf.set_x(pdf.l_margin)
     pdf.cell(label_w, row_h, "Indicator", border=1)
     for r in rows:
-        pdf.cell(col_w, row_h, str(r.get('ticker', '')), border=1, align='C')
+        txt = str(r.get('ticker', ''))[:10]
+        pdf.cell(col_w, row_h, txt, border=1, align='C')
     pdf.ln(row_h)
 
     pdf.set_font('Helvetica', '', 7)
     for label, fn in _REPORT_INDICATORS:
+        pdf.set_x(pdf.l_margin)
         pdf.cell(label_w, row_h, label, border=1)
         for r in rows:
             try:
-                val = fn(r)
+                val = str(fn(r))
             except Exception:
                 val = "N/A"
-            pdf.cell(col_w, row_h, str(val), border=1, align='C')
+            pdf.cell(col_w, row_h, val[:16], border=1, align='C')
         pdf.ln(row_h)
 
-def srv_generate_report():
-    """서버가 들고 있는 현재 스코어 스냅샷으로 Long/Short Top10 지표 리포트(PDF)를 만든다."""
+def srv_generate_report(save_dir=None):
+    """
+    서버가 들고 있는 현재 스코어 스냅샷으로 Long/Short Top10 지표 리포트(PDF)를 만든다.
+    save_dir을 안 주면 REPORT_SAVE_DIR(기본: 안드로이드 공용 문서함)에 저장한다.
+    각 섹션(표/설명)을 개별 try/except로 감싸서, 한 섹션에서 에러가 나도 나머지는
+    최대한 정상적으로 만들어 저장한다(전부 날리지 않음).
+    """
     try:
         from fpdf import FPDF
     except ImportError:
@@ -1720,33 +1732,70 @@ def srv_generate_report():
     top_short = sorted(rows, key=lambda r: r.get('short_score', 0), reverse=True)[:10]
     ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
+    out_dir = save_dir or REPORT_SAVE_DIR
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except Exception as e:
+        return False, f"저장 경로를 만들 수 없습니다: {out_dir} ({e})"
+
     try:
         pdf = FPDF(orientation='L', unit='mm', format='A3')
+        pdf.set_margins(10, 10, 10)
         pdf.set_auto_page_break(True, margin=10)
 
-        pdf.add_page()
-        _report_draw_table(pdf, top_long, f"Top 10 by Long Score ({ts})")
+        try:
+            pdf.add_page()
+            _report_draw_table(pdf, top_long, f"Top 10 by Long Score ({ts})")
+        except Exception as e:
+            print(f"⚠️ 리포트 Long 표 생성 실패(건너뜀): {e}")
 
-        pdf.add_page()
-        _report_draw_table(pdf, top_short, f"Top 10 by Short Score ({ts})")
+        try:
+            pdf.add_page()
+            _report_draw_table(pdf, top_short, f"Top 10 by Short Score ({ts})")
+        except Exception as e:
+            print(f"⚠️ 리포트 Short 표 생성 실패(건너뜀): {e}")
 
-        pdf.add_page()
-        pdf.set_font('Helvetica', 'B', 14)
-        pdf.cell(0, 8, f"Indicator Descriptions ({len(_REPORT_DESCRIPTIONS)} items)", ln=1)
-        pdf.ln(2)
-        for name, desc in _REPORT_DESCRIPTIONS:
-            pdf.set_font('Helvetica', 'B', 10)
-            pdf.multi_cell(0, 5, f"- {name}")
-            pdf.set_font('Helvetica', '', 9)
-            pdf.multi_cell(0, 5, desc)
-            pdf.ln(1)
+        try:
+            full_w = pdf.w - pdf.l_margin - pdf.r_margin
+            pdf.add_page()
+            pdf.set_font('Helvetica', 'B', 14)
+            pdf.cell(full_w, 8, f"Indicator Descriptions ({len(_REPORT_DESCRIPTIONS)} items)", ln=1)
+            pdf.ln(2)
+            for name, desc in _REPORT_DESCRIPTIONS:
+                try:
+                    pdf.set_font('Helvetica', 'B', 10)
+                    pdf.multi_cell(full_w, 5, f"- {name}")
+                    pdf.set_font('Helvetica', '', 9)
+                    pdf.multi_cell(full_w, 5, desc)
+                    pdf.ln(1)
+                except Exception as e:
+                    print(f"⚠️ 리포트 설명 항목 '{name}' 건너뜀: {e}")
+        except Exception as e:
+            print(f"⚠️ 리포트 설명 페이지 생성 실패(건너뜀): {e}")
 
         fname = f"indicator_report_{datetime.now():%Y%m%d_%H%M%S}.pdf"
-        path = os.path.join(SCRIPT_DIR, fname)
+        path = os.path.join(out_dir, fname)
         pdf.output(path)
-        return True, f"리포트 생성 완료: {fname}"
+        return True, f"리포트 생성 완료: {path}"
     except Exception as e:
         return False, f"리포트 생성 실패: {e}"
+
+def srv_set_report_dir(new_dir):
+    """PDF 리포트 저장 경로를 바꾼다. 실제로 쓸 수 있는 폴더인지(생성+쓰기 테스트) 확인 후 반영."""
+    global REPORT_SAVE_DIR
+    new_dir = (new_dir or "").strip()
+    if not new_dir:
+        return False, "경로가 비어있습니다"
+    try:
+        os.makedirs(new_dir, exist_ok=True)
+        test_path = os.path.join(new_dir, ".write_test")
+        with open(test_path, 'w') as f:
+            f.write("ok")
+        os.remove(test_path)
+    except Exception as e:
+        return False, f"이 경로에 쓸 수 없습니다: {new_dir} ({e})"
+    REPORT_SAVE_DIR = new_dir
+    return True, f"리포트 저장 경로를 변경했습니다: {new_dir}"
 
 def srv_open(ticker, position_type, amount_won, leverage):
     global balance
@@ -2026,7 +2075,8 @@ def process_commands():
             if not row or len(row) < 2:
                 os.remove(path); continue
             cmd_id, action = row[0], row[1]
-            ticker = row[2].strip().upper() if len(row) > 2 else ''
+            raw_ticker = row[2].strip() if len(row) > 2 else ''
+            ticker = raw_ticker.upper()
             amount = round(float(row[3]), 2) if len(row) > 3 and row[3] else 0
             lev = int(float(row[4])) if len(row) > 4 and row[4] else DEFAULT_LEVERAGE
             ptype = row[5] if len(row) > 5 else 'long'
@@ -2052,6 +2102,8 @@ def process_commands():
                 ok, msg = srv_set_margin_mode(ticker)
             elif action == 'generate_report':
                 ok, msg = srv_generate_report()
+            elif action == 'set_report_dir':
+                ok, msg = srv_set_report_dir(raw_ticker)
             else:
                 ok, msg = False, f"알 수 없는 명령: {action}"
             append_result(cmd_id, 'ok' if ok else 'fail', msg)

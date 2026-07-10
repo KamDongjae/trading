@@ -14,7 +14,7 @@ from collections import deque
 # ============================================================
 # 저장 경로
 # ============================================================
-DEFAULT_LEVERAGE = 5
+DEFAULT_LEVERAGE = 10
 FALLBACK_MIN_SCORE = 75
 FALLBACK_PP_MIN_SCORE = 80
 FALLBACK_WATCH_MIN_SCORE = 65
@@ -282,6 +282,10 @@ class TradingClient:
                               relief="raised", bd=1, cursor="hand2", padx=6, pady=1)
         btn_report.pack(side="left", padx=4)
         btn_report.bind("<ButtonRelease-1>", lambda e: self.generate_report())
+        btn_report_dir = tk.Label(row1, text="경로수정", bg="#3f4349", fg="white", font=("Arial", FONT_BTN, "bold"),
+                                  relief="raised", bd=1, cursor="hand2", padx=6, pady=1)
+        btn_report_dir.pack(side="left", padx=4)
+        btn_report_dir.bind("<ButtonRelease-1>", lambda e: self.set_report_dir())
         btn_reset = tk.Label(row1, text="리셋", bg="#aa3333", fg="white", font=("Arial", FONT_BTN, "bold"),
                              relief="raised", bd=1, cursor="hand2", padx=6, pady=1)
         btn_reset.pack(side="left", padx=4)
@@ -1200,6 +1204,15 @@ class TradingClient:
 
     def generate_report(self):
         self._send_and_wait('generate_report', label="리포트 생성")
+
+    def set_report_dir(self):
+        new_dir = simpledialog.askstring(
+            "리포트 저장 경로 변경",
+            "PDF 리포트를 저장할 폴더 경로를 입력하세요:\n"
+            "(기본값은 안드로이드 공용 문서함 — 예: /storage/emulated/0/Documents)"
+        )
+        if new_dir and new_dir.strip():
+            self._send_and_wait('set_report_dir', ticker=new_dir.strip(), label="리포트 경로 변경")
 
     def add_funds(self):
         amount = simpledialog.askfloat(
