@@ -1671,27 +1671,6 @@ class TradingClient:
                 messagebox.showinfo("Leverage", f"{ticker} 현재 배율: {p['leverage']}x\n(배율 변경은 신규 진입 시 설정하세요.)")
                 return
 
-    def _find_korean_font(self):
-        """
-        fpdf2의 기본 내장 폰트(Helvetica 등)는 한글을 지원하지 않아서, 실제
-        한글이 들어간 TTF 폰트 파일 경로를 찾아야 한다. 기기마다 폰트 경로가
-        달라서 흔한 위치들을 순서대로 찾아보고, 다 없으면 스크립트 폴더에
-        사용자가 직접 넣어둔 폰트를 쓰도록 안내한다.
-        """
-        candidates = [
-            os.path.join(SCRIPT_DIR, "NanumGothic.ttf"),
-            os.path.join(SCRIPT_DIR, "font.ttf"),
-            "/system/fonts/NotoSansCJK-Regular.ttc",
-            "/system/fonts/NotoSansKR-Regular.otf",
-            "/system/fonts/NanumGothic.ttf",
-            "/data/data/com.termux/files/usr/share/fonts/TTF/NanumGothic.ttf",
-            "/data/data/com.termux/files/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
-        ]
-        for p in candidates:
-            if os.path.exists(p):
-                return p
-        return None
-
     def export_indicator_report_pdf(self):
         """
         버튼 클릭 시 PDF 리포트 생성:
@@ -1716,13 +1695,8 @@ class TradingClient:
             messagebox.showwarning("경고", "아직 표시할 마켓 데이터가 없습니다.")
             return
 
-        font_path = self._find_korean_font()
-        if not font_path:
-            messagebox.showerror("오류",
-                "한글 폰트를 찾지 못했습니다. fpdf2 기본 폰트는 한글을 지원하지 않습니다.\n"
-                "나눔고딕 등 무료 한글 TTF 폰트를 내려받아 다음 경로에 NanumGothic.ttf로 저장한 뒤 "
-                f"다시 시도해주세요:\n{SCRIPT_DIR}/NanumGothic.ttf")
-            return
+        # PDF 내용을 전부 영어로 바꾼 뒤로는 fpdf2 기본 내장 폰트(Helvetica)만으로 충분해서,
+        # 한글 TTF 폰트를 따로 찾아 설치할 필요가 없어졌다.
 
         top_long = sorted(data, key=lambda r: r.get('long_score', 0), reverse=True)[:10]
         top_short = sorted(data, key=lambda r: r.get('short_score', 0), reverse=True)[:10]
@@ -1739,98 +1713,107 @@ class TradingClient:
         # 3번째 값(설명)은 3페이지 이후 "지표 설명"에 그대로 쓰여서, 표에 실제로
         # 나오는 44개 행과 설명이 1:1로 절대 안 어긋나게 한다.
         indicator_rows = [
-            ("현재가(USD)", fmt_price, "바이낸스 선물 최종 체결가(USD)."),
-            # --- 원시 지표 ---
+            ("Price(USD)", fmt_price, "Binance futures last traded price (USD)."),
+            # --- raw indicators ---
             ("RSI", lambda r: f"{r.get('rsi', 0):.1f}",
-             "상대강도지수(0~100). 70 이상 과매수, 30 이하 과매도."),
-            ("RSIΔ", lambda r: f"{r.get('rsi_delta', 0):+.1f}",
-             "5봉 전 대비 RSI 변화량. 값이 크면(폭발적) 급등/급락 직후라는 뜻."),
+             "Relative Strength Index (0-100). 70+ overbought, 30- oversold."),
+            ("RSI Delta", lambda r: f"{r.get('rsi_delta', 0):+.1f}",
+             "RSI change vs. 5 candles ago. A large value means a sharp move just happened."),
             ("VolZ", lambda r: f"{r.get('vol_z', 0):+.1f}",
-             "거래량 Z-score. 최근 20봉 평균 대비 지금 거래량이 얼마나 튀는지. "
-             "높을수록 '이미 거래량이 터진' 상태(추격 위험)."),
+             "Volume Z-score: how much current volume deviates from the last 20-candle average. "
+             "Higher means volume has 'already spiked' (chasing risk)."),
             ("BB%", lambda r: f"{r.get('bb_percent', 0):.0f}",
-             "볼린저밴드 폭 대비 가격 위치(0~100%). 0=하단밴드, 100=상단밴드."),
-            ("CVDΔ", lambda r: f"{r.get('cvd_diff', 0):+.2f}",
-             "최근 2봉 CVD(누적볼륨델타) 변화량. +면 매수세 우위, -면 매도세 우위."),
+             "Price position within Bollinger Bands (0-100%). 0=lower band, 100=upper band."),
+            ("CVD Delta", lambda r: f"{r.get('cvd_diff', 0):+.2f}",
+             "Cumulative Volume Delta change over the last 2 candles. + means buyers dominant, - means sellers."),
             ("ATR%", lambda r: f"{r.get('atr_pct', 0):.2f}",
-             "1시간봉 기준 평균 변동폭(현재가 대비 %). 변동성/유동성 필터에 쓰인다."),
-            ("OIΔ%", lambda r: f"{r.get('oi_change_pct', 0):+.2f}",
-             "미체결약정(OI) 1시간 변동률. 가격 방향과 조합해 '진짜 신규 유입'인지 판단."),
-            ("30mΔ%", lambda r: f"{r.get('chg_30m', 0):+.2f}",
-             "최근 30분간 가격 변동률. 이미 많이 움직였으면(과열) 추격 매수/매도 위험 신호."),
+             "Average True Range on the 1h candle (% of price). Used for the volatility/liquidity filter."),
+            ("OI Delta%", lambda r: f"{r.get('oi_change_pct', 0):+.2f}",
+             "Open Interest 1h change rate. Combined with price direction to judge 'genuine new inflow'."),
+            ("30m Delta%", lambda r: f"{r.get('chg_30m', 0):+.2f}",
+             "Price change over the last 30 minutes. A large move already (overheated) signals chase risk."),
             ("L/S", lambda r: (f"{r.get('ls_ratio'):.2f}" if r.get('ls_ratio') is not None else "N/A"),
-             "바이낸스 전체 계정 롱/숏 비율. 매집/분산 점수의 '포지션 역발상' 항목에 쓰인다."),
+             "Binance-wide account long/short ratio. Used in the 'position contrarian' component of the "
+             "accumulation/distribution score."),
             ("Ext%", lambda r: f"{r.get('extension_pct', 0):+.2f}",
-             "최근 10봉 동안 가격이 이미 움직인 정도(%). 크면 'EMA 정배열이 이미 다 뻗은 뒤늦은 상태'로 감점 처리."),
-            ("Fund%", lambda r: f"{r.get('funding', 0):+.3f}",
-             "펀딩레이트(%). +면 롱 과열, -면 숏 과열. 표시용, 점수엔 미반영."),
-            ("Vol24h(M)", lambda r: f"{r.get('vol_24h_m', 0):,}",
-             "24시간 누적 거래대금(백만원 단위). 유동성 필터의 기준값."),
+             "How far price has already moved over the last 10 candles (%). If large, treated as a late-stage "
+             "'EMA alignment already extended' setup and penalized."),
+            ("Funding%", lambda r: f"{r.get('funding', 0):+.3f}",
+             "Funding rate (%). + means longs are crowded, - means shorts are crowded. Display only, not scored."),
+            ("24h Volume(M)", lambda r: f"{r.get('vol_24h_m', 0):,}",
+             "24h cumulative trading value (millions KRW). Used as the liquidity filter threshold."),
             ("EMA20", lambda r: (f"{r.get('ema20'):,.4f}" if r.get('ema20') is not None else "N/A"),
-             "20기간 지수이동평균(단기 추세선)."),
+             "20-period exponential moving average (short-term trend line)."),
             ("EMA60", lambda r: (f"{r.get('ema60'):,.4f}" if r.get('ema60') is not None else "N/A"),
-             "60기간 지수이동평균(중기 추세선)."),
+             "60-period exponential moving average (medium-term trend line)."),
             ("EMA120", lambda r: (f"{r.get('ema120'):,.4f}" if r.get('ema120') is not None else "N/A"),
-             "120기간 지수이동평균(장기 추세선). EMA20>60>120 정배열이면 상승 추세로 판단."),
-            # --- v6 세부 컴포넌트 (롱/숏 점수 85점 만점의 구성요소) ---
+             "120-period exponential moving average (long-term trend line). EMA20>60>120 aligned = uptrend."),
+            # --- v6 sub-components (make up the 85-point long/short score) ---
             ("ema_l", lambda r: str(r.get('ema_l', 0)),
-             "EMA+가격위치 롱 점수(최대 30). 정배열 초입=30 / 안 뻗은 정배열=25 / 이미 과열 추격=12 / 눌림목=18 / 역배열=0."),
-            ("ema_s", lambda r: str(r.get('ema_s', 0)), "EMA+가격위치 숏 점수(최대 30). ema_l과 대칭 로직."),
+             "EMA+price-position long score (max 30). Early alignment=30 / not-yet-extended alignment=25 / "
+             "already overheated chase=12 / pullback zone=18 / reverse alignment=0."),
+            ("ema_s", lambda r: str(r.get('ema_s', 0)), "EMA+price-position short score (max 30). Mirrors ema_l."),
             ("pp_l", lambda r: str(r.get('pp_l', 0)),
-             "RSI+BB% 필터 롱 점수(최대 10). RSI_delta가 폭발적이면 감점(급등 직후 추격 방지)."),
-            ("pp_s", lambda r: str(r.get('pp_s', 0)), "RSI+BB% 필터 숏 점수(최대 10). pp_l과 대칭 로직."),
+             "RSI+BB% filter long score (max 10). Penalized if RSI_delta is explosive (prevents chasing a spike)."),
+            ("pp_s", lambda r: str(r.get('pp_s', 0)), "RSI+BB% filter short score (max 10). Mirrors pp_l."),
             ("cvd_l", lambda r: str(r.get('cvd_l', 0)),
-             "CVD 롱 점수(최대 10). 방향 일치+강도(거래량 대비 증가폭)까지 반영."),
-            ("cvd_s", lambda r: str(r.get('cvd_s', 0)), "CVD 숏 점수(최대 10). cvd_l과 대칭 로직."),
+             "CVD long score (max 10). Reflects both direction match and strength (increase relative to volume)."),
+            ("cvd_s", lambda r: str(r.get('cvd_s', 0)), "CVD short score (max 10). Mirrors cvd_l."),
             ("oi_l", lambda r: str(r.get('oi_l', 0)),
-             "OI Synergy 롱 점수(최대 20). 가격↑+OI↑ 조합일 때만 만점(진짜 신규 자금 유입 확인)."),
-            ("oi_s", lambda r: str(r.get('oi_s', 0)), "OI Synergy 숏 점수(최대 20). oi_l과 대칭 로직(가격↓+OI↑)."),
+             "OI Synergy long score (max 20). Full marks only when price up + OI up together (confirms genuine "
+             "new capital inflow)."),
+            ("oi_s", lambda r: str(r.get('oi_s', 0)), "OI Synergy short score (max 20). Mirrors oi_l (price down + OI up)."),
             ("m30_l", lambda r: str(r.get('m30_l', 0)),
-             "30분 모멘텀 롱 점수(최대 5). '막 오르기 시작'만 가점, '이미 튄 상태'는 0점."),
-            ("m30_s", lambda r: str(r.get('m30_s', 0)), "30분 모멘텀 숏 점수(최대 5). m30_l과 대칭 로직."),
+             "30-minute momentum long score (max 5). Rewards 'not yet moved', zero once it's 'already run'."),
+            ("m30_s", lambda r: str(r.get('m30_s', 0)), "30-minute momentum short score (max 5). Mirrors m30_l."),
             ("volz_sc", lambda r: str(r.get('volz_sc', 0)),
-             "VolZ 점수(최대 5, 롱/숏 공통). 거래량이 이미 터졌으면 감점(추격 방지 목적)."),
+             "VolZ score (max 5, shared by long/short). Penalized once volume has already spiked (anti-chase)."),
             ("liquidity_sc", lambda r: str(r.get('liquidity_sc', 0)),
-             "ATR/거래대금 유동성 필터 점수(최대 5, 롱/숏 공통). 너무 죽어있거나 너무 과열된 변동성이면 감점."),
-            # --- Pre-Pump/Pre-Short 세부 컴포넌트 (매집/분산 100점 만점의 구성요소) ---
+             "ATR/trading-value liquidity filter score (max 5, shared). Penalized if volatility is too dead or too hot."),
+            # --- Pre-Pump/Pre-Short sub-components (make up the 100-point accumulation/distribution score) ---
             ("div_l", lambda r: str(r.get('div_l', 0)),
-             "고래매집 다이버전스 점수(최대 35). 가격 저점 유지되는데 RSI/CVD 저점은 올라가는 히든 다이버전스 탐지."),
-            ("div_s", lambda r: str(r.get('div_s', 0)), "고래분산 다이버전스 점수(최대 35). div_l과 대칭(고점 기준)."),
+             "Accumulation divergence score (max 35). Detects hidden bullish divergence: price low holds while "
+             "RSI/CVD lows rise."),
+            ("div_s", lambda r: str(r.get('div_s', 0)), "Distribution divergence score (max 35). Mirrors div_l (based on highs)."),
             ("lsx_l", lambda r: str(r.get('lsx_l', 0)),
-             "포지션 역발상 롱 점수(최대 25). 개미들이 숏에 쏠려있을수록(L/S 낮음) 가점(숏스퀴즈 여력)."),
-            ("lsx_s", lambda r: str(r.get('lsx_s', 0)), "포지션 역발상 숏 점수(최대 25). lsx_l과 대칭(롱 쏠림일 때 가점)."),
+             "Position-contrarian long score (max 25). Rewarded more the more retail is crowded short (low L/S) "
+             "— short-squeeze potential."),
+            ("lsx_s", lambda r: str(r.get('lsx_s', 0)), "Position-contrarian short score (max 25). Mirrors lsx_l (crowded long)."),
             ("bb_comp_sc", lambda r: str(r.get('bb_comp_sc', 0)),
-             "가격정체(변동성 압축) 점수(최대 20, 롱/숏 공통). 볼린저밴드 폭이 최근 대비 좁을수록 가점."),
+             "Price-stagnation (volatility compression) score (max 20, shared). Rewarded when Bollinger Band "
+             "width is narrow relative to recent range."),
             ("stealth_sc", lambda r: str(r.get('stealth_sc', 0)),
-             "수급선행 VolZ 점수(최대 20, 롱/숏 공통). 가격은 안 움직이는데 거래량만 몰래 붙는 구간 포착."),
-            # --- v5 하드필터 개별 통과여부(1=통과, 0=이 조건 때문에 걸림) ---
+             "Stealth-accumulation VolZ score (max 20, shared). Catches the zone where price stays flat but "
+             "volume quietly builds."),
+            # --- v5 hard filter pass/fail per condition (1=pass, 0=blocked by this condition) ---
             ("filt_ema_oi_l", lambda r: str(r.get('filt_ema_oi_l', 1)),
-             "롱 필터: EMA 정배열이면서 동시에 OI 방향도 맞는지(둘 다 0점이 아니어야 1)."),
-            ("filt_ema_oi_s", lambda r: str(r.get('filt_ema_oi_s', 1)), "숏 필터: filt_ema_oi_l과 동일 조건의 숏 버전."),
-            ("filt_cvd_l", lambda r: str(r.get('filt_cvd_l', 1)), "롱 필터: CVD 방향이 롱과 일치하는지(cvd_l≠0)."),
-            ("filt_cvd_s", lambda r: str(r.get('filt_cvd_s', 1)), "숏 필터: CVD 방향이 숏과 일치하는지(cvd_s≠0)."),
+             "Long filter: EMA aligned AND OI direction matches (both must be nonzero for 1)."),
+            ("filt_ema_oi_s", lambda r: str(r.get('filt_ema_oi_s', 1)), "Short filter: short-side version of filt_ema_oi_l."),
+            ("filt_cvd_l", lambda r: str(r.get('filt_cvd_l', 1)), "Long filter: CVD direction matches long (cvd_l != 0)."),
+            ("filt_cvd_s", lambda r: str(r.get('filt_cvd_s', 1)), "Short filter: CVD direction matches short (cvd_s != 0)."),
             ("filt_volz_ok", lambda r: str(r.get('filt_volz_ok', 1)),
-             "공통 필터: VolZ가 2.0 미만인지(이미 거래량이 폭발한 추격 진입 방지)."),
-            ("filt_m30_l", lambda r: str(r.get('filt_m30_l', 1)), "롱 필터: 30분 모멘텀 조건을 충족하는지(m30_l≠0)."),
-            ("filt_m30_s", lambda r: str(r.get('filt_m30_s', 1)), "숏 필터: 30분 모멘텀 조건을 충족하는지(m30_s≠0)."),
+             "Shared filter: VolZ below 2.0 (prevents chasing an already-spiked volume move)."),
+            ("filt_m30_l", lambda r: str(r.get('filt_m30_l', 1)), "Long filter: 30-min momentum condition met (m30_l != 0)."),
+            ("filt_m30_s", lambda r: str(r.get('filt_m30_s', 1)), "Short filter: 30-min momentum condition met (m30_s != 0)."),
             ("filt_liquidity_ok", lambda r: str(r.get('filt_liquidity_ok', 1)),
-             "공통 필터: 유동성 필터를 통과했는지(liquidity_sc≠0)."),
+             "Shared filter: liquidity filter passed (liquidity_sc != 0)."),
             ("passes_all_l", lambda r: str(r.get('passes_all_l', 1)),
-             "롱 최종 판정: 위 5개 롱 필터를 전부 통과했는지(1=통과, 0=하나라도 걸림 → 필터 켜면 색칠 제외)."),
+             "Final long verdict: all 5 long filters above passed (1=pass, 0=at least one failed -> excluded "
+             "from coloring when the filter toggle is on)."),
             ("passes_all_s", lambda r: str(r.get('passes_all_s', 1)),
-             "숏 최종 판정: 위 5개 숏 필터를 전부 통과했는지(1=통과, 0=하나라도 걸림 → 필터 켜면 색칠 제외)."),
+             "Final short verdict: all 5 short filters above passed (1=pass, 0=at least one failed -> excluded "
+             "from coloring when the filter toggle is on)."),
         ]
 
         pdf = FPDF(orientation="L", unit="mm", format="A4")
         pdf.set_auto_page_break(False)
-        pdf.add_font("Kor", "", font_path)
-
+        
         def add_table_page(title, rows_data):
             pdf.add_page()
-            pdf.set_font("Kor", "", 12)
+            pdf.set_font("Helvetica", "", 12)
             title_h = 8
             pdf.cell(0, title_h, title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-            pdf.set_font("Kor", "", 5)
+            pdf.set_font("Helvetica", "", 5)
             n_cols = len(rows_data) + 1  # 지표명 열 + 코인 열들
             page_w = pdf.w - 2 * pdf.l_margin
             col_w = page_w / max(n_cols, 1)
@@ -1841,7 +1824,7 @@ class TradingClient:
             available_h = (pdf.h - pdf.t_margin - pdf.b_margin) - title_h
             row_h = max(3.0, available_h / n_data_rows)
 
-            pdf.cell(col_w, row_h, "지표", border=1, align='C')
+            pdf.cell(col_w, row_h, "Indicator", border=1, align='C')
             for r in rows_data:
                 pdf.cell(col_w, row_h, str(r.get('ticker', '')), border=1, align='C')
             pdf.ln(row_h)
@@ -1856,20 +1839,20 @@ class TradingClient:
                     pdf.cell(col_w, row_h, str(val), border=1, align='C')
                 pdf.ln(row_h)
 
-        add_table_page(f"롱스코어 상위 10개 코인  ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})", top_long)
-        add_table_page(f"숏스코어 상위 10개 코인  ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})", top_short)
+        add_table_page(f"Top 10 by Long Score  ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})", top_long)
+        add_table_page(f"Top 10 by Short Score  ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})", top_short)
 
         # 3페이지 이후: 표에 나온 44개 지표 항목 설명 (indicator_rows의 3번째 값과 1:1 매칭), 10pt
         # 표 페이지는 한 페이지 안에 다 들어가서 auto_page_break를 꺼놨지만,
         # 설명 텍스트는 길이가 들쭉날쭉해서 fpdf2의 자동 페이지분할에 맡기는 게 안전하다.
         pdf.set_auto_page_break(True, margin=15)
         pdf.add_page()
-        pdf.set_font("Kor", "", 16)
-        pdf.cell(0, 10, "지표 설명 (위 표에 나온 44개 항목)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_font("Kor", "", 10)
+        pdf.set_font("Helvetica", "", 16)
+        pdf.cell(0, 10, "Indicator Descriptions (44 items shown in the tables above)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.set_font("Helvetica", "", 10)
         desc_width = pdf.w - 2 * pdf.l_margin  # w=0 자동계산에 기대지 않고 폭을 직접 지정
         for title, _getter, desc in indicator_rows:
-            pdf.set_font("Kor", "", 10)
+            pdf.set_font("Helvetica", "", 10)
             pdf.set_x(pdf.l_margin)
             pdf.multi_cell(desc_width, 6, f"■ {title}")
             pdf.set_x(pdf.l_margin)
