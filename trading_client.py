@@ -1681,20 +1681,34 @@ class TradingClient:
         """
         try:
             from fpdf import FPDF
-            try:
-                from fpdf.enums import XPos, YPos
-            except ImportError:
-                XPos = YPos = None
         except ImportError:
             messagebox.showerror("오류", "fpdf2가 설치되어 있지 않습니다.\n"
                                   "Termux에서 설치: pip install fpdf2 --break-system-packages")
             return
+        try:
+            from fpdf.enums import XPos, YPos
+        except ImportError:
+            # 구버전 fpdf2는 fpdf.enums가 없다 — XPos.LMARGIN/YPos.NEXT를 그냥 문자열로
+            # 흉내 낸 자리표시자를 써서, 아래 cell(new_x=..., new_y=...) 호출이 죽지 않게 한다.
+            class _XPosShim:
+                LMARGIN = "LMARGIN"
+            class _YPosShim:
+                NEXT = "NEXT"
+            XPos, YPos = _XPosShim, _YPosShim
 
         data = list(self._last_render_data or [])
         if not data:
             messagebox.showwarning("경고", "아직 표시할 마켓 데이터가 없습니다.")
             return
 
+        try:
+            self._build_and_save_pdf(FPDF, XPos, YPos, data)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("PDF 생성 실패", f"{type(e).__name__}: {e}")
+
+    def _build_and_save_pdf(self, FPDF, XPos, YPos, data):
         # PDF 내용을 전부 영어로 바꾼 뒤로는 fpdf2 기본 내장 폰트(Helvetica)만으로 충분해서,
         # 한글 TTF 폰트를 따로 찾아 설치할 필요가 없어졌다.
 
