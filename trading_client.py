@@ -1868,7 +1868,7 @@ class TradingClient:
         for title, _getter, desc in indicator_rows:
             pdf.set_font("Helvetica", "", 10)
             pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(desc_width, 6, f"■ {title}")
+            pdf.multi_cell(desc_width, 6, f"- {title}")
             pdf.set_x(pdf.l_margin)
             pdf.multi_cell(desc_width, 6, desc)
             pdf.ln(2)
