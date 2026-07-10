@@ -278,6 +278,10 @@ class TradingClient:
                             relief="raised", bd=1, cursor="hand2", padx=6, pady=1)
         btn_help.pack(side="left", padx=4)
         btn_help.bind("<ButtonRelease-1>", lambda e: self.show_help())
+        btn_report = tk.Label(row1, text="리포트", bg="#5a5f66", fg="white", font=("Arial", FONT_BTN, "bold"),
+                              relief="raised", bd=1, cursor="hand2", padx=6, pady=1)
+        btn_report.pack(side="left", padx=4)
+        btn_report.bind("<ButtonRelease-1>", lambda e: self.generate_report())
         btn_reset = tk.Label(row1, text="리셋", bg="#aa3333", fg="white", font=("Arial", FONT_BTN, "bold"),
                              relief="raised", bd=1, cursor="hand2", padx=6, pady=1)
         btn_reset.pack(side="left", padx=4)
@@ -1193,6 +1197,9 @@ class TradingClient:
             messagebox.showwarning("응답 없음", "서버 응답이 없습니다.\ntrading_server.py 실행 여부를 확인하세요.")
             return
         self.root.after(500, lambda: self._wait_result(cmd_id, label, tries - 1))
+
+    def generate_report(self):
+        self._send_and_wait('generate_report', label="리포트 생성")
 
     def add_funds(self):
         amount = simpledialog.askfloat(

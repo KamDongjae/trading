@@ -1604,6 +1604,150 @@ def srv_set_margin_mode(mode):
     label = "크로스 마진" if new_val else "격리 마진"
     return True, f"{label} 모드로 전환했습니다"
 
+# ============================================================
+# 지표 리포트 PDF — 현재 score_cache 스냅샷 기준 Long/Short Top10 + 전체 지표 설명.
+# fpdf2 필요 (pip install fpdf2). 영문/Helvetica만 사용 — fpdf2 기본 폰트는 한글을
+# 지원 안 해서, 한글을 쓰려면 별도 TTF를 add_font로 넣어야 하는데 그러면 서버
+# 기기마다 폰트 파일을 챙겨야 하는 번거로움이 생겨서 이번에도 영문으로 유지했다.
+# ============================================================
+
+def _report_fmt_price(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return "N/A"
+    if v == 0:
+        return "N/A"
+    return f"{v:,.4f}" if abs(v) < 1 else f"{v:,.2f}"
+
+def _report_fmt_num(v, decimals=1, signed=True):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return "N/A"
+    fmt = f"{{:+,.{decimals}f}}" if signed else f"{{:,.{decimals}f}}"
+    return fmt.format(v)
+
+_REPORT_INDICATORS = [
+    ("Price(USD)", lambda r: _report_fmt_price(r.get('price_usd'))),
+    ("RSI", lambda r: _report_fmt_num(r.get('rsi', 0), 1, False)),
+    ("RSI Delta", lambda r: _report_fmt_num(r.get('rsi_delta', 0), 1)),
+    ("VolZ", lambda r: _report_fmt_num(r.get('vol_z', 0), 1)),
+    ("BB%", lambda r: _report_fmt_num(r.get('bb_percent', 0), 0, False)),
+    ("CVD(level)", lambda r: _report_fmt_num(r.get('cvd', 0), 2)),
+    ("CVD Diff", lambda r: _report_fmt_num(r.get('cvd_diff', 0), 2)),
+    ("ATR%", lambda r: _report_fmt_num(r.get('atr_pct', 0), 2, False)),
+    ("OI Delta%", lambda r: _report_fmt_num(r.get('oi_change_pct', 0), 2)),
+    ("30m Delta%", lambda r: _report_fmt_num(r.get('chg_30m', 0), 2)),
+    ("L/S", lambda r: f"{r['ls_ratio']:.2f}" if r.get('ls_ratio') else "N/A"),
+    ("Funding%", lambda r: _report_fmt_num(r.get('funding', 0), 3)),
+    ("24h Volume(M)", lambda r: f"{r.get('vol_24h_m', 0):,.0f}"),
+    ("EMA20", lambda r: _report_fmt_price(r.get('ema20'))),
+    ("EMA60", lambda r: _report_fmt_price(r.get('ema60'))),
+    ("EMA120", lambda r: _report_fmt_price(r.get('ema120'))),
+    ("Long Score", lambda r: str(r.get('long_score', 0))),
+    ("Short Score", lambda r: str(r.get('short_score', 0))),
+    ("Prepump Score", lambda r: str(r.get('prepump_score', 0))),
+    ("Preshort Score", lambda r: str(r.get('preshort_score', 0))),
+]
+
+_REPORT_DESCRIPTIONS = [
+    ("Price(USD)", "Binance futures last traded price (USD). N/A if not listed on Binance."),
+    ("RSI", "Relative Strength Index (0-100). 70+ overbought, 30- oversold."),
+    ("RSI Delta", "RSI change vs. 5 candles ago. A large value means a sharp move just happened."),
+    ("VolZ", "Volume Z-score vs. the last 20-candle average. Higher means volume has already spiked."),
+    ("BB%", "Price position within Bollinger Bands (0-100%). 0=lower band, 100=upper band."),
+    ("CVD(level)", "Cumulative Volume Delta, running total (OHLCV-estimated). + means net buy pressure so far."),
+    ("CVD Diff", "CVD change over the last CVD_WINDOW_CANDLES candles. Used as the 'cvd_1h' proxy in scoring."),
+    ("ATR%", "Average True Range on the current base candle (% of price). Feeds the liquidity filter."),
+    ("OI Delta%", "Open Interest change rate over the last base candle. Used raw (no direction gating) in v3."),
+    ("30m Delta%", "Price change over the last 30 minutes, independent of the base candle interval."),
+    ("L/S", "Binance-wide account long/short ratio. Used in the accumulation/distribution 'position contrarian' score."),
+    ("Funding%", "Funding rate (%). Display only — not used in any score as of v3."),
+    ("24h Volume(M)", "24h cumulative trading value (millions KRW). Feeds the liquidity filter and 매집/분산 sizing."),
+    ("EMA20/60/120", "Exponential moving averages on the base candle. EMA20>60>120 = uptrend alignment."),
+    ("Long/Short Score", "105-point trend-following score (v3), normalized to 0-100. See in-app '설명' tab for full breakdown."),
+    ("Prepump/Preshort Score", "100-point long-cycle accumulation/distribution score (v3) — OI persistence, cumulative CVD, "
+                                "EMA compression, ATR, VolZ, box position, RSI, recent-move penalty. Different logic than Long/Short Score: "
+                                "EMA 'alignment' is actually penalized here (treated as accumulation already finished)."),
+]
+
+def _report_draw_table(pdf, rows, title):
+    from fpdf import FPDF  # noqa: F401 (호출부에서 이미 import 확인함)
+    pdf.set_font('Helvetica', 'B', 14)
+    pdf.cell(0, 8, title, ln=1)
+    pdf.ln(1)
+    if not rows:
+        pdf.set_font('Helvetica', '', 10)
+        pdf.cell(0, 6, "(no data)", ln=1)
+        return
+    n_cols = len(rows)
+    label_w = 32
+    page_w = pdf.w - pdf.l_margin - pdf.r_margin
+    col_w = max((page_w - label_w) / n_cols, 18)
+    row_h = 5
+
+    pdf.set_font('Helvetica', 'B', 8)
+    pdf.cell(label_w, row_h, "Indicator", border=1)
+    for r in rows:
+        pdf.cell(col_w, row_h, str(r.get('ticker', '')), border=1, align='C')
+    pdf.ln(row_h)
+
+    pdf.set_font('Helvetica', '', 7)
+    for label, fn in _REPORT_INDICATORS:
+        pdf.cell(label_w, row_h, label, border=1)
+        for r in rows:
+            try:
+                val = fn(r)
+            except Exception:
+                val = "N/A"
+            pdf.cell(col_w, row_h, str(val), border=1, align='C')
+        pdf.ln(row_h)
+
+def srv_generate_report():
+    """서버가 들고 있는 현재 스코어 스냅샷으로 Long/Short Top10 지표 리포트(PDF)를 만든다."""
+    try:
+        from fpdf import FPDF
+    except ImportError:
+        return False, "fpdf2가 설치되어 있지 않습니다 (pip install fpdf2)"
+    with score_lock:
+        snap = {t: dict(r) for t, r in score_cache.items()}
+    if not snap:
+        return False, "아직 점수 데이터가 없습니다 (서버가 막 켜졌으면 잠시 후 다시 시도)"
+
+    rows = list(snap.values())
+    top_long = sorted(rows, key=lambda r: r.get('long_score', 0), reverse=True)[:10]
+    top_short = sorted(rows, key=lambda r: r.get('short_score', 0), reverse=True)[:10]
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    try:
+        pdf = FPDF(orientation='L', unit='mm', format='A3')
+        pdf.set_auto_page_break(True, margin=10)
+
+        pdf.add_page()
+        _report_draw_table(pdf, top_long, f"Top 10 by Long Score ({ts})")
+
+        pdf.add_page()
+        _report_draw_table(pdf, top_short, f"Top 10 by Short Score ({ts})")
+
+        pdf.add_page()
+        pdf.set_font('Helvetica', 'B', 14)
+        pdf.cell(0, 8, f"Indicator Descriptions ({len(_REPORT_DESCRIPTIONS)} items)", ln=1)
+        pdf.ln(2)
+        for name, desc in _REPORT_DESCRIPTIONS:
+            pdf.set_font('Helvetica', 'B', 10)
+            pdf.multi_cell(0, 5, f"- {name}")
+            pdf.set_font('Helvetica', '', 9)
+            pdf.multi_cell(0, 5, desc)
+            pdf.ln(1)
+
+        fname = f"indicator_report_{datetime.now():%Y%m%d_%H%M%S}.pdf"
+        path = os.path.join(SCRIPT_DIR, fname)
+        pdf.output(path)
+        return True, f"리포트 생성 완료: {fname}"
+    except Exception as e:
+        return False, f"리포트 생성 실패: {e}"
+
 def srv_open(ticker, position_type, amount_won, leverage):
     global balance
     if not ticker: return False, "티커 없음"
@@ -1906,6 +2050,8 @@ def process_commands():
                 ok, msg = srv_set_interval(ticker)
             elif action == 'set_margin_mode':
                 ok, msg = srv_set_margin_mode(ticker)
+            elif action == 'generate_report':
+                ok, msg = srv_generate_report()
             else:
                 ok, msg = False, f"알 수 없는 명령: {action}"
             append_result(cmd_id, 'ok' if ok else 'fail', msg)
