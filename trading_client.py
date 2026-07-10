@@ -1791,7 +1791,7 @@ class TradingClient:
             ("div_s", lambda r: str(r.get('div_s', 0)), "Distribution divergence score (max 35). Mirrors div_l (based on highs)."),
             ("lsx_l", lambda r: str(r.get('lsx_l', 0)),
              "Position-contrarian long score (max 25). Rewarded more the more retail is crowded short (low L/S) "
-             "— short-squeeze potential."),
+             "- short-squeeze potential."),
             ("lsx_s", lambda r: str(r.get('lsx_s', 0)), "Position-contrarian short score (max 25). Mirrors lsx_l (crowded long)."),
             ("bb_comp_sc", lambda r: str(r.get('bb_comp_sc', 0)),
              "Price-stagnation (volatility compression) score (max 20, shared). Rewarded when Bollinger Band "
