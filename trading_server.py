@@ -1815,7 +1815,9 @@ def srv_set_report_dir(new_dir):
 def srv_open(ticker, position_type, amount_won, leverage):
     global balance
     if not ticker: return False, "티커 없음"
-    if ticker in positions: return False, "이미 포지션이 존재합니다"
+    existing = positions.get(ticker)
+    if existing and existing.get('position_type') != position_type:
+        return False, "반대 방향 포지션이 이미 있습니다 (먼저 청산 후 진입하세요)"
     if amount_won <= 0: return False, "금액이 올바르지 않습니다"
     if leverage <= 0: leverage = DEFAULT_LEVERAGE
     entry_fee = (amount_won * leverage) * FEE_RATE
@@ -1825,7 +1827,8 @@ def srv_open(ticker, position_type, amount_won, leverage):
     if CROSS_MARGIN_MODE:
         # 진입 직후 남는 여유현금이 유지증거금(전체 포지션 명목가치×비율)보다 적으면
         # 가격이 1도 안 움직여도(수수료/슬리피지만으로) 바로 청산되는 상황이 생긴다.
-        # 그런 무리한 진입은 미리 막는다.
+        # 그런 무리한 진입은 미리 막는다. (existing_notional엔 지금 물타기하려는 티커의
+        # 기존 포지션도 이미 포함돼있고, new_notional은 이번에 '추가'하는 물량만이라 합산하면 정확하다.)
         existing_notional = sum(p.get('amount', 0) * p.get('leverage', 1) for p in positions.values())
         new_notional = amount_won * leverage
         required = (existing_notional + new_notional) * CROSS_MARGIN_MAINTENANCE_RATIO
@@ -1838,28 +1841,53 @@ def srv_open(ticker, position_type, amount_won, leverage):
         current_price = latest_prices_usd.get(ticker, 0)
     if current_price <= 0:
         return False, "USD 가격 없음 (바이낸스 미상장 코인은 거래 불가)"
-    entry_price = current_price * (1 + SLIPPAGE_RATE) if position_type == "long" else current_price * (1 - SLIPPAGE_RATE)
+    fill_price = current_price * (1 + SLIPPAGE_RATE) if position_type == "long" else current_price * (1 - SLIPPAGE_RATE)
     balance -= total_cost
     if balance < 0: balance = 0
     # 진입 당시 '유효 점수'(추세추종/매집형 중 더 높은 쪽) 저장 — Predict Score의
     # Level 항목이 "진입 당시 원본 스코어"를 기준으로 하기 때문에 이 시점에 스냅샷을 남긴다.
+    # (물타기/불타기로 추가 진입할 땐 최초 진입 점수를 그대로 유지 — Level은 '처음' 판단 기준이라서)
     snap = score_cache.get(ticker, {})
     if position_type == "long":
         entry_score = max(snap.get('long_score', 0), snap.get('prepump_score', 0))
     else:
         entry_score = max(snap.get('short_score', 0), snap.get('preshort_score', 0))
+
+    if existing:
+        # 바이낸스식 물타기/불타기: 명목가치(증거금×레버리지) 가중평균으로 진입가·레버리지를 재계산.
+        old_notional = existing['amount'] * existing['leverage']
+        add_notional = amount_won * leverage
+        combined_notional = old_notional + add_notional
+        combined_amount = existing['amount'] + amount_won
+        weighted_entry = (existing['entry_price'] * old_notional + fill_price * add_notional) / combined_notional
+        combined_leverage = max(1, round(combined_notional / combined_amount))
+        positions[ticker] = {
+            "entry_price": weighted_entry, "amount": combined_amount, "leverage": combined_leverage,
+            "position_type": position_type, "entry_time": existing.get('entry_time', datetime.now()),
+            "entry_fee": existing.get('entry_fee', 0) + entry_fee,
+            "entry_score": existing.get('entry_score', entry_score),  # 최초 진입 시점 점수 유지
+        }
+        direction = "롱" if position_type == "long" else "숏"
+        trade_history.append({'type': '추가진입', 'ticker': ticker, 'direction': direction,
+                              'amount': amount_won, 'leverage': leverage, 'entry_price': fill_price,
+                              'exit_price': 0, 'pnl': 0, 'pnl_rate_pct': 0,
+                              'entry_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'exit_time': ''})
+        save_to_csv()
+        pfmt = f"{weighted_entry:,.2f}" if weighted_entry >= 1 else f"{weighted_entry:,.4f}"
+        return True, f"{ticker} {direction} 추가진입 @ ${fill_price:,.4f} (평균단가 ${pfmt}, 합계 ${combined_amount:,.2f}/{combined_leverage}x)"
+
     positions[ticker] = {
-        "entry_price": entry_price, "amount": amount_won, "leverage": leverage,
+        "entry_price": fill_price, "amount": amount_won, "leverage": leverage,
         "position_type": position_type, "entry_time": datetime.now(), "entry_fee": entry_fee,
         "entry_score": entry_score,
     }
     direction = "롱" if position_type == "long" else "숏"
     trade_history.append({'type': '진입', 'ticker': ticker, 'direction': direction,
-                          'amount': amount_won, 'leverage': leverage, 'entry_price': entry_price,
+                          'amount': amount_won, 'leverage': leverage, 'entry_price': fill_price,
                           'exit_price': 0, 'pnl': 0, 'pnl_rate_pct': 0,
                           'entry_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'exit_time': ''})
     save_to_csv()
-    pfmt = f"{entry_price:,.2f}" if entry_price >= 1 else f"{entry_price:,.4f}"
+    pfmt = f"{fill_price:,.2f}" if fill_price >= 1 else f"{fill_price:,.4f}"
     return True, f"{ticker} {direction} 진입 @ ${pfmt}"
 
 def srv_close(ticker):
