@@ -219,7 +219,14 @@ class TradingClient:
         self._account = (0, "", [])
         self._market_mtime = 0.0
 
-        self.is_mobile = w <= 1280
+        # 화면 폭만으로 "모바일"을 판단하면 VNC/X11 세션(해상도는 작아도 DPI는 표준
+        # 96dpi)까지 모바일로 오판해서 글자가 깨알만해지는 문제가 있었다. 실제 폰
+        # 화면은 DPI가 훨씬 높으니(보통 300dpi+) DPI까지 같이 확인한다.
+        try:
+            dpi = self.root.winfo_fpixels('1i')
+        except Exception:
+            dpi = 96.0
+        self.is_mobile = (w <= 1280) and (dpi > 150)
         if self.is_mobile:
             FONT_BASE, FONT_BOLD_LABEL, FONT_BTN, FONT_INPUT, FONT_SMALL = 5, 5, 5, 5, 4
             LABEL_PADX, BTN_PADX, BTN_IPADY = 5, 6, 4
