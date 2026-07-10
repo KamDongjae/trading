@@ -1,6 +1,5 @@
 import threading
 import time
-import sys
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
@@ -62,92 +61,22 @@ except NameError:
 # 그래서 CSV는 안드로이드 공용 저장소(Documents 폴더)에 고정 저장해서
 # 어떤 파일관리자로든, PC에 USB로 연결해서든 바로 찾을 수 있게 한다.
 # (termux-setup-storage로 저장소 권한을 먼저 허용해야 함)
-#
-# 다만 윈도우 등 다른 환경에서 쓸 때는 이 경로가 아예 안 맞을 수 있어서,
-# 스크립트 폴더(_fallback_dir)에 놓인 path_config.txt 파일로 경로를 직접
-# 지정할 수 있게 했다. trading_client.py의 "경로 변경" 버튼이 이 파일을
-# 쓰고, 서버도 시작할 때 이 파일을 최우선으로 확인한다 — server/client를
-# 같은 폴더에 두고 쓰는 걸 전제로 하므로 둘 다 같은 파일을 보게 된다.
-SCRIPT_DIR = None
-_PATH_CONFIG_FILE = os.path.join(_fallback_dir, "path_config.txt")
-if os.path.exists(_PATH_CONFIG_FILE):
-    try:
-        with open(_PATH_CONFIG_FILE, "r", encoding="utf-8") as _f:
-            _custom_path = _f.read().strip()
-        if _custom_path:
-            os.makedirs(_custom_path, exist_ok=True)
-            _test_path = os.path.join(_custom_path, ".write_test")
-            with open(_test_path, "w") as _f:
-                _f.write("ok")
-            os.remove(_test_path)
-            SCRIPT_DIR = _custom_path
-            print(f"✅ 데이터 저장 위치(사용자 지정): {SCRIPT_DIR}")
-    except Exception as e:
-        print(f"⚠️ path_config.txt 경로 사용 실패({e}), 기본 경로로 진행")
-
-if SCRIPT_DIR is None:
-    _ANDROID_PUBLIC_DIR = "/storage/emulated/0/Documents"
-    try:
-        os.makedirs(_ANDROID_PUBLIC_DIR, exist_ok=True)
-        # 실제로 쓰기 가능한지 테스트 (권한 없으면 예외 발생)
-        _test_path = os.path.join(_ANDROID_PUBLIC_DIR, ".write_test")
-        with open(_test_path, "w") as _f:
-            _f.write("ok")
-        os.remove(_test_path)
-        SCRIPT_DIR = _ANDROID_PUBLIC_DIR
-        print(f"✅ 데이터 저장 위치: {SCRIPT_DIR} (공용 저장소)")
-    except Exception:
-        # 권한이 없거나 안드로이드가 아닌 환경(Windows/Mac/일반 Linux)이면
-        # 기존 방식(스크립트 폴더 또는 cwd)으로 그대로 폴백한다.
-        SCRIPT_DIR = _fallback_dir
-        print(f"⚠️ 공용 저장소 접근 불가, 대체 경로 사용: {SCRIPT_DIR}")
+_ANDROID_PUBLIC_DIR = "/storage/emulated/0/Documents"
+try:
+    os.makedirs(_ANDROID_PUBLIC_DIR, exist_ok=True)
+    # 실제로 쓰기 가능한지 테스트 (권한 없으면 예외 발생)
+    _test_path = os.path.join(_ANDROID_PUBLIC_DIR, ".write_test")
+    with open(_test_path, "w") as _f:
+        _f.write("ok")
+    os.remove(_test_path)
+    SCRIPT_DIR = _ANDROID_PUBLIC_DIR
+    print(f"✅ 데이터 저장 위치: {SCRIPT_DIR} (공용 저장소)")
+except Exception:
+    # 권한이 없거나 안드로이드가 아닌 환경(Windows/Mac/일반 Linux)이면
+    # 기존 방식(스크립트 폴더 또는 cwd)으로 그대로 폴백한다.
+    SCRIPT_DIR = _fallback_dir
+    print(f"⚠️ 공용 저장소 접근 불가, 대체 경로 사용: {SCRIPT_DIR}")
 DATA_FILE = os.path.join(SCRIPT_DIR, "simulation_data_usd.csv")
-
-# ============================================================
-# 중복 실행 방지 — 서버 두 개가 같은 server_market.csv/server_account.csv에
-# 동시에 쓰면, 클라이언트가 두 프로세스의 결과를 번갈아 읽으면서 점수가
-# 100점을 넘거나(예: 139), 존재하지 않는 티커가 뜨거나, 컷이 갑자기 0으로
-# 보이는 등 "화면이 계속 깜빡이며 말도 안 되는 값이 뜨는" 증상이 생긴다.
-# 파일 mtime은 계속 갱신되므로 "방금 갱신됨"인데 값은 엉망인 것처럼 보인다.
-# 이를 막기 위해 PID 락 파일로 이미 실행 중인 프로세스가 있는지 확인한다.
-# ============================================================
-_LOCK_FILE = os.path.join(SCRIPT_DIR, "server.lock")
-
-def _check_single_instance():
-    if os.path.exists(_LOCK_FILE):
-        try:
-            with open(_LOCK_FILE) as f:
-                old_pid = int(f.read().strip())
-            alive = True
-            try:
-                os.kill(old_pid, 0)
-            except ProcessLookupError:
-                alive = False  # 그 PID로 실행 중인 프로세스가 없음 → 오래된 락 파일
-            except PermissionError:
-                alive = True   # 신호를 보낼 권한만 없을 뿐, 프로세스 자체는 살아있음
-            if alive:
-                print("=" * 60)
-                print(f"⚠️⚠️⚠️  다른 서버 프로세스(PID {old_pid})가 이미 실행 중입니다!")
-                print("   서버 두 개가 같은 CSV에 동시에 쓰면 화면이 깜빡이거나")
-                print("   점수가 100을 넘는 등 이상한 값이 보일 수 있습니다.")
-                print(f"   기존 프로세스를 끄려면: kill {old_pid}   (안 꺼지면: kill -9 {old_pid})")
-                print("=" * 60)
-        except (OSError, ValueError):
-            pass  # 락 파일을 읽을 수 없으면(손상 등) 그냥 무시하고 덮어씀
-    try:
-        with open(_LOCK_FILE, 'w') as f:
-            f.write(str(os.getpid()))
-    except Exception:
-        pass
-
-def _release_instance_lock():
-    try:
-        if os.path.exists(_LOCK_FILE):
-            with open(_LOCK_FILE) as f:
-                if f.read().strip() == str(os.getpid()):
-                    os.remove(_LOCK_FILE)
-    except Exception:
-        pass
 PRICE_INTERVAL = 2
 SCORE_INTERVAL = 10
 MAX_WORKERS = 8
@@ -201,102 +130,6 @@ price_history_lock = threading.Lock()
 _funding_cache = {}
 _funding_cache_time = 0
 _funding_lock = threading.Lock()
-
-# ============================================================
-# 거시 필터 (공포탐욕지수 + BTC 자체 추세) — 개별 코인 지표만으로는 못 잡는
-# "시장 전체가 한 번에 롤오버하는" 리스크를 잡기 위한 시장 전체 게이트.
-# alternative.me의 공포탐욕지수는 무료/무인증 공개 API.
-# ============================================================
-FNG_URL = "https://api.alternative.me/fng/"
-_fng_cache = {"value": None, "classification": None, "time": 0}
-_fng_lock = threading.Lock()
-
-def get_fear_greed_index():
-    """공포탐욕지수(0~100)와 등급 문자열을 반환. 하루 1회만 갱신되는 지표라
-    캐시는 30분으로 넉넉히 둔다. 조회 실패 시 이전 캐시값(없으면 None)을 반환 —
-    거시필터 자체가 죽지 않고, 판단 불가 상황을 그대로 넘긴다."""
-    now = time.time()
-    with _fng_lock:
-        if _fng_cache["value"] is not None and now - _fng_cache["time"] < 1800:
-            return _fng_cache["value"], _fng_cache["classification"]
-    try:
-        resp = requests.get(FNG_URL, params={"limit": 1, "format": "json"}, timeout=8, verify=False)
-        resp.raise_for_status()
-        item = resp.json()["data"][0]
-        value = int(item["value"])
-        classification = item.get("value_classification", "")
-        with _fng_lock:
-            _fng_cache["value"] = value
-            _fng_cache["classification"] = classification
-            _fng_cache["time"] = now
-        return value, classification
-    except Exception as e:
-        print(f"공포탐욕지수 조회 실패: {e}")
-        with _fng_lock:
-            return _fng_cache["value"], _fng_cache["classification"]
-
-def compute_macro_state(results):
-    """이번 사이클 결과 중 BTC 자체의 EMA 추세를 시장 대표 추세로 쓰고, 공포탐욕지수와
-    합쳐서 시장 전체 상태를 하나로 정리한다. (개별 코인 필터는 전부 통과해도 이게
-    막히면 진입 보류 — passes_macro_filter 참고)"""
-    btc = next((r for r in results if r.get('ticker') == 'BTC'), None)
-    comp = (btc or {}).get('components', {}) or {}
-    fng_value, fng_class = get_fear_greed_index()
-    return {
-        "btc_ema_l": comp.get('ema_l', 0),
-        "btc_ema_s": comp.get('ema_s', 0),
-        "fng_value": fng_value,
-        "fng_class": fng_class or "",
-    }
-
-def passes_macro_filter(direction, macro):
-    """
-    시장 전체 거시 게이트. 개별 종목 필터를 다 통과해도 이게 막히면 진입하지 않는다.
-      롱: BTC가 완전 역배열(자체 하락추세, btc_ema_s==30)이면 차단 |
-          공포탐욕지수≥80(극단적 탐욕, 조정 위험)이면 차단
-      숏: BTC가 완전 정배열(자체 상승추세, btc_ema_l==30)이면 차단 |
-          공포탐욕지수≤20(극단적 공포, 반등/숏스퀴즈 위험)이면 차단
-    BTC/지수 조회에 실패해 정보가 없으면(None) 안전하게 통과시킨다 — 조회 실패
-    하나로 전체 매매가 멈추는 걸 막기 위함(단, 이 경우 거시 리스크 방어는 안 됨).
-    """
-    fng = macro.get("fng_value")
-    if direction == "long":
-        if macro.get("btc_ema_s", 0) == 30:
-            return False
-        if fng is not None and fng >= 80:
-            return False
-    else:
-        if macro.get("btc_ema_l", 0) == 30:
-            return False
-        if fng is not None and fng <= 20:
-            return False
-    return True
-
-# ============================================================
-# 빗썸 전체 마켓 조회 캐싱 — process_ticker가 종목마다(사이클당 최대 ~40번) 이걸
-# 직접 호출하고 있었는데, 매번 빗썸 전체 마켓을 새로 조회하는 건 낭비였다. 사이클
-# 하나에 40번 호출해봤자 그 사이 데이터가 바뀔 리 없는데, 그만큼 네트워크 부하만
-# 늘어서 사이클이 가끔 느려지는(클라이언트 '연결 끊김' 깜빡임의 유력한 원인) 문제가
-# 있었다. 8초 캐시로 사이클당 실제 호출은 사실상 1번만 나가게 한다.
-# ============================================================
-_all_ticker_cache = {"data": None, "time": 0}
-_all_ticker_lock = threading.Lock()
-
-def get_all_ticker_snapshot():
-    now = time.time()
-    with _all_ticker_lock:
-        if _all_ticker_cache["data"] is not None and now - _all_ticker_cache["time"] < 8:
-            return _all_ticker_cache["data"]
-    try:
-        data = Bithumb.get_current_price("ALL")
-        with _all_ticker_lock:
-            _all_ticker_cache["data"] = data
-            _all_ticker_cache["time"] = now
-        return data
-    except Exception as e:
-        print(f"전체 마켓 조회 실패: {e}")
-        with _all_ticker_lock:
-            return _all_ticker_cache["data"]
 
 # ============================================================
 # 펀딩레이트 - 바이낸스 REST API 직접 호출 (ccxt 불필요)
@@ -529,8 +362,7 @@ def append_history_csv(record):
             writer = csv.writer(f)
             if not file_exists:
                 writer.writerow(['type','ticker','direction','amount','leverage',
-                                 'entry_price','exit_price','pnl','pnl_rate_pct','entry_time','exit_time',
-                                 'entry_score'])
+                                 'entry_price','exit_price','pnl','pnl_rate_pct','entry_time','exit_time'])
             writer.writerow([
                 record.get('type',''),
                 record.get('ticker',''),
@@ -543,7 +375,6 @@ def append_history_csv(record):
                 record.get('pnl_rate_pct', 0),
                 record.get('entry_time', ''),
                 record.get('exit_time', ''),
-                record.get('entry_score', 0),
             ])
     except Exception as e:
         print(f"history CSV 저장 실패: {e}")
@@ -569,31 +400,8 @@ def load_history_csv():
                     'pnl_rate_pct': float(row.get('pnl_rate_pct', 0)),
                     'entry_time': row.get('entry_time', ''),
                     'exit_time': row.get('exit_time', ''),
-                    # 구버전 CSV(컬럼 없음)는 0으로 처리 — 진입 당시 점수를 몰라도
-                    # 나머지 필드로는 계속 정상 동작해야 하므로.
-                    'entry_score': float(row.get('entry_score', 0) or 0),
                 })
         print(f"✅ 거래기록 {len(trade_history)}건 로드")
-        # 구버전 CSV(entry_score 컬럼 없음)를 새 스키마로 한 번만 재작성 —
-        # 안 하면 이후 append_history_csv가 12개 값을 쓰는데 헤더는 11개짜리로
-        # 남아서 다음 로드 때 컬럼이 밀려 보인다.
-        with open(HISTORY_FILE, 'r', newline='', encoding='utf-8') as f:
-            first_line = f.readline()
-        if 'entry_score' not in first_line:
-            try:
-                with open(HISTORY_FILE, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.writer(f)
-                    writer.writerow(['type','ticker','direction','amount','leverage',
-                                     'entry_price','exit_price','pnl','pnl_rate_pct','entry_time','exit_time',
-                                     'entry_score'])
-                    for rec in trade_history:
-                        writer.writerow([rec.get('type',''), rec.get('ticker',''), rec.get('direction',''),
-                                         rec.get('amount', 0), rec.get('leverage', 0), rec.get('entry_price', 0),
-                                         rec.get('exit_price', 0), rec.get('pnl', 0), rec.get('pnl_rate_pct', 0),
-                                         rec.get('entry_time', ''), rec.get('exit_time', ''), rec.get('entry_score', 0)])
-                print("✅ 거래기록 CSV를 새 스키마(entry_score 포함)로 갱신")
-            except Exception as e:
-                print(f"거래기록 CSV 스키마 갱신 실패: {e}")
     except Exception as e:
         print(f"history 로드 실패: {e}")
 
@@ -817,123 +625,86 @@ def calculate_oi_synergy(price_chg, oi_change_pct):
     return round(long_bonus, 1), round(short_bonus, 1)
 
 # ============================================================
-# 85점 만점 점수 체계 (추세추종형 개편안 v5, 최종 100점 환산)
-#   — v4(80점) 실측 데이터 검증 결과 방향 자체는 맞다고 확인되어, 변별력을 높이는
-#     방향으로 세분화. 함수명은 process_ticker 등 다른 곳에서 참조하고 있어
-#     score_oi_v4/score_volz_v4처럼 기존 이름을 그대로 유지했다(내용은 v5로 갱신).
+# 105점 만점 점수 체계 (추세추종형 개편안 v3, 최종 100점 환산)
+#   ① EMA 추세 (EMA20/60/120 삼중 정배열)   20점
+#   ② 가격위치 (RSI+BB% 결합조건)            20점
+#   ③ CVD 추세                              15점
+#   ④ OI 미체결약정                         15점
+#   ⑤ VolZ 거래량                           15점
+#   ⑥ 30분 모멘텀                           15점
+#   ⑦ ATR/거래대금 최소유동성 필터(통과시만)  5점
+#   합계 105점 → final = round(raw합 / 105 × 100), 0~100 클램프
+#   (L/S 역발상, Funding, RSI Delta는 "추세추종 진입 시 노이즈 유발"로 v3에서 완전 삭제)
 #
-#   ① EMA 정배열 + 가격위치           30점  (4단계로 세분화, v4 대비 변별력↑)
-#   ② OI Synergy                    20점  (v4:15 → 실자금 유입 신호가 생각보다 강해 비중↑)
-#   ③ CVD                           10점  (방향일치 + 강도(증가세)까지 반영)
-#   ④ RSI + BB% (과열/과매도 필터)   10점  (v4:10 유지, 경계값만 정리)
-#   ⑤ VolZ                          5점  (v4와 동일 — 거래량 초기 여부 판단용)
-#   ⑥ 30분 모멘텀                    5점  (v7 — 실측 데이터로 방향 반전. "막 오르기 시작"이 아니라
-#                                            "아직 안 움직인 상태"가 forward return이 가장 좋았음)
-#   ⑦ ATR + 거래대금 필터            5점  (3단계로 세분화 — 너무 낮아도/높아도 감점)
-#   합계 85점 → final = round(raw합 / 85 × 100), 0~100 클램프
-#
-#   [v5 추가 권장 필터] passes_v5_hard_filters()가 아래 조건들을 검사한다:
-#     - EMA 역배열 또는 OI 방향 불일치
-#     - CVD가 반대 방향
-#     - VolZ≥2.0 (이미 거래량 폭발 — 추격매수/매도 방지)
-#     - 30분 모멘텀 조건 미충족(이미 많이 진행됐거나 모멘텀 자체가 없음)
-#     - 유동성 필터 탈락
-#   이전 버전은 이 필터를 서버가 통과 못 하면 최종 점수를 강제로 0으로 만들었지만,
-#   그러면 "필터만 없었으면 몇 점이었는지"가 사라져서 필터 자체의 효과를 사후
-#   검증할 수 없었다. 그래서 지금은 calculate_long_score/short_score가 항상
-#   raw합 기반 점수를 그대로 반환하고, process_ticker가 filters_ok_long/short
-#   필드로 통과 여부만 별도로 함께 내려준다. 실제로 필터를 적용할지 말지는
-#   trading_client.py의 "필터 적용" 체크박스에서 사용자가 직접 선택한다.
+# [원안 대비 구현 메모 — 문서에 정확한 수치/구간이 없어 임의로 채운 부분]
+#   - 가격위치: 문서에 나온 3개 구간(20/10/5) 외의 조합은 0점으로 처리
+#   - OI: 0%≤ΔOI<1% 구간이 문서에 없어 0점(하위 구간)으로 편입
+#   - VolZ: 1.0≤VolZ<1.2 구간이 문서에 없어 <1.2 전체를 3점 구간으로 편입
+#   - 30분 모멘텀: 문서에 없는 중간 구간(과열 직전)은 10점으로 보간
+#   - ATR/거래대금 필터: "최소 유동성 하한선" 구체 수치가 없어 ATR≥0.3% & 24h거래대금
+#     ≥1천만원을 기준으로 임의 설정 (통과 5점 / 미통과 0점, 등급 없는 필터형)
 # ============================================================
-TOTAL_SCORE_WEIGHT = 85  # 위 7개 항목 배점의 합. 항목을 추가/변경하면 같이 맞춰야 함
+TOTAL_SCORE_WEIGHT = 105  # 위 7개 항목 배점의 합. 항목을 추가/변경하면 같이 맞춰야 함
 
-EMA_EXTENSION_THRESHOLD = 1.0  # v7 — 실측 64,880행 분석 결과 기존 3.0은 상위 96%ile로 너무 느슨했음.
-                                 # extension_pct 상위 20%(약 0.9~1.3, 80~85%ile)부터 이미 forward
-                                 # return이 나빠지길래 그 경계에 맞춰 1.0으로 당겼다.
-
-def score_ema_trend(price, ema20, ema60, ema120, direction, extension_pct=0.0):
+def score_ema_trend(price, ema20, ema60, ema120, direction):
     """
-    EMA 삼중(20/60/120) 정배열 점수(최대 30점, v6 — extension_pct로 "이미 다 뻗은 뒤늦은
-    정배열"과 "막 정배열이 시작된 건강한 추세"를 구분).
-    실측 검증 결과: 정배열이 완벽히 정착한 시점(가격이 EMA20에서 이미 많이 벌어진 상태)에
-    진입하면 1h 수익률은 눌림목 때문에 마이너스/횡보였다가 2h에야 플러스로 전환되는
-    패턴이 강했다 — 즉 "완성된 정배열"은 고점 부근 추격매수 위험 신호. 그래서 v5에서
-    최고점을 주던 "가격 > EMA20"을, 얼마나 뻗었는지(extension_pct)로 다시 나눴다.
-      롱: 정배열 + 가격≈EMA20(±0.3%, 초입/지지 확인 구간)                → 30 (가장 좋은 타점)
-          정배열 + 가격>EMA20 이지만 아직 안 뻗음(extension_pct 정상)     → 25
-          정배열 + 가격>EMA20 인데 이미 많이 뻗음(extension_pct 과열)     → 12 (고점 추격 위험)
-          정배열 + 가격이 EMA20~EMA60 사이(눌림목)                        → 18
-          역배열이거나 EMA60 밑으로 이탈                                   → 0
+    EMA 삼중(20/60/120) 정배열 점수(최대 20점).
+      롱: EMA20>EMA60>EMA120 이고 가격>EMA20 → 20 (완벽한 정배열)
+          정배열이나 가격이 EMA20~EMA60 사이(눌림목) → 10
+          역배열이거나 EMA60 하향이탈 → 0
       숏: 대칭.
     """
     try:
-        if price is None or not ema20 or ema60 is None or ema120 is None:
+        if price is None or ema20 is None or ema60 is None or ema120 is None:
             return 0
-        near_tol = 0.003  # EMA20 대비 ±0.3% 이내를 "가격≈EMA20"으로 간주 (문서에 수치 없어 임의 설정)
         if direction == 'long':
-            if not (ema20 > ema60 > ema120):
+            if ema20 > ema60 > ema120 and price > ema20:
+                return 20
+            elif ema20 > ema60 and ema60 <= price <= ema20:
+                return 10
+            elif price < ema60:
                 return 0
-            if abs(price - ema20) / ema20 <= near_tol:
-                return 30
-            elif price > ema20:
-                return 12 if extension_pct > EMA_EXTENSION_THRESHOLD else 25
-            elif ema60 <= price < ema20:
-                return 18
             return 0
         else:
-            if not (ema20 < ema60 < ema120):
+            if ema20 < ema60 < ema120 and price < ema20:
+                return 20
+            elif ema20 < ema60 and ema20 <= price <= ema60:
+                return 10
+            elif price > ema60:
                 return 0
-            if abs(price - ema20) / ema20 <= near_tol:
-                return 30
-            elif price < ema20:
-                return 12 if extension_pct < -EMA_EXTENSION_THRESHOLD else 25
-            elif ema20 < price <= ema60:
-                return 18
             return 0
     except Exception:
         return 0
 
-RSI_DELTA_EXPLOSIVE = 10.0  # 5봉 대비 RSI 변화량 절대값이 이보다 크면 "폭발적 모멘텀"으로 간주
-                              # (구체 수치 근거는 없음, 데이터 보며 조정 필요)
-
-def score_price_position_long(rsi, bb_percent, rsi_delta=0.0):
+def score_price_position_long(rsi, bb_percent):
     """
-    RSI+BB% 필터 점수(최대 10점, v6 — rsi_delta로 "폭발적 급등 직후 진입" 리스크 반영).
-    실측 검증 결과: RSI가 70을 넘고 RSI_delta가 폭발적으로 튄 직후(장대양봉) 진입하면
-    방향은 결국 맞아도(2h 뒤엔 양전) 1h 안에서의 변동성(MDD)이 너무 커서 효율적인
-    타점이 아니었다. 그래서 "RSI 과열 + 델타 폭발"은 감점한다.
-      10점: %B≥80 & 55≤RSI≤70 (RSI_delta 폭발적이지 않을 때만)
-       2점: %B≥80 & RSI>70 & RSI_delta 폭발적(급등 직후, 진입 타점 나쁨)
-       5점: %B가 70~80 이거나 RSI가 70~80 (과열권 초입)
-       2점: RSI≤45 또는 %B<50 (추세 약함)
+    가격위치 결합조건 점수(최대 20점). bb_percent는 0~100 스케일(%B*100)이라
+    문서의 %B(0~1) 기준값에 100을 곱해 맞췄다.
+      20점: %B≥80 & 55≤RSI≤70 (과열 초입 강한 분출)
+      10점: %B≥70 & RSI>80 (단기 과열권 진입 부담)
+       5점: %B<50 또는 RSI<45 (추세 상실)
        0점: 위 어느 조건에도 안 맞음
     """
     try:
-        explosive = abs(rsi_delta) >= RSI_DELTA_EXPLOSIVE
-        if bb_percent >= 80 and 55 <= rsi <= 70 and not explosive:
+        if bb_percent >= 80 and 55 <= rsi <= 70:
+            return 20
+        elif bb_percent >= 70 and rsi > 80:
             return 10
-        elif bb_percent >= 80 and rsi > 70 and explosive:
-            return 2
-        elif (70 <= bb_percent < 80) or (70 <= rsi <= 80):
+        elif bb_percent < 50 or rsi < 45:
             return 5
-        elif rsi <= 45 or bb_percent < 50:
-            return 2
         return 0
     except Exception:
         return 0
 
-def score_price_position_short(rsi, bb_percent, rsi_delta=0.0):
-    """RSI+BB% 필터 숏 점수(최대 10점, 롱과 대칭, v6 — rsi_delta 반영)."""
+def score_price_position_short(rsi, bb_percent):
+    """가격위치 결합조건 숏 점수(최대 20점, 롱과 대칭)."""
     try:
-        explosive = abs(rsi_delta) >= RSI_DELTA_EXPLOSIVE
-        if bb_percent <= 20 and 30 <= rsi <= 45 and not explosive:
+        if bb_percent <= 20 and 30 <= rsi <= 45:
+            return 20
+        elif bb_percent <= 30 and rsi < 20:
             return 10
-        elif bb_percent <= 20 and rsi < 30 and explosive:
-            return 2
-        elif (20 <= bb_percent < 30) or (20 <= rsi <= 30):
+        elif bb_percent > 50 or rsi > 55:
             return 5
-        elif rsi >= 55 or bb_percent > 50:
-            return 2
         return 0
     except Exception:
         return 0
@@ -947,141 +718,66 @@ def cvd_direction(cvd_diff, vol_window_sum):
 
 def score_cvd_trend(cvd_diff, vol_window_sum, direction):
     """
-    CVD 점수(최대 10점, v5 — 방향 일치 여부뿐 아니라 강도(증가세)까지 반영).
-    "증가세 강함" 기준(거래량 대비 5% 이상)은 문서에 구체 수치가 없어 임의 설정.
-      10점: 방향 일치 + 증가세 강함(|cvd_diff| ≥ 거래량의 5%)
-       7점: 방향 일치(강도는 약함)
-       3점: 보합
-       0점: 반대 방향
+    CVD 추세 점수(최대 15점). 일치 15 / 보합 5 / 반대 0 — 진성매수세(가격+CVD 동행)
+    확인용. 문서의 "전고점 돌파" 여부까지는 별도 이력 추적이 필요해 방향 일치
+    여부로 단순화했다.
     """
+    want = 1 if direction == 'long' else -1
+    d = cvd_direction(cvd_diff, vol_window_sum)
+    if d == want: return 15
+    elif d == 0: return 5
+    return 0
+
+def score_oi_v3(oi_change_pct):
+    """OI 미체결약정 점수(최대 15점, 롱/숏 공통 — ΔOI 자체의 증가 강도만 본다)."""
     try:
-        eps = 0.02 * vol_window_sum if vol_window_sum > 0 else 0.0
-        strong_eps = 0.05 * vol_window_sum if vol_window_sum > 0 else 0.0
-        want = 1 if direction == 'long' else -1
-        signed = cvd_diff if want == 1 else -cvd_diff
-        if signed > strong_eps: return 10
-        elif signed > eps: return 7
-        elif signed >= -eps: return 3
+        if oi_change_pct >= 3: return 15
+        elif oi_change_pct >= 1: return 7
         return 0
     except Exception:
         return 0
 
-def score_oi_v4(price_chg, oi_change_pct, direction):
-    """
-    OI Synergy 점수(최대 20점, v5에서 15→20 상향 — 실측 데이터상 자금 유입 신호가
-    비중을 키울 만큼 유효했다). 가격 방향 + OI 변화 방향(상승/보합/하락) 조합.
-    OI 변화 ±1%를 "보합" 경계로 임의 설정(문서에 구체 수치 없음).
-      롱: 가격↑+OI↑→20 | 가격↑+OI≈→10 | 가격↑+OI↓ 또는 가격↓→0
-      숏: 가격↓+OI↑→20 | 가격↓+OI≈→10 | 가격↓+OI↓ 또는 가격↑→0
-    """
+def score_volz_v3(vol_z):
+    """VolZ 거래량 점수(최대 15점, 롱/숏 공통)."""
     try:
-        if oi_change_pct >= 1:
-            oi_state = 'up'
-        elif oi_change_pct <= -1:
-            oi_state = 'down'
-        else:
-            oi_state = 'flat'
-
-        if direction == 'long':
-            if price_chg <= 0:
-                return 0
-            if oi_state == 'up': return 20
-            elif oi_state == 'flat': return 10
-            return 0
-        else:
-            if price_chg >= 0:
-                return 0
-            if oi_state == 'up': return 20
-            elif oi_state == 'flat': return 10
-            return 0
+        if vol_z >= 2.0: return 15
+        elif vol_z >= 1.2: return 10
+        return 3
     except Exception:
-        return 0
-
-def score_volz_v4(vol_z):
-    """
-    VolZ 거래량 점수(최대 5점, v4와 동일 — 거래량이 "이미 터졌는지" 초기 여부만 판단).
-    실측 데이터에서 VolZ가 높을수록 이후 수익률이 낮아지는 역신호로 확인됐다.
-      VolZ<1.0: 5 | 1.0~2.0: 2 | ≥2.0(이미 폭증): 0
-    """
-    try:
-        if vol_z < 1.0: return 5
-        elif vol_z < 2.0: return 2
-        return 0
-    except Exception:
-        return 0
+        return 3
 
 def score_chg30m_long(chg_30m):
     """
-    최근 30분 모멘텀 롱 점수(최대 5점, v7.1 — 완전 반전 대신 완만한 4단계로 조정).
-    실측 64,880행(약 22시간, 완만한 상승장 구간)에서는 chg_30m≤0%가 전 구간에서
-    가장 좋은 forward return을 보였지만, 표본이 한 장세(22시간, 상승장)에 국한돼
-    있어서 급등/급락장에서는 반대(막 움직이기 시작한 쪽이 유리)일 가능성이 있다.
-    그래서 완전 반전 대신 그라데이션으로 완충한다 — "안 움직인 코인 유리"는
-    반영하되 "막 출발한 코인"도 완전히 버리지 않는다. 데이터가 더 쌓여
-    여러 장세(횡보/급락 포함, 20~30만 행 이상)에서도 같은 방향이 확인되면
-    그때 완전 반전을 검토한다.
-      chg_30m≤0%: 5 | 0~0.15%: 4 | 0.15~0.4%: 2 | 0.4% 초과: 0
+    최근 30분 모멘텀 롱 점수(최대 15점).
+      0.5%~2.5%: 15 (안정적 양봉) | 4.0%초과: 5 (과열, 꼬리물림 위험)
+      2.5%초과~4.0%: 10 (과열 직전, 문서에 없는 구간 보간)
+      그 외(0.5% 미만/음수): 0 (모멘텀 부족)
     """
-    if chg_30m <= 0: return 5
-    elif chg_30m <= 0.15: return 4
-    elif chg_30m <= 0.4: return 2
+    if 0.5 <= chg_30m <= 2.5: return 15
+    elif chg_30m > 4.0: return 5
+    elif 2.5 < chg_30m <= 4.0: return 10
     return 0
 
 def score_chg30m_short(chg_30m):
-    """최근 30분 모멘텀 숏 점수(최대 5점, 롱과 대칭, v7.1 완만한 조정)."""
-    if chg_30m >= 0: return 5
-    elif chg_30m >= -0.15: return 4
-    elif chg_30m >= -0.4: return 2
+    """최근 30분 모멘텀 숏 점수(최대 15점, 롱과 대칭)."""
+    if -2.5 <= chg_30m <= -0.5: return 15
+    elif chg_30m < -4.0: return 5
+    elif -4.0 <= chg_30m < -2.5: return 10
     return 0
 
 def score_liquidity_filter(atr_pct, vol_24h_m):
     """
-    ATR/거래대금 필터(최대 5점, v5에서 3단계로 세분화 — 기존엔 통과/미통과 이진이었으나
-    "너무 낮음"뿐 아니라 "너무 높음(과열 변동성)"도 걸러내도록 확장.
-    경계값은 문서에 구체 수치가 없어 임의 설정 — 데이터 보면서 조정 필요.
-      5점(정상): 0.3%≤ATR≤3.0% & 24h거래대금≥1천만원
-      3점(약간 부족): 유동성은 있으나 정상 범위를 살짝 벗어난 경계 구간
-      0점: 그 외(너무 죽어있거나 너무 과열된 변동성)
+    ATR/거래대금 '최소 유동성 하한선' 필터(최대 5점, 등급 없이 통과/미통과만).
+    죽어있는 코인(변동성·거래대금 둘 다 바닥)을 걸러내는 용도로, 문서 취지대로
+    점수제가 아니라 필터형으로 구현했다. 임계값(ATR 0.3%, 24h 거래대금 1천만원)은
+    문서에 구체 수치가 없어 임의로 설정 — 데이터 보면서 조정 필요.
     """
     try:
-        if 0.3 <= atr_pct <= 3.0 and vol_24h_m >= 10:
+        if atr_pct >= 0.3 and vol_24h_m >= 10:
             return 5
-        if (0.15 <= atr_pct < 0.3 or 3.0 < atr_pct <= 5.0) and vol_24h_m >= 3:
-            return 3
         return 0
     except Exception:
         return 0
-
-def passes_v5_hard_filters(ema_sc, oi_sc, cvd_sc, vol_z, m30_sc, liquidity_sc):
-    """
-    v5 추가 권장 필터 (v6.2 — v6.1의 OI≥20 기준이 실측 데이터에서 너무 빡빡했던 것을
-    되돌림). v6.1에서 oi_sc≥20(방향 완전일치 만점)까지 요구했더니, 실측 11,200행
-    중 전체 조건을 통과한 게 0.03%(사실상 0건)였다 — oi_l이 20점을 받는 경우 자체가
-    1.3%뿐이라 다른 조건과 겹치면 사실상 신호가 안 나왔다. CVD는 그대로 두고
-    (cvd_sc≥7 단독 통과율 39%로 적당했음) OI만 다시 10점(보합 이상)으로 완화한다.
-      - ema_sc==0 (역배열) → 탈락
-      - oi_sc<10 (OI가 아예 반대 방향(0점)일 때만) → 탈락. 10점(보합)은 다시 허용.
-      - cvd_sc<7 (CVD가 보합(3점)이거나 반대 방향(0점)) → 탈락 (v6.1 그대로 유지)
-      - vol_z≥2.0 (거래량 이미 폭발 — 추격 방지)
-      - m30_sc==0 (30분 모멘텀 조건 미충족 — 이미 많이 진행됐거나 모멘텀 없음)
-      - liquidity_sc==0 (유동성 필터 탈락)
-    """
-    try:
-        if ema_sc == 0:
-            return False
-        if oi_sc < 10:
-            return False
-        if cvd_sc < 7:
-            return False
-        if vol_z >= 2.0:
-            return False
-        if m30_sc == 0:
-            return False
-        if liquidity_sc == 0:
-            return False
-        return True
-    except Exception:
-        return False
 
 def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, chg_30m,
                           price_chg, extension_pct, vol_z=0.0, rsi_delta=0.0,
@@ -1089,27 +785,21 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
                           funding_rate=0.0, trade_value_usd=None,
                           price=None, ema120=None, vol_24h_m=0):
     """
-    85점 만점 롱 점수 = EMA+가격위치(30) + OI synergy(20) + CVD(10) + RSI/BB필터(10)
-                       + VolZ(5) + 30분모멘텀(5) + 유동성필터(5)
-    최종적으로 /85×100 환산한 0~100점을 반환한다. (v5, 데이터 기반 세분화)
-
-    v5 하드필터(passes_v5_hard_filters)는 더 이상 여기서 점수를 강제로 0으로
-    만들지 않는다 — 항상 raw합 기반 점수를 그대로 반환하고, 필터 통과 여부는
-    process_ticker에서 별도 필드(filters_ok_long/short)로 함께 내려서 클라이언트가
-    체크박스로 필터 적용 여부를 직접 선택하게 한다(서버가 정보를 지우지 않음).
+    105점 만점 롱 점수 = EMA삼중(20) + 가격위치(20) + CVD(15) + OI(15)
+                        + VolZ(15) + 30분모멘텀(15) + 유동성필터(5)
+    최종적으로 /105×100 환산한 0~100점을 반환한다.
     """
-    ema_sc = price_sc = cvd_sc = oi_sc = volz_sc = m30_sc = liq_sc = 0
+    raw = 0
     try:
-        ema_sc = score_ema_trend(price, ema20, ema60, ema120, 'long', extension_pct)
-        price_sc = score_price_position_long(rsi, bb_percent, rsi_delta)
-        cvd_sc = score_cvd_trend(cvd_diff, vol_window_sum, 'long')
-        oi_sc = score_oi_v4(price_chg, oi_change_pct, 'long')
-        volz_sc = score_volz_v4(vol_z)
-        m30_sc = score_chg30m_long(chg_30m)
-        liq_sc = score_liquidity_filter(atr_pct, vol_24h_m)
+        raw += score_ema_trend(price, ema20, ema60, ema120, 'long')
+        raw += score_price_position_long(rsi, bb_percent)
+        raw += score_cvd_trend(cvd_diff, vol_window_sum, 'long')
+        raw += score_oi_v3(oi_change_pct)
+        raw += score_volz_v3(vol_z)
+        raw += score_chg30m_long(chg_30m)
+        raw += score_liquidity_filter(atr_pct, vol_24h_m)
     except Exception:
         pass
-    raw = ema_sc + price_sc + cvd_sc + oi_sc + volz_sc + m30_sc + liq_sc
     final = round(raw / TOTAL_SCORE_WEIGHT * 100)
     return max(0, min(final, 100))
 
@@ -1118,138 +808,266 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
                            atr_pct=0.0, ema20=None, ema60=None, oi_notional_usd=None,
                            funding_rate=0.0, trade_value_usd=None,
                            price=None, ema120=None, vol_24h_m=0):
-    """85점 만점 숏 점수 (롱과 대칭). 최종 /85×100 환산. (v5, 데이터 기반 세분화)
-    (calculate_long_score와 동일하게 하드필터로 인한 강제 0점 처리는 제거됨)"""
-    ema_sc = price_sc = cvd_sc = oi_sc = volz_sc = m30_sc = liq_sc = 0
+    """105점 만점 숏 점수 (롱과 대칭). 최종 /105×100 환산."""
+    raw = 0
     try:
-        ema_sc = score_ema_trend(price, ema20, ema60, ema120, 'short', extension_pct)
-        price_sc = score_price_position_short(rsi, bb_percent, rsi_delta)
-        cvd_sc = score_cvd_trend(cvd_diff, vol_window_sum, 'short')
-        oi_sc = score_oi_v4(price_chg, oi_change_pct, 'short')
-        volz_sc = score_volz_v4(vol_z)
-        m30_sc = score_chg30m_short(chg_30m)
-        liq_sc = score_liquidity_filter(atr_pct, vol_24h_m)
+        raw += score_ema_trend(price, ema20, ema60, ema120, 'short')
+        raw += score_price_position_short(rsi, bb_percent)
+        raw += score_cvd_trend(cvd_diff, vol_window_sum, 'short')
+        raw += score_oi_v3(oi_change_pct)
+        raw += score_volz_v3(vol_z)
+        raw += score_chg30m_short(chg_30m)
+        raw += score_liquidity_filter(atr_pct, vol_24h_m)
     except Exception:
         pass
-    raw = ema_sc + price_sc + cvd_sc + oi_sc + volz_sc + m30_sc + liq_sc
     final = round(raw / TOTAL_SCORE_WEIGHT * 100)
     return max(0, min(final, 100))
 
 
 # ============================================================
-# Pre-Pump / Pre-Short 점수 체계 (100점 만점, 매집형 개편안 v2) — "출발 전 매집 구간" 탐지
-#   ① 고래매집/분산 (CVD+RSI 히든 다이버전스)   35점
-#   ② 포지션 역발상 (L/S Ratio)                25점
-#   ③ 가격정체 (볼린저밴드 폭 압축)             20점
-#   ④ 수급선행 (VolZ, 가격 안 움직이는데 거래량만) 20점
+# Pre-Pump / Pre-Short 점수 체계 (100점 만점, 매집형 개편안 v3) — "출발 전 매집 구간" 탐지
+#   장기 매집 사이클(며칠~몇 주) 탐지용으로 완전히 새로 설계. 기존 v1/v2는 "롱/숏
+#   진입"(추세추종) 로직을 그대로 갖다 써서 EMA 정배열·RSI·30분모멘텀 비중이 과도했고,
+#   그 결과 "이미 많이 오른 종목"이 오히려 고득점하는 모순이 있었다는 지적을 반영해
+#   OI 지속성·CVD 누적·EMA 압축·박스권 위치 중심으로 재설계했다.
+#
+#   매집(prepump) 100점 = OI지속증가(25) + CVD누적증가(20) + EMA압축도(15)
+#                        + ATR(10) + VolZ(10) + 가격위치(20일박스, 10) + RSI(5) + 최근3일상승패널티(5)
+#   분산(preshort) 100점 = OI감소·불일치(25) + CVD지속감소(20) + EMA과이격(15)
+#                         + ATR급증(10) + VolZ폭발(10) + 신고가부근(10) + RSI70+(5) + 최근급등(5)
 #   ENABLE_PREPUMP_SCORE=False면 process_ticker에서 아예 호출하지 않고 0을 채운다.
 #
-# [원안 대비 구현 메모]
-#   - 고래매집/분산: check_bullish_rsi_divergence/check_bearish_rsi_divergence로 탐지한
-#     '가격 저점 유지·RSI 저점 상승'형 히든 다이버전스를 최우선으로 본다(35점).
-#     다이버전스까진 아니어도 CVD 방향이 약하게 맞으면 15점, 그 외 0점.
-#   - 가격정체(BB폭 압축): 문서는 "48시간 최고 BW 대비" 라고 했는데, 서버는 캔들
-#     간격(1h/2h/6h/12h)이 바뀔 수 있어 "48시간"이 아니라 "최근 48개 캔들" 기준으로 했다
-#     (기준봉이 1h면 결과적으로 원안과 동일).
-#   - 수급선행: 원안은 5분봉 기준인데 서버엔 5분봉이 없어 30분 변동률(chg_30m_pct)로 근사.
+# [원안 대비 구현 메모 — 서버가 갖고 있는 데이터 한계로 근사한 부분]
+#   - OI 지속성은 "1시간 변화율"(oi_change_pct)을 그대로 쓴다. 원안처럼 진짜 며칠짜리
+#     누적 OI 추이를 보려면 별도의 장기 OI 히스토리 캐시가 필요한데, 그건 이번 개편
+#     범위 밖이라 1h 변화율로 근사했다 — 절대적 지속성이 아니라 "지금 이 순간의 유입
+#     강도"로 봐야 함.
+#   - 가격위치(20일박스)/최근3일상승률은 fetch_candlestick이 이미 받아온 캔들(df)에서
+#     최근 N개를 뽑아 계산한다. N은 "일수"가 아니라 "캔들 개수"로 고정했다(예: 20일
+#     박스 → 최근 20캔들, 3일 상승률 → 기준봉이 1h면 최근 72캔들). 기준봉을 바꾸면
+#     같이 바뀐다 — 1h가 아니면 원안의 "일" 단위와 정확히 안 맞을 수 있다.
+#   - CVD 누적증가의 "가격 횡보+CVD↑ → +3, 가격 하락+CVD↑ → +5" 보너스는 가격 지표로
+#     30분 변동률(chg_30m)을 재사용했다.
 # ============================================================
 
-def score_divergence(divergence_detected, cvd_1h, rsi, direction):
+def _ema_spread_pct(ema20, ema60, ema120):
+    """EMA20/60/120 세 값이 서로 얼마나 벌어져 있는지(%, ema60 기준)."""
+    try:
+        if not ema20 or not ema60 or not ema120 or ema60 <= 0:
+            return None
+        return (max(ema20, ema60, ema120) - min(ema20, ema60, ema120)) / ema60 * 100
+    except Exception:
+        return None
+
+def score_oi_persistence(oi_change_pct, direction):
     """
-    고래매집/분산 점수(최대 35점). 진짜 히든 다이버전스(가격 저점은 유지되거나
-    낮아지는데 RSI/CVD 저점은 오히려 높아지는 형태)를 탐지했으면 만점.
-    다이버전스까진 아니어도 방향이 약하게 맞으면 절반 정도, 그 외 0점.
+    OI 지속 증가 점수(매집 25점 / 분산 25점). 매집은 OI가 꾸준히 늘어야 만점,
+    분산은 OI가 줄거나(청산/차익실현) 가격 대비 안 따라오면 만점.
     """
     try:
-        if divergence_detected:
-            return 35
-        if direction == 'prepump' and cvd_1h > 0 and rsi <= 55:
-            return 15
-        elif direction == 'preshort' and cvd_1h < 0 and rsi >= 45:
-            return 15
-        return 0
+        if direction == 'prepump':
+            if oi_change_pct >= 10: return 25
+            elif oi_change_pct >= 7: return 22
+            elif oi_change_pct >= 5: return 18
+            elif oi_change_pct >= 3: return 13
+            elif oi_change_pct >= 1: return 8
+            elif oi_change_pct >= 0: return 4
+            return 0
+        else:
+            if oi_change_pct < 0: return 25
+            elif oi_change_pct < 1: return 12
+            return 0
     except Exception:
         return 0
 
-def score_ls_extreme(ls_ratio, direction):
+def score_cvd_cumulative(cvd_1h, direction, chg_30m_pct=0.0):
     """
-    포지션 역발상 점수(최대 25점). 개미들이 한쪽으로 극단적으로 쏠려있어야
-    반대 방향 스퀴즈(강제청산 유발 폭등/폭락) 여력이 크다고 본다.
-      prepump: ls_ratio≤0.85 → 25 (숏 오버슈팅) | 0.95~1.1 → 10 (균형) | 그 외 0
-      preshort: ls_ratio≥1.15 → 25 (롱 과열)     | 0.9~1.05 → 10 (균형) | 그 외 0
+    CVD 누적 증가 점수(매집 20점 / 분산 20점). 매집은 가격보다 CVD 증가율이 훨씬
+    중요하다는 원안을 반영해, "가격은 안 가는데 CVD만 오른다" 상황에 보너스를 준다.
+    (cvd_1h는 별도 API가 없어 CVD_WINDOW_CANDLES 구간 변화량을 근사치로 쓴다.)
     """
-    if ls_ratio is None or ls_ratio <= 0:
+    try:
+        if direction == 'prepump':
+            if cvd_1h > 0:
+                if cvd_1h >= 100000: base = 20
+                elif cvd_1h >= 30000: base = 17
+                elif cvd_1h >= 5000: base = 13
+                else: base = 7
+                if -0.3 <= chg_30m_pct <= 0.3:
+                    base += 3   # 가격 횡보 + CVD 증가
+                elif chg_30m_pct < -0.3:
+                    base += 5   # 가격 하락 + CVD 증가 (더 강한 매집 신호)
+                return min(base, 20)
+            return 0
+        else:
+            if cvd_1h < 0:
+                if cvd_1h <= -100000: return 20
+                elif cvd_1h <= -30000: return 17
+                elif cvd_1h <= -5000: return 13
+                return 7
+            return 0
+    except Exception:
         return 0
+
+def score_ema_compression(ema20, ema60, ema120, direction):
+    """
+    EMA 압축도 점수(매집 15점 / 분산 15점). 매집은 세 EMA가 거의 겹쳐있는 상태를
+    최고점으로 본다 — "정배열 완성"은 이미 매집이 끝나고 추세가 시작된 신호라 오히려
+    감점한다(원안의 핵심 지적사항). 분산은 반대로 이격이 클수록(추세 과열) 만점.
+    """
+    spread = _ema_spread_pct(ema20, ema60, ema120)
+    if spread is None:
+        return 0
+    aligned_up = ema20 > ema60 > ema120
+    aligned_down = ema20 < ema60 < ema120
     if direction == 'prepump':
-        if ls_ratio <= 0.85: return 25
-        elif ls_ratio <= 1.10: return 10
-        return 0
+        if spread <= 0.3: return 15          # 거의 겹침 — 매집 최적 구간
+        elif aligned_up and spread <= 1.0: return 12   # 약한 정배열 시작
+        elif aligned_up: return 7             # 완전 정배열 — 이미 매집 끝난 상태
+        elif aligned_down: return 0           # 역배열
+        return 2                              # 과도한 이격(방향 불명)
     else:
-        if ls_ratio >= 1.15: return 25
-        elif ls_ratio >= 0.90: return 10
-        return 0
-
-def score_bb_compression(bb_width_ratio):
-    """
-    가격정체(변동성 압축) 점수(최대 20점). 최근 48캔들 중 최댓값 대비 현재 볼린저
-    밴드 폭 비율(%)이 낮을수록(압축될수록) 만점.
-      ≤20% → 20 | ≤45% → 10 | >60% → 0 | 45~60%(갭 보간) → 5
-    """
-    try:
-        if bb_width_ratio <= 20: return 20
-        elif bb_width_ratio <= 45: return 10
-        elif bb_width_ratio > 60: return 0
+        if spread >= 3.0: return 15           # 과도한 이격 — 분산/과열
+        elif spread >= 1.5: return 10
+        elif spread <= 0.3: return 2          # 압축 상태는 분산 신호로는 약함
         return 5
+
+def score_atr_state(atr_pct, direction):
+    """ATR(변동성) 점수(매집 10점 / 분산 10점). 매집은 적당히 낮은 변동성, 분산은 급증이 좋음."""
+    try:
+        if direction == 'prepump':
+            if 1.0 <= atr_pct <= 2.0: return 10
+            elif 0.5 <= atr_pct < 1.0: return 7
+            elif 2.0 < atr_pct <= 3.0: return 5
+            elif atr_pct > 3.0: return 0
+            return 3   # 0.5% 미만 — 거의 죽어있음, 낮은 점수
+        else:
+            if atr_pct >= 4.0: return 10
+            elif atr_pct >= 3.0: return 6
+            return 0
+
     except Exception:
         return 0
 
-def score_stealth_volz(chg_30m_pct, vol_z):
+def score_volz_state(vol_z, direction):
     """
-    수급선행 VolZ 점수(최대 20점). "가격은 거의 안 움직이는데 거래량만 붙는"
-    매집성 거래를 포착. |30분변동률|≤0.1%면서 VolZ≥1.5 → 만점.
+    거래량(VolZ) 점수(매집 10점 / 분산 10점). 매집은 '적당한 증가'가 최고점 —
+    너무 없으면 관심 밖, 너무 많으면 이미 분산 중이라는 원안을 반영.
     """
     try:
-        a = abs(chg_30m_pct)
-        if a <= 0.1 and vol_z >= 1.5: return 20
-        elif a <= 0.3 and vol_z >= 1.0: return 10
-        return 0
+        if direction == 'prepump':
+            if 0.5 <= vol_z <= 1.2: return 10
+            elif 1.2 < vol_z <= 2.0: return 7
+            elif 0.2 <= vol_z < 0.5: return 6
+            elif 2.0 < vol_z <= 3.0: return 3
+            elif vol_z > 3.0: return 0
+            return 2   # 0.2 미만 — 관심도 자체가 없음
+        else:
+            if vol_z >= 3.0: return 10
+            elif vol_z >= 2.0: return 5
+            return 0
     except Exception:
         return 0
 
-def calculate_prepump_score(chg_30m_pct, vol_z, cvd_1h, rsi, ls_ratio,
-                             divergence_detected=False, bb_width_ratio=100.0):
-    """Pre-Pump 총점(0~100) = 고래매집(35) + 개미숏쏠림(25) + 가격정체(20) + 수급선행(20)."""
+def score_box_position(current_price, box_high, box_low, direction):
+    """
+    가격 위치 점수(매집 10점 / 분산 10점). 최근 N캔들(기본 20개, '20일 박스' 근사)
+    범위 안에서 지금 가격이 바닥권인지 상단권인지. 매집은 바닥권, 분산은 신고가 근처가 만점.
+    """
+    try:
+        if box_high is None or box_low is None or box_high <= box_low:
+            return 0
+        pos_pct = (current_price - box_low) / (box_high - box_low) * 100
+        if direction == 'prepump':
+            if pos_pct <= 25: return 10
+            elif pos_pct <= 50: return 8
+            elif pos_pct <= 80: return 5
+            return 0
+        else:
+            if pos_pct >= 80: return 10
+            elif pos_pct >= 60: return 5
+            return 0
+    except Exception:
+        return 0
+
+def score_rsi_box(rsi, direction):
+    """RSI 점수(매집 5점 / 분산 5점). 매집은 박스권 중립(45~60), 분산은 과매수(70+)가 만점."""
+    try:
+        if direction == 'prepump':
+            if 45 <= rsi <= 60: return 5
+            elif 40 <= rsi < 45: return 4
+            elif 60 < rsi <= 70: return 3
+            elif 30 <= rsi < 40: return 2
+            return 0
+        else:
+            if rsi >= 70: return 5
+            elif rsi >= 60: return 3
+            return 0
+    except Exception:
+        return 0
+
+def score_recent_move(recent_pct, direction):
+    """
+    최근 상승률 점수(매집: 급등 패널티 5점 / 분산: 급등 보너스 5점). recent_pct는
+    최근 N캔들 전 대비 현재가 변화율(%, '최근 3일' 근사 — 자세한 건 함수 docstring 참고).
+    매집은 이미 급등한 종목엔 감점(매집이 끝났을 가능성), 분산은 반대로 급등에 가점.
+    """
+    try:
+        if direction == 'prepump':
+            if recent_pct <= 3: return 5
+            elif recent_pct <= 7: return 3
+            elif recent_pct <= 10: return 2
+            elif recent_pct <= 15: return 1
+            return 0
+        else:
+            if recent_pct >= 15: return 5
+            elif recent_pct >= 10: return 3
+            return 0
+    except Exception:
+        return 0
+
+def calculate_prepump_score(oi_change_pct, cvd_1h, ema20, ema60, ema120, atr_pct, vol_z,
+                             current_price, box_high, box_low, rsi, recent_pct, chg_30m_pct=0.0):
+    """매집 총점(0~100) = OI지속(25)+CVD누적(20)+EMA압축(15)+ATR(10)+VolZ(10)+가격위치(10)+RSI(5)+최근상승패널티(5)."""
     if not ENABLE_PREPUMP_SCORE:
         return 0
     try:
-        score = (score_divergence(divergence_detected, cvd_1h, rsi, 'prepump')
-                 + score_ls_extreme(ls_ratio, 'prepump')
-                 + score_bb_compression(bb_width_ratio)
-                 + score_stealth_volz(chg_30m_pct, vol_z))
+        score = (score_oi_persistence(oi_change_pct, 'prepump')
+                 + score_cvd_cumulative(cvd_1h, 'prepump', chg_30m_pct)
+                 + score_ema_compression(ema20, ema60, ema120, 'prepump')
+                 + score_atr_state(atr_pct, 'prepump')
+                 + score_volz_state(vol_z, 'prepump')
+                 + score_box_position(current_price, box_high, box_low, 'prepump')
+                 + score_rsi_box(rsi, 'prepump')
+                 + score_recent_move(recent_pct, 'prepump'))
         return max(0, min(round(score), 100))
     except Exception:
         return 0
 
-def calculate_preshort_score(chg_30m_pct, vol_z, cvd_1h, rsi, ls_ratio,
-                              divergence_detected=False, bb_width_ratio=100.0):
-    """Pre-Short 총점(0~100) = 고래분산(35) + 개미롱쏠림(25) + 가격정체(20) + 수급선행(20)."""
+def calculate_preshort_score(oi_change_pct, cvd_1h, ema20, ema60, ema120, atr_pct, vol_z,
+                              current_price, box_high, box_low, rsi, recent_pct, chg_30m_pct=0.0):
+    """분산 총점(0~100) = OI감소·불일치(25)+CVD지속감소(20)+EMA과이격(15)+ATR급증(10)+VolZ폭발(10)+신고가부근(10)+RSI70+(5)+최근급등(5)."""
     if not ENABLE_PREPUMP_SCORE:
         return 0
     try:
-        score = (score_divergence(divergence_detected, cvd_1h, rsi, 'preshort')
-                 + score_ls_extreme(ls_ratio, 'preshort')
-                 + score_bb_compression(bb_width_ratio)
-                 + score_stealth_volz(chg_30m_pct, vol_z))
+        score = (score_oi_persistence(oi_change_pct, 'preshort')
+                 + score_cvd_cumulative(cvd_1h, 'preshort', chg_30m_pct)
+                 + score_ema_compression(ema20, ema60, ema120, 'preshort')
+                 + score_atr_state(atr_pct, 'preshort')
+                 + score_volz_state(vol_z, 'preshort')
+                 + score_box_position(current_price, box_high, box_low, 'preshort')
+                 + score_rsi_box(rsi, 'preshort')
+                 + score_recent_move(recent_pct, 'preshort'))
         return max(0, min(round(score), 100))
     except Exception:
         return 0
+
 
 # ── 동적 진입 컷오프 ─────────────────────────────────────────
 # 점수 컷을 75로 고정하지 않고, 시장 상태(전 코인 평균 ATR%)에 따라 조정한다.
 #   횡보장(평균 ATR% 낮음)  → 컷 상향 (신호 남발 방지)
 #   추세장(평균 ATR% 높음)  → 컷 하향 (기회 포착)
 current_min_score = MIN_SCORE  # score_updater가 매 사이클 갱신, GUI가 읽어서 색칠 기준으로 사용
-macro_state = {"btc_ema_l": 0, "btc_ema_s": 0, "fng_value": None, "fng_class": ""}  # score_updater가 매 사이클 갱신
 
 def compute_dynamic_min_score(results):
     """결과 리스트의 평균 ATR%로 시장 상태를 추정해 진입 컷을 반환한다.
@@ -1404,7 +1222,7 @@ def process_ticker(ticker):
         # 점수 계산 전에 먼저 구해둔다.
         vol_million = 0
         try:
-            all_ticker = get_all_ticker_snapshot()
+            all_ticker = Bithumb.get_current_price("ALL")
             info = all_ticker.get(ticker)
             if isinstance(info, dict):
                 acc = info.get('acc_trade_value_24H') or info.get('acc_trade_price_24h') or 0
@@ -1432,67 +1250,43 @@ def process_ticker(ticker):
             price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
             funding_rate, trade_value_usd, current_price, ema120, vol_million
         )
-        # Pre-Pump/Pre-Short (매집 구간 탐지). cvd_1h는 별도 API가 없어 위에서 이미 구한
-        # cvd_diff(최근 CVD_WINDOW_CANDLES 캔들 변화량)를 근사치로 재사용한다.
-        bull_div = check_bullish_rsi_divergence(df)
-        bear_div = check_bearish_rsi_divergence(df)
+        # Pre-Pump/Pre-Short (매집/분산 v3 — 장기 매집 사이클 탐지). cvd_1h는 별도 API가
+        # 없어 위에서 이미 구한 cvd_diff(최근 CVD_WINDOW_CANDLES 캔들 변화량)를 근사치로
+        # 재사용한다.
         try:
-            bb_width_series = (df['BB_UPPER'] - df['BB_LOWER']) / df['BB_MIDDLE'] * 100
-            lookback_bw = bb_width_series.iloc[-48:] if len(bb_width_series) >= 48 else bb_width_series
-            max_bw = float(lookback_bw.max())
-            cur_bw = float(bb_width_series.iloc[-1])
-            bb_width_ratio = (cur_bw / max_bw * 100) if max_bw > 0 else 100.0
+            box_lookback = df.iloc[-20:] if len(df) >= 20 else df
+            box_high = float(box_lookback['high'].max())
+            box_low = float(box_lookback['low'].min())
         except Exception:
-            bb_width_ratio = 100.0
-        prepump_score = calculate_prepump_score(chg_30m, vz, cvd_diff, rsi_val, ls_ratio,
-                                                 bull_div, bb_width_ratio)
-        preshort_score = calculate_preshort_score(chg_30m, vz, cvd_diff, rsi_val, ls_ratio,
-                                                   bear_div, bb_width_ratio)
-        # 항목별 세부점수 (로그 분석/배점 튜닝용 — 총점과 동일한 함수로 계산)
+            box_high = box_low = None
+        try:
+            # "최근 3일" 근사 — 기준봉(CANDLE_INTERVAL)에 따라 캔들 개수를 다르게 잡는다.
+            candles_per_3d = {"1h": 72, "2h": 36, "6h": 12, "12h": 6}.get(CANDLE_INTERVAL, 72)
+            ref_idx = -min(candles_per_3d, len(df) - 1) if len(df) > 1 else -1
+            ref_price = float(df['close'].iloc[ref_idx])
+            recent_pct = (current_price - ref_price) / ref_price * 100 if ref_price > 0 else 0.0
+        except Exception:
+            recent_pct = 0.0
+        prepump_score = calculate_prepump_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
+                                                 atr_pct, vz, current_price, box_high, box_low,
+                                                 rsi_val, recent_pct, chg_30m)
+        preshort_score = calculate_preshort_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
+                                                   atr_pct, vz, current_price, box_high, box_low,
+                                                   rsi_val, recent_pct, chg_30m)
+        # 항목별 세부점수 (로그 분석/배점 튜닝용 — 총점과 동일한 함수로 계산, 105점 원점수 기준)
         components = {
-            "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long', extension_pct),
-            "ema_s": score_ema_trend(current_price, ema20, ema60, ema120, 'short', extension_pct),
-            "pp_l": score_price_position_long(rsi_val, bb_percent, rsi_delta),
-            "pp_s": score_price_position_short(rsi_val, bb_percent, rsi_delta),
+            "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long'),
+            "ema_s": score_ema_trend(current_price, ema20, ema60, ema120, 'short'),
+            "pp_l": score_price_position_long(rsi_val, bb_percent),
+            "pp_s": score_price_position_short(rsi_val, bb_percent),
             "cvd_l": score_cvd_trend(cvd_diff, vol_window_sum, 'long'),
             "cvd_s": score_cvd_trend(cvd_diff, vol_window_sum, 'short'),
-            "oi_l": score_oi_v4(price_chg, oi_change_pct, 'long'),
-            "oi_s": score_oi_v4(price_chg, oi_change_pct, 'short'),
+            "oi_sc": score_oi_v3(oi_change_pct),
             "m30_l": score_chg30m_long(chg_30m),
             "m30_s": score_chg30m_short(chg_30m),
-            "volz_sc": score_volz_v4(vz),
+            "volz_sc": score_volz_v3(vz),
             "liquidity_sc": score_liquidity_filter(atr_pct, vol_million),
-            # Pre-Pump/Pre-Short 세부점수 (calculate_prepump_score/calculate_preshort_score와
-            # 동일 함수를 개별 호출 — PDF 리포트 등에서 구성요소별로 보고 싶을 때 쓴다)
-            "div_l": score_divergence(bull_div, cvd_diff, rsi_val, 'prepump'),
-            "div_s": score_divergence(bear_div, cvd_diff, rsi_val, 'preshort'),
-            "lsx_l": score_ls_extreme(ls_ratio, 'prepump'),
-            "lsx_s": score_ls_extreme(ls_ratio, 'preshort'),
-            "bb_comp_sc": score_bb_compression(bb_width_ratio),
-            "stealth_sc": score_stealth_volz(chg_30m, vz),
         }
-        # v5 하드필터 통과 여부(방향별) — 서버는 더 이상 이걸로 점수를 0으로 만들지
-        # 않고, 통과 여부만 같이 내려서 클라이언트 체크박스가 적용 여부를 결정한다.
-        filters_ok_long = passes_v5_hard_filters(
-            components["ema_l"], components["oi_l"], components["cvd_l"],
-            vz, components["m30_l"], components["liquidity_sc"])
-        filters_ok_short = passes_v5_hard_filters(
-            components["ema_s"], components["oi_s"], components["cvd_s"],
-            vz, components["m30_s"], components["liquidity_sc"])
-        # 하드필터를 구성하는 5개 조건을 방향별로 쪼갠 것 — PDF/CSV에서 "어떤 조건
-        # 때문에 걸렸는지" 개별적으로 확인할 수 있게 남긴다 (data_collector.py와 동일)
-        filt_detail = {
-            "filt_ema_oi_l": int(components["ema_l"] != 0 and components["oi_l"] >= 10),
-            "filt_ema_oi_s": int(components["ema_s"] != 0 and components["oi_s"] >= 10),
-            "filt_cvd_l": int(components["cvd_l"] >= 7),
-            "filt_cvd_s": int(components["cvd_s"] >= 7),
-            "filt_volz_ok": int(vz < 2.0),
-            "filt_m30_l": int(components["m30_l"] != 0),
-            "filt_m30_s": int(components["m30_s"] != 0),
-            "filt_liquidity_ok": int(components["liquidity_sc"] != 0),
-        }
-        filt_detail["passes_all_l"] = int(filters_ok_long)
-        filt_detail["passes_all_s"] = int(filters_ok_short)
 
         return {
             "ticker": ticker,
@@ -1502,8 +1296,6 @@ def process_ticker(ticker):
             "short_score": int(short_score),
             "prepump_score": int(prepump_score),
             "preshort_score": int(preshort_score),
-            "filters_ok_long": bool(filters_ok_long),
-            "filters_ok_short": bool(filters_ok_short),
             "rsi": round(float(latest['RSI']), 1),
             "rsi_delta": round(rsi_delta, 1),
             "vol_z": round(vz, 1),
@@ -1521,9 +1313,7 @@ def process_ticker(ticker):
             "ema20": round(ema20, 8) if ema20 is not None else None,
             "ema60": round(ema60, 8) if ema60 is not None else None,
             "ema120": round(ema120, 8) if ema120 is not None else None,
-            "extension_pct": round(extension_pct, 3),
             "components": components,
-            "filt_detail": filt_detail,
         }
     except Exception as e:
         print(f"[{ticker}] 데이터 수집 실패: {e}")
@@ -1594,9 +1384,8 @@ def score_updater(tickers_ref):
                 if res:
                     results.append(res)
         if results:
-            global current_min_score, macro_state
+            global current_min_score
             current_min_score = compute_dynamic_min_score(results)
-            macro_state = compute_macro_state(results)
             results.sort(key=lambda x: x['long_score'] + x['short_score'], reverse=True)
             with score_lock:
                 score_cache.clear()
@@ -1640,20 +1429,11 @@ def _atomic_write_csv(path, rows):
     os.replace(tmp, path)
 
 MARKET_COLS = ['ticker', 'price', 'price_usd', 'long_score', 'short_score',
-               'prepump_score', 'preshort_score', 'filters_ok_long', 'filters_ok_short',
+               'prepump_score', 'preshort_score',
                'rsi', 'rsi_delta', 'vol_z', 'bb_percent', 'cvd', 'cvd_diff', 'funding',
                'vol_24h_m', 'atr_pct', 'oi_change_pct', 'chg_30m', 'ls_ratio',
-               'ema20', 'ema60', 'ema120', 'extension_pct',
-               # v6 세부 컴포넌트
-               'ema_l', 'ema_s', 'pp_l', 'pp_s', 'cvd_l', 'cvd_s', 'oi_l', 'oi_s',
-               'm30_l', 'm30_s', 'volz_sc', 'liquidity_sc',
-               # Pre-Pump/Pre-Short 세부 컴포넌트
-               'div_l', 'div_s', 'lsx_l', 'lsx_s', 'bb_comp_sc', 'stealth_sc',
-               # v5 하드필터 개별 통과여부
-               'filt_ema_oi_l', 'filt_ema_oi_s', 'filt_cvd_l', 'filt_cvd_s', 'filt_volz_ok',
-               'filt_m30_l', 'filt_m30_s', 'filt_liquidity_ok', 'passes_all_l', 'passes_all_s',
-               'min_cut', 'watch_cut', 'pp_min_cut', 'interval', 'score_time', 'price_time',
-               'btc_ema_l', 'btc_ema_s', 'fng_value', 'fng_class']
+               'ema20', 'ema60',
+               'min_cut', 'watch_cut', 'pp_min_cut', 'interval', 'score_time', 'price_time']
 
 _last_score_time = [""]
 
@@ -1667,14 +1447,11 @@ def write_market_snapshot():
     pt = datetime.now().strftime('%H:%M:%S')
     rows = [MARKET_COLS]
     for t, r in snap.items():
-        comp = r.get('components', {}) or {}
-        filt = r.get('filt_detail', {}) or {}
         rows.append([
             t, prices.get(t, r.get('price', 0)),
             r.get('price_usd', '') if r.get('price_usd') is not None else '',
             r.get('long_score', 0), r.get('short_score', 0),
             r.get('prepump_score', 0), r.get('preshort_score', 0),
-            int(r.get('filters_ok_long', True)), int(r.get('filters_ok_short', True)),
             r.get('rsi', 0), r.get('rsi_delta', 0), r.get('vol_z', 0),
             r.get('bb_percent', 0), r.get('cvd', 0), r.get('cvd_diff', 0), r.get('funding', 0),
             r.get('vol_24h_m', 0), r.get('atr_pct', 0), r.get('oi_change_pct', 0),
@@ -1682,21 +1459,7 @@ def write_market_snapshot():
             r.get('ls_ratio', '') if r.get('ls_ratio') is not None else '',
             r.get('ema20', '') if r.get('ema20') is not None else '',
             r.get('ema60', '') if r.get('ema60') is not None else '',
-            r.get('ema120', '') if r.get('ema120') is not None else '',
-            r.get('extension_pct', 0),
-            comp.get('ema_l', 0), comp.get('ema_s', 0), comp.get('pp_l', 0), comp.get('pp_s', 0),
-            comp.get('cvd_l', 0), comp.get('cvd_s', 0), comp.get('oi_l', 0), comp.get('oi_s', 0),
-            comp.get('m30_l', 0), comp.get('m30_s', 0), comp.get('volz_sc', 0), comp.get('liquidity_sc', 0),
-            comp.get('div_l', 0), comp.get('div_s', 0), comp.get('lsx_l', 0), comp.get('lsx_s', 0),
-            comp.get('bb_comp_sc', 0), comp.get('stealth_sc', 0),
-            filt.get('filt_ema_oi_l', 1), filt.get('filt_ema_oi_s', 1),
-            filt.get('filt_cvd_l', 1), filt.get('filt_cvd_s', 1), filt.get('filt_volz_ok', 1),
-            filt.get('filt_m30_l', 1), filt.get('filt_m30_s', 1), filt.get('filt_liquidity_ok', 1),
-            filt.get('passes_all_l', 1), filt.get('passes_all_s', 1),
             current_min_score, WATCH_MIN_SCORE, PREPUMP_MIN_SCORE, CANDLE_INTERVAL, _last_score_time[0], pt,
-            macro_state.get('btc_ema_l', 0), macro_state.get('btc_ema_s', 0),
-            macro_state.get('fng_value', '') if macro_state.get('fng_value') is not None else '',
-            macro_state.get('fng_class', ''),
         ])
     try:
         _atomic_write_csv(MARKET_SNAPSHOT, rows)
@@ -1844,17 +1607,9 @@ def srv_set_margin_mode(mode):
 def srv_open(ticker, position_type, amount_won, leverage):
     global balance
     if not ticker: return False, "티커 없음"
+    if ticker in positions: return False, "이미 포지션이 존재합니다"
     if amount_won <= 0: return False, "금액이 올바르지 않습니다"
     if leverage <= 0: leverage = DEFAULT_LEVERAGE
-
-    existing = positions.get(ticker)
-    if existing and existing['position_type'] != position_type:
-        cur_dir = "롱" if existing['position_type'] == "long" else "숏"
-        return False, f"반대 방향({cur_dir}) 포지션이 이미 있습니다. 먼저 청산한 뒤 새로 진입하세요."
-
-    # 거시 필터(BTC추세/공포탐욕)는 더 이상 진입을 막지 않는다 — 상단 상태줄에 정보만
-    # 계속 표시하고, 진입 여부는 사람이 그 정보를 보고 직접 판단한다.
-
     entry_fee = (amount_won * leverage) * FEE_RATE
     total_cost = amount_won + entry_fee
     if balance < total_cost:
@@ -1875,7 +1630,7 @@ def srv_open(ticker, position_type, amount_won, leverage):
         current_price = latest_prices_usd.get(ticker, 0)
     if current_price <= 0:
         return False, "USD 가격 없음 (바이낸스 미상장 코인은 거래 불가)"
-    fill_price = current_price * (1 + SLIPPAGE_RATE) if position_type == "long" else current_price * (1 - SLIPPAGE_RATE)
+    entry_price = current_price * (1 + SLIPPAGE_RATE) if position_type == "long" else current_price * (1 - SLIPPAGE_RATE)
     balance -= total_cost
     if balance < 0: balance = 0
     # 진입 당시 '유효 점수'(추세추종/매집형 중 더 높은 쪽) 저장 — Predict Score의
@@ -1885,52 +1640,19 @@ def srv_open(ticker, position_type, amount_won, leverage):
         entry_score = max(snap.get('long_score', 0), snap.get('prepump_score', 0))
     else:
         entry_score = max(snap.get('short_score', 0), snap.get('preshort_score', 0))
-    direction = "롱" if position_type == "long" else "숏"
-    pfmt = lambda v: f"{v:,.2f}" if v >= 1 else f"{v:,.4f}"
-
-    if existing:
-        # 바이낸스 방식 추가 매수(같은 방향으로 재진입): 평단가는 "수량 기준" 가중평균으로,
-        # 증거금은 단순 합산, 레버리지는 (합산 명목가치 / 합산 증거금)의 내재값으로 재계산한다.
-        # 이렇게 하면 청산가(entry_price·leverage로부터 계산됨)도 자동으로 같이 바뀐다.
-        old_notional = existing['amount'] * existing['leverage']
-        new_notional = amount_won * leverage
-        old_qty = (old_notional / existing['entry_price']) if existing['entry_price'] > 0 else 0.0
-        new_qty = (new_notional / fill_price) if fill_price > 0 else 0.0
-        combined_qty = old_qty + new_qty
-        combined_notional = old_notional + new_notional
-        combined_margin = existing['amount'] + amount_won
-        avg_entry_price = (combined_notional / combined_qty) if combined_qty > 0 else fill_price
-        combined_leverage = max(1, int(round(combined_notional / combined_margin))) if combined_margin > 0 else leverage
-
-        existing['entry_price'] = avg_entry_price
-        existing['amount'] = combined_margin
-        existing['leverage'] = combined_leverage
-        existing['entry_fee'] = existing.get('entry_fee', 0) + entry_fee
-        existing['entry_score'] = entry_score  # 마지막 추가매수 시점 점수로 갱신 (직전 값은 덮어씀)
-        # entry_time은 최초 진입 시각을 그대로 유지한다 (포지션 "시작 시점"의 의미를 보존)
-
-        trade_history.append({'type': '추가매수', 'ticker': ticker, 'direction': direction,
-                              'amount': amount_won, 'leverage': leverage, 'entry_price': fill_price,
-                              'exit_price': 0, 'pnl': 0, 'pnl_rate_pct': 0,
-                              'entry_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'exit_time': '',
-                              'entry_score': entry_score})
-        save_to_csv()
-        return True, (f"{ticker} {direction} 추가매수 @ ${pfmt(fill_price)} → "
-                      f"평단가 ${pfmt(avg_entry_price)}, 증거금 ${combined_margin:,.2f}, "
-                      f"레버리지 {combined_leverage}x로 재계산됨")
-
     positions[ticker] = {
-        "entry_price": fill_price, "amount": amount_won, "leverage": leverage,
+        "entry_price": entry_price, "amount": amount_won, "leverage": leverage,
         "position_type": position_type, "entry_time": datetime.now(), "entry_fee": entry_fee,
         "entry_score": entry_score,
     }
+    direction = "롱" if position_type == "long" else "숏"
     trade_history.append({'type': '진입', 'ticker': ticker, 'direction': direction,
-                          'amount': amount_won, 'leverage': leverage, 'entry_price': fill_price,
+                          'amount': amount_won, 'leverage': leverage, 'entry_price': entry_price,
                           'exit_price': 0, 'pnl': 0, 'pnl_rate_pct': 0,
-                          'entry_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'exit_time': '',
-                          'entry_score': entry_score})
+                          'entry_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'exit_time': ''})
     save_to_csv()
-    return True, f"{ticker} {direction} 진입 @ ${pfmt(fill_price)}"
+    pfmt = f"{entry_price:,.2f}" if entry_price >= 1 else f"{entry_price:,.4f}"
+    return True, f"{ticker} {direction} 진입 @ ${pfmt}"
 
 def srv_close(ticker):
     global balance
@@ -1963,8 +1685,7 @@ def srv_close(ticker):
               'entry_price': pos['entry_price'], 'exit_price': price,
               'pnl': round(pnl, 2), 'pnl_rate_pct': pnl_rate_pct,
               'entry_time': pos['entry_time'].strftime('%Y-%m-%d %H:%M:%S') if isinstance(pos['entry_time'], datetime) else str(pos['entry_time']),
-              'exit_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-              'entry_score': pos.get('entry_score', 0)}
+              'exit_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     trade_history.append(record)
     append_history_csv(record)
     del positions[ticker]
@@ -2024,8 +1745,7 @@ def srv_close_partial(ticker, fraction):
               'entry_price': pos['entry_price'], 'exit_price': price,
               'pnl': round(pnl, 2), 'pnl_rate_pct': pnl_rate_pct,
               'entry_time': pos['entry_time'].strftime('%Y-%m-%d %H:%M:%S') if isinstance(pos['entry_time'], datetime) else str(pos['entry_time']),
-              'exit_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-              'entry_score': pos.get('entry_score', 0)}
+              'exit_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     trade_history.append(record)
     append_history_csv(record)
     save_to_csv()
@@ -2055,8 +1775,7 @@ def _liquidate_position(t, pos, cur_price, tag="강제청산"):
               'entry_price': entry, 'exit_price': cur_price,
               'pnl': round(pnl_after_fee, 2), 'pnl_rate_pct': round(pnl_after_fee / max(amt, 1) * 100, 2),
               'entry_time': et.strftime('%Y-%m-%d %H:%M:%S') if isinstance(et, datetime) else str(et),
-              'exit_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-              'entry_score': pos.get('entry_score', 0)}
+              'exit_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     trade_history.append(record)
     append_history_csv(record)
     return pnl_after_fee
@@ -2239,9 +1958,6 @@ def score_updater(tickers_ref):  # noqa: F811
 
 # ============================================================
 if __name__ == "__main__":
-    _check_single_instance()
-    import atexit
-    atexit.register(_release_instance_lock)
     print("=" * 50)
     print("트레이딩 서버 시작 (계산/계좌 엔진 — 마켓 로깅 없음, 수집은 별도 기기)")
     print(f"데이터 폴더: {SCRIPT_DIR}")
@@ -2279,5 +1995,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         running = False
         save_to_csv()
-        _release_instance_lock()
         print("\n서버 종료 (잔고/포지션 저장됨)")
