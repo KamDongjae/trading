@@ -56,6 +56,10 @@ CSV_HEADER = [
     "ls_ratio", "atr_pct", "oi_change_pct", "funding", "vol_24h_m",
     "ema20", "ema60", "ema120", "box_high", "box_low", "recent_pct",
     "long_score", "short_score", "prepump_score", "preshort_score", "interval",
+    # 롱/숏 Score(v3)의 세부 항목별 원점수 — 나중에 "어느 항목이 예측력이 있고
+    # 어느 항목이 노이즈인지" 분석할 때 필요해서 같이 로깅한다.
+    "ema_l", "ema_s", "pp_l", "pp_s", "cvd_l", "cvd_s",
+    "oi_sc", "m30_l", "m30_s", "volz_sc", "liquidity_sc",
 ]
 
 # 현재 로그 구간 상태 (get_output_path가 채워줌)
@@ -109,6 +113,7 @@ def _ensure_header(path):
 
 
 def _row_from_result(ts, r):
+    comp = r.get("components", {}) or {}
     return [
         ts, r.get("ticker", ""), r.get("price", ""), r.get("price_usd", ""),
         r.get("chg_30m", ""), r.get("vol_z", ""), r.get("cvd_diff", ""),
@@ -120,6 +125,11 @@ def _row_from_result(ts, r):
         r.get("long_score", ""), r.get("short_score", ""),
         r.get("prepump_score", ""), r.get("preshort_score", ""),
         srv.CANDLE_INTERVAL,
+        comp.get("ema_l", ""), comp.get("ema_s", ""),
+        comp.get("pp_l", ""), comp.get("pp_s", ""),
+        comp.get("cvd_l", ""), comp.get("cvd_s", ""),
+        comp.get("oi_sc", ""), comp.get("m30_l", ""), comp.get("m30_s", ""),
+        comp.get("volz_sc", ""), comp.get("liquidity_sc", ""),
     ]
 
 

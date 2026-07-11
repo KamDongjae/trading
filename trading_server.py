@@ -1692,6 +1692,27 @@ _REPORT_DESCRIPTIONS = [
     ("liquidity_sc", "Long/Short Score component (max 5, shared): ATR + 24h volume liquidity pass/fail filter."),
 ]
 
+def _wrap_text_to_lines(text, max_chars):
+    """
+    직접 줄바꿈 계산. multi_cell()의 자동 줄바꿈이 일부 fpdf2 버전/환경에서
+    글자 몇 개만 그리고 멈추는 버그가 확인돼서, 그 기능 자체를 안 쓰고
+    파이썬에서 미리 줄을 나눈 뒤 cell()로 한 줄씩 그린다.
+    """
+    words = text.split()
+    lines = []
+    cur = ""
+    for w in words:
+        candidate = (cur + " " + w).strip()
+        if len(candidate) <= max_chars:
+            cur = candidate
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines or [""]
+
 def _report_draw_table(pdf, rows, title):
     full_w = pdf.w - pdf.l_margin - pdf.r_margin
     pdf.set_font('Helvetica', 'B', 14)
@@ -1757,17 +1778,20 @@ def srv_generate_report(save_dir=None):
         pdf = FPDF(orientation='L', unit='mm', format='A3')
         pdf.set_margins(10, 10, 10)
         pdf.set_auto_page_break(True, margin=10)
+        warnings = []
 
         try:
             pdf.add_page()
             _report_draw_table(pdf, top_long, f"Top 10 by Long Score ({ts})")
         except Exception as e:
+            warnings.append(f"Long 표 실패: {e}")
             print(f"⚠️ 리포트 Long 표 생성 실패(건너뜀): {e}")
 
         try:
             pdf.add_page()
             _report_draw_table(pdf, top_short, f"Top 10 by Short Score ({ts})")
         except Exception as e:
+            warnings.append(f"Short 표 실패: {e}")
             print(f"⚠️ 리포트 Short 표 생성 실패(건너뜀): {e}")
 
         try:
@@ -1776,21 +1800,33 @@ def srv_generate_report(save_dir=None):
             pdf.set_font('Helvetica', 'B', 14)
             pdf.cell(full_w, 8, f"Indicator Descriptions ({len(_REPORT_DESCRIPTIONS)} items)", ln=1)
             pdf.ln(2)
+            skipped_items = 0
+            # 9pt Helvetica 기준 400mm 너비에 대략 165자 정도 들어간다. 여유 있게 140자로 줄바꿈.
+            wrap_chars = 140
             for name, desc in _REPORT_DESCRIPTIONS:
                 try:
+                    pdf.set_x(pdf.l_margin)
                     pdf.set_font('Helvetica', 'B', 10)
-                    pdf.multi_cell(full_w, 5, f"- {name}")
+                    pdf.cell(full_w, 5, f"- {name}", ln=1)
                     pdf.set_font('Helvetica', '', 9)
-                    pdf.multi_cell(full_w, 5, desc)
+                    for line in _wrap_text_to_lines(desc, wrap_chars):
+                        pdf.set_x(pdf.l_margin)
+                        pdf.cell(full_w, 5, line, ln=1)
                     pdf.ln(1)
                 except Exception as e:
+                    skipped_items += 1
                     print(f"⚠️ 리포트 설명 항목 '{name}' 건너뜀: {e}")
+            if skipped_items:
+                warnings.append(f"설명 {skipped_items}/{len(_REPORT_DESCRIPTIONS)}개 항목 건너뜀")
         except Exception as e:
+            warnings.append(f"설명 페이지 전체 실패: {e}")
             print(f"⚠️ 리포트 설명 페이지 생성 실패(건너뜀): {e}")
 
         fname = f"indicator_report_{datetime.now():%Y%m%d_%H%M%S}.pdf"
         path = os.path.join(out_dir, fname)
         pdf.output(path)
+        if warnings:
+            return True, f"리포트 생성 완료(일부 누락): {path}\n" + " / ".join(warnings)
         return True, f"리포트 생성 완료: {path}"
     except Exception as e:
         return False, f"리포트 생성 실패: {e}"
