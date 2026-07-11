@@ -359,6 +359,8 @@ class TradingClient:
         self._price_hist = {}  # ticker -> deque(price) — Predict Score의 가격 기울기(Slope) 계산용
         self._latest_row_by_ticker = {}
         self._last_pos_order = None
+        self._last_pos_reorder_time = 0.0
+        self._pos_reorder_interval = 3.0  # 코인 목록과 동일한 이유로 스로틀 (매 폴링마다 재배치하면 깜빡임)
         self._pos_panel_visible = False
         self.view_mode = 'coins'  # 'coins' | 'positions' — 뷰 전환 버튼으로 바뀜
 
@@ -785,7 +787,8 @@ class TradingClient:
             direction = "롱" if is_long else "숏"
 
             card = self.pos_cards.get(t)
-            if card is None:
+            is_new_card = card is None
+            if is_new_card:
                 card = tk.Frame(self.pos_inner, bg=DARK_BG, bd=1, relief="solid",
                                  highlightbackground="#2b2f36", highlightthickness=1)
 
@@ -881,6 +884,7 @@ class TradingClient:
                     wdg.bind("<B1-Motion>", self._pos_motion, add="+")
                     wdg.bind("<ButtonRelease-1>", _fill, add="+")
                 self.pos_cards[t] = card
+                card.pack(fill="x", padx=4, pady=4)
 
             self._cfg(card._badge, text=side_txt, bg=side_color)
             self._cfg(card._title, text=t)
@@ -901,12 +905,20 @@ class TradingClient:
             self._cfg(card._liq_val, text=fmt(liq))
 
         new_pos_order = [p['ticker'] for p in pos_list]
-        if new_pos_order != getattr(self, '_last_pos_order', None):
+        now = time.time()
+        order_changed = new_pos_order != self._last_pos_order
+        due = (now - self._last_pos_reorder_time) >= self._pos_reorder_interval
+        if order_changed and (due or not self._last_pos_order):
+            prev = None
             for t in new_pos_order:
-                self.pos_cards[t].pack_forget()
-            for t in new_pos_order:
-                self.pos_cards[t].pack(fill="x", padx=4, pady=4)
+                w = self.pos_cards[t]
+                if prev is None:
+                    w.pack_configure(fill="x", padx=4, pady=4)
+                else:
+                    w.pack_configure(fill="x", padx=4, pady=4, after=prev)
+                prev = w
             self._last_pos_order = new_pos_order
+            self._last_pos_reorder_time = now
 
         self.pos_inner.update_idletasks()
         self.pos_canvas.configure(scrollregion=self.pos_canvas.bbox("all"))
@@ -1106,15 +1118,21 @@ class TradingClient:
                     del self.card_widgets[ticker]
 
             # 순서 재배치는 실제로 순서가 바뀌었고, 마지막 재배치 후 일정 시간(또는 정렬버튼 클릭)이
-            # 지났을 때만 수행한다. 매 폴링(0.7초)마다 전부 다시 pack하면 화면이 계속 깜빡인다.
+            # 지났을 때만 수행한다. pack_forget()으로 전부 뗐다 다시 붙이면 그 순간 리스트가
+            # 통째로 사라졌다 다시 그려져서 눈에 띄게 번쩍인다 — 대신 pack_configure(after=...)로
+            # 카드를 하나씩 '제자리로 슬쩍 이동'만 시키면 화면이 끊기지 않는다.
             now = time.time()
             order_changed = new_order != self._last_table_order
             due = (now - self._last_reorder_time) >= self._reorder_interval
             if order_changed and (self._force_resort or due or not self._last_table_order):
+                prev = None
                 for ticker in new_order:
-                    self.card_widgets[ticker].pack_forget()
-                for ticker in new_order:
-                    self.card_widgets[ticker].pack(fill="x", padx=2, pady=1)
+                    w = self.card_widgets[ticker]
+                    if prev is None:
+                        w.pack_configure(fill="x", padx=2, pady=1)
+                    else:
+                        w.pack_configure(fill="x", padx=2, pady=1, after=prev)
+                    prev = w
                 self._last_table_order = new_order
                 self._last_reorder_time = now
                 self._force_resort = False
