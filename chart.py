@@ -1,6 +1,11 @@
 import python_bithumb
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import matplotlib
+matplotlib.use("Agg")  # 화면 없이 이미지로만 그리는 백엔드 (Tkinter랑 별개, GUI 스레드 안 건드림)
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+from matplotlib.patches import Rectangle
 import pandas as pd
 from datetime import datetime
 import os
@@ -28,6 +33,33 @@ INTERVAL_EN = {
     "30분": "30min", "60분": "60min", "6시간": "6h", "1일": "1d",
 }
 DRAG_THRESHOLD_PX = 50  # 이만큼 이상 좌우로 끌어야 다음/이전 차트로 넘어감
+
+# matplotlib 기본 폰트(DejaVu Sans)는 한글이 없어서 네모로 깨진다. 나눔고딕/Noto Sans CJK
+# 같은 한글 폰트가 시스템에 있으면 그걸 쓰고, 없으면 라벨 자체를 영문으로 자동 전환한다
+# (깨진 글자로 보이는 것보단 영문이 낫다).
+def _find_korean_font():
+    candidates = ["NanumGothic", "NanumBarunGothic", "Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic"]
+    available = {f.name for f in fm.fontManager.ttflist}
+    for c in candidates:
+        if c in available:
+            return c
+    return None
+
+_KO_FONT = _find_korean_font()
+if _KO_FONT:
+    matplotlib.rcParams['font.family'] = _KO_FONT
+    matplotlib.rcParams['axes.unicode_minus'] = False
+    print(f"✅ matplotlib 한글 폰트: {_KO_FONT}")
+else:
+    print("⚠️ 한글 폰트를 못 찾아서 차트 라벨을 영문으로 표시합니다 "
+          "(설치하려면: apt install fonts-nanum fonts-noto-cjk && fc-cache -fv)")
+
+LBL = {
+    "volume": "거래량" if _KO_FONT else "Volume",
+    "rsi": "RSI(14)",
+    "rsi_delta": "RSI Δ" if _KO_FONT else "RSI Delta",
+    "chart_suffix": "봉 차트" if _KO_FONT else " chart",
+}
 # ===========================================
 
 root = tk.Tk()
@@ -38,17 +70,17 @@ coin_var = tk.StringVar(value="BTC")
 interval_var = tk.StringVar(value="60분")
 count_var = tk.IntVar(value=200)
 
-charts = []          # [{coin, interval_text, df, fig, img(PIL)}]
+charts = []          # [{coin, interval_text, df, fig(plotly, HTML용), img(PIL, matplotlib로 그린 미리보기/PNG/PDF용)}]
 current_index = [0]
 
-# ================== 지표/차트 계산 ==================
-def build_chart(coin, interval_text, count):
-    """빗썸 OHLCV를 받아 지표를 붙이고 plotly figure를 만든다. 실패하면 (None, None)."""
+# ================== 지표 계산 (공통) ==================
+def load_data(coin, interval_text, count):
+    """빗썸 OHLCV + 지표(MA5/20/60, RSI, RSI Delta)를 붙인 DataFrame. 실패하면 None."""
     ticker = f"KRW-{coin}"
     interval = intervals[interval_text]
     df = python_bithumb.get_ohlcv(ticker=ticker, interval=interval, count=count)
     if df is None or len(df) == 0:
-        return None, None
+        return None
     df.index = pd.to_datetime(df.index)
 
     df['MA5'] = df['close'].rolling(5).mean()
@@ -61,7 +93,10 @@ def build_chart(coin, interval_text, count):
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
     df['RSI_Delta'] = df['RSI'].diff()
+    return df
 
+# ================== plotly: 인터랙티브 HTML 전용 (크롬/kaleido 필요 없음) ==================
+def build_plotly_fig(df, ticker, interval_text):
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.05,
                          row_heights=[0.50, 0.20, 0.15, 0.15],
                          subplot_titles=(f'{ticker} {interval_text}봉', '거래량', 'RSI (14)', 'RSI Delta'))
@@ -87,7 +122,75 @@ def build_chart(coin, interval_text, count):
         legend=dict(x=0.01, y=0.98, bgcolor='rgba(0,0,0,0.7)'),
         xaxis_rangeslider_visible=False,
     )
-    return df, fig
+    return fig
+
+# ================== matplotlib: 미리보기 + PNG + PDF 전용 (크롬 필요 없음) ==================
+def build_matplotlib_png(df, ticker, interval_text, dpi=130):
+    """캔들+MA+거래량+RSI+RSI Delta를 matplotlib으로 그려서 PNG 바이트로 반환."""
+    n = len(df)
+    x = range(n)  # 캔들 간격을 균일하게 보이려고 정수 인덱스 사용 (거래 없는 구간 안 벌어지게)
+
+    fig, axes = plt.subplots(
+        4, 1, figsize=(14, 10), dpi=dpi, sharex=True,
+        gridspec_kw={'height_ratios': [3.2, 1.2, 1.0, 1.0], 'hspace': 0.08},
+        facecolor='#111111'
+    )
+    ax_price, ax_vol, ax_rsi, ax_rd = axes
+    for ax in axes:
+        ax.set_facecolor('#111111')
+        ax.tick_params(colors='#cccccc', labelsize=8)
+        for spine in ax.spines.values():
+            spine.set_color('#444444')
+        ax.grid(color='#333333', linewidth=0.5, alpha=0.6)
+
+    # ── 캔들스틱 ──
+    width = 0.6
+    up_color, down_color = '#00ff88', '#ff3838'
+    for i, (_, row) in enumerate(df.iterrows()):
+        color = up_color if row['close'] >= row['open'] else down_color
+        ax_price.plot([i, i], [row['low'], row['high']], color=color, linewidth=0.8, zorder=2)
+        body_low = min(row['open'], row['close'])
+        body_h = abs(row['close'] - row['open']) or (row['high'] * 0.0005)
+        ax_price.add_patch(Rectangle((i - width / 2, body_low), width, body_h,
+                                      facecolor=color, edgecolor=color, zorder=3))
+
+    ax_price.plot(x, df['MA5'], color='#ffff00', linewidth=1.2, label='MA5')
+    ax_price.plot(x, df['MA20'], color='#00ffff', linewidth=1.2, label='MA20')
+    ax_price.plot(x, df['MA60'], color='#ff00ff', linewidth=1.2, label='MA60')
+    ax_price.legend(loc='upper left', facecolor='#111111', edgecolor='#444444',
+                     labelcolor='#dddddd', fontsize=8)
+    ax_price.set_title(f'{ticker} {interval_text}{LBL["chart_suffix"]}', color='white', fontsize=13, pad=10)
+
+    # ── 거래량 ──
+    vol_colors = [up_color if r['close'] >= r['open'] else down_color for _, r in df.iterrows()]
+    ax_vol.bar(x, df['volume'], color=vol_colors, width=width)
+    ax_vol.set_ylabel(LBL["volume"], color='#cccccc', fontsize=9)
+
+    # ── RSI ──
+    ax_rsi.plot(x, df['RSI'], color='#ffa500', linewidth=1.3)
+    ax_rsi.axhline(30, color='lime', linestyle='--', linewidth=0.8)
+    ax_rsi.axhline(70, color='red', linestyle='--', linewidth=0.8)
+    ax_rsi.set_ylabel(LBL["rsi"], color='#cccccc', fontsize=9)
+    ax_rsi.set_ylim(0, 100)
+
+    # ── RSI Delta ──
+    ax_rd.plot(x, df['RSI_Delta'], color='#00ccff', linewidth=1.3)
+    ax_rd.axhline(0, color='white', linestyle=':', linewidth=0.8)
+    ax_rd.set_ylabel(LBL["rsi_delta"], color='#cccccc', fontsize=9)
+
+    # x축 라벨: 너무 촘촘하면 겹치니 최대 10개 정도만 표시
+    step = max(n // 10, 1)
+    tick_idx = list(range(0, n, step))
+    tick_labels = [df.index[i].strftime('%m-%d %H:%M') for i in tick_idx]
+    ax_rd.set_xticks(tick_idx)
+    ax_rd.set_xticklabels(tick_labels, rotation=30, ha='right')
+    ax_price.set_xlim(-1, n)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', facecolor=fig.get_facecolor(), bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
 
 # ================== 입력확인: 미리보기만 (저장 안 함) ==================
 def on_confirm():
@@ -111,14 +214,17 @@ def on_confirm():
     failed = []
     for coin in coins:
         try:
-            df, fig = build_chart(coin, interval_text, count)
+            df = load_data(coin, interval_text, count)
             if df is None:
                 failed.append(coin)
                 continue
-            png_bytes = fig.to_image(format="png", width=1400, height=1000, scale=1.3)
+            ticker = f"KRW-{coin}"
+            plotly_fig = build_plotly_fig(df, ticker, interval_text)
+            png_bytes = build_matplotlib_png(df, ticker, interval_text)
             img = Image.open(io.BytesIO(png_bytes))
-            img.load()  # 바이트 버퍼는 여기서 닫혀도 되게 즉시 로드
-            charts.append({"coin": coin, "interval_text": interval_text, "df": df, "fig": fig, "img": img})
+            img.load()
+            charts.append({"coin": coin, "interval_text": interval_text, "df": df,
+                            "plotly_fig": plotly_fig, "img": img})
         except Exception as e:
             print(f"{coin} 차트 생성 실패: {e}")
             failed.append(coin)
@@ -126,8 +232,7 @@ def on_confirm():
     btn_confirm.config(state="normal")
     if not charts:
         status_label.config(text="")
-        messagebox.showerror("오류", "차트를 하나도 못 만들었습니다.\n실패: " + ", ".join(failed) +
-                              "\n\n(kaleido 미설치면 미리보기 자체가 안 됩니다: pip install kaleido)")
+        messagebox.showerror("오류", "차트를 하나도 못 만들었습니다.\n실패: " + ", ".join(failed))
         return
 
     current_index[0] = 0
@@ -180,11 +285,11 @@ def on_export():
     saved, failed = [], []
 
     for c in charts:
-        coin, interval_text, df, fig = c['coin'], c['interval_text'], c['df'], c['fig']
+        coin, interval_text, df = c['coin'], c['interval_text'], c['df']
         base = f"{coin.lower()}-{interval_text}-{time_str}"
 
         try:
-            fig.write_html(os.path.join(OUTPUT_DIR, base + ".html"))
+            c['plotly_fig'].write_html(os.path.join(OUTPUT_DIR, base + ".html"))
             saved.append(base + ".html")
         except Exception as e:
             failed.append(f"{coin} HTML: {e}")
@@ -198,16 +303,16 @@ def on_export():
 
         png_path = os.path.join(OUTPUT_DIR, base + ".png")
         try:
-            fig.write_image(png_path, width=1400, height=1000, scale=2)
+            c['img'].save(png_path)
             saved.append(base + ".png")
         except Exception as e:
-            failed.append(f"{coin} PNG(kaleido 필요): {e}")
+            failed.append(f"{coin} PNG: {e}")
             png_path = None
 
         if png_path:
             try:
                 from fpdf import FPDF
-                img_w_px, img_h_px = Image.open(png_path).size
+                img_w_px, img_h_px = c['img'].size
                 aspect = img_h_px / img_w_px
                 pdf = FPDF(orientation='L', unit='mm', format='A4')
                 pdf.set_margins(8, 8, 8)
@@ -227,7 +332,7 @@ def on_export():
                 pdf.output(os.path.join(OUTPUT_DIR, base + ".pdf"))
                 saved.append(base + ".pdf")
             except ImportError:
-                failed.append(f"{coin} PDF(fpdf2/pillow 필요)")
+                failed.append(f"{coin} PDF(fpdf2 필요)")
             except Exception as e:
                 failed.append(f"{coin} PDF: {e}")
 
