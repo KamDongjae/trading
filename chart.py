@@ -70,7 +70,7 @@ def show_current_chart():
     if not charts:
         return
     coin, fig = charts[current_index]
-    html_path = f"/storage/emulated/0/Pictures/preview_{coin}_{datetime.now().strftime('%H%M%S')}.html"
+    html_path = f"/storage/emulated/0/Documents/chart/preview_{coin}_{datetime.now().strftime('%H%M%S')}.html"
     fig.write_html(html_path)
     webbrowser.open(f"file://{html_path}")
 
@@ -113,7 +113,7 @@ def export_charts():
         messagebox.showwarning("경고", "먼저 입력 확인을 눌러주세요.")
         return
 
-    pictures_dir = "/storage/emulated/0/Pictures"
+    pictures_dir = "/storage/emulated/0/Documents/chart"
     os.makedirs(pictures_dir, exist_ok=True)
     now = datetime.now().strftime("%Y%m%d-%H%M")
     saved = 0
