@@ -1,6 +1,4 @@
 import python_bithumb
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import matplotlib
 matplotlib.use("Agg")  # 화면 없이 이미지로만 그리는 백엔드 (Tkinter랑 별개, GUI 스레드 안 건드림)
 import matplotlib.pyplot as plt
@@ -26,11 +24,6 @@ intervals = {
     "60분":  "minute60",
     "6시간": "minute360",
     "1일":   "day",
-}
-# 한글은 fpdf2 기본 Helvetica 폰트로 못 그려서, PDF 제목에 쓸 봉 이름은 영문으로 매핑.
-INTERVAL_EN = {
-    "1분": "1min", "5분": "5min", "10분": "10min", "15분": "15min",
-    "30분": "30min", "60분": "60min", "6시간": "6h", "1일": "1d",
 }
 DRAG_THRESHOLD_PX = 50  # 이만큼 이상 좌우로 끌어야 다음/이전 차트로 넘어감
 
@@ -70,7 +63,7 @@ coin_var = tk.StringVar(value="BTC")
 interval_var = tk.StringVar(value="60분")
 count_var = tk.IntVar(value=200)
 
-charts = []          # [{coin, interval_text, df, fig(plotly, HTML용), img(PIL, matplotlib로 그린 미리보기/PNG/PDF용)}]
+charts = []          # [{coin, interval_text, df, img(PIL, matplotlib로 그린 미리보기/PNG)}]
 current_index = [0]
 
 # ================== 지표 계산 (공통) ==================
@@ -95,36 +88,7 @@ def load_data(coin, interval_text, count):
     df['RSI_Delta'] = df['RSI'].diff()
     return df
 
-# ================== plotly: 인터랙티브 HTML 전용 (크롬/kaleido 필요 없음) ==================
-def build_plotly_fig(df, ticker, interval_text):
-    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.05,
-                         row_heights=[0.50, 0.20, 0.15, 0.15],
-                         subplot_titles=(f'{ticker} {interval_text}봉', '거래량', 'RSI (14)', 'RSI Delta'))
-
-    fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'],
-                                  low=df['low'], close=df['close'],
-                                  increasing_line_color='#00ff88',
-                                  decreasing_line_color='#ff3838'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA5'], line=dict(color='#ffff00', width=1.8), name='MA5'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], line=dict(color='#00ffff', width=1.8), name='MA20'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA60'], line=dict(color='#ff00ff', width=1.8), name='MA60'), row=1, col=1)
-    fig.add_trace(go.Bar(x=df.index, y=df['volume'], name='Volume', marker_color='#7777ff'), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='#ffa500', width=2), name='RSI'), row=3, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['RSI_Delta'], line=dict(color='#00ccff', width=2), name='RSI Delta'), row=4, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="lime", row=3, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
-    fig.add_hline(y=0, line_dash="dot", line_color="white", row=4, col=1)
-
-    fig.update_layout(
-        title=f'{ticker} {interval_text}봉 차트',
-        template='plotly_dark',
-        height=1000, width=1400,
-        legend=dict(x=0.01, y=0.98, bgcolor='rgba(0,0,0,0.7)'),
-        xaxis_rangeslider_visible=False,
-    )
-    return fig
-
-# ================== matplotlib: 미리보기 + PNG + PDF 전용 (크롬 필요 없음) ==================
+# ================== matplotlib: 미리보기 + PNG 전용 ==================
 def build_matplotlib_png(df, ticker, interval_text, dpi=130):
     """캔들+MA+거래량+RSI+RSI Delta를 matplotlib으로 그려서 PNG 바이트로 반환."""
     n = len(df)
@@ -219,12 +183,10 @@ def on_confirm():
                 failed.append(coin)
                 continue
             ticker = f"KRW-{coin}"
-            plotly_fig = build_plotly_fig(df, ticker, interval_text)
             png_bytes = build_matplotlib_png(df, ticker, interval_text)
             img = Image.open(io.BytesIO(png_bytes))
             img.load()
-            charts.append({"coin": coin, "interval_text": interval_text, "df": df,
-                            "plotly_fig": plotly_fig, "img": img})
+            charts.append({"coin": coin, "interval_text": interval_text, "df": df, "img": img})
         except Exception as e:
             print(f"{coin} 차트 생성 실패: {e}")
             failed.append(coin)
@@ -275,7 +237,7 @@ def on_resize(_event=None):
     if charts:
         show_chart(current_index[0])
 
-# ================== 차트 출력: 실제 파일 저장 ==================
+# ================== 차트 출력: 실제 파일 저장 (CSV + PNG만) ==================
 def on_export():
     if not charts:
         messagebox.showerror("오류", "먼저 '입력확인'으로 차트를 불러오세요")
@@ -289,52 +251,17 @@ def on_export():
         base = f"{coin.lower()}-{interval_text}-{time_str}"
 
         try:
-            c['plotly_fig'].write_html(os.path.join(OUTPUT_DIR, base + ".html"))
-            saved.append(base + ".html")
-        except Exception as e:
-            failed.append(f"{coin} HTML: {e}")
-
-        try:
             df.to_csv(os.path.join(OUTPUT_DIR, base + ".csv"), index=True,
                       index_label="datetime", encoding="utf-8-sig")
             saved.append(base + ".csv")
         except Exception as e:
             failed.append(f"{coin} CSV: {e}")
 
-        png_path = os.path.join(OUTPUT_DIR, base + ".png")
         try:
-            c['img'].save(png_path)
+            c['img'].save(os.path.join(OUTPUT_DIR, base + ".png"))
             saved.append(base + ".png")
         except Exception as e:
             failed.append(f"{coin} PNG: {e}")
-            png_path = None
-
-        if png_path:
-            try:
-                from fpdf import FPDF
-                img_w_px, img_h_px = c['img'].size
-                aspect = img_h_px / img_w_px
-                pdf = FPDF(orientation='L', unit='mm', format='A4')
-                pdf.set_margins(8, 8, 8)
-                pdf.set_auto_page_break(False)
-                pdf.add_page()
-                page_w = pdf.w - pdf.l_margin - pdf.r_margin
-                interval_en = INTERVAL_EN.get(interval_text, interval_text)
-                pdf.set_font('Helvetica', 'B', 14)
-                pdf.cell(page_w, 8, f"{coin} - {interval_en} - {time_str}", ln=1)
-                img_w = page_w
-                img_h = img_w * aspect
-                max_h = pdf.h - pdf.t_margin - pdf.b_margin - 12
-                if img_h > max_h:
-                    img_h = max_h
-                    img_w = img_h / aspect
-                pdf.image(png_path, x=pdf.l_margin, y=pdf.get_y() + 2, w=img_w, h=img_h)
-                pdf.output(os.path.join(OUTPUT_DIR, base + ".pdf"))
-                saved.append(base + ".pdf")
-            except ImportError:
-                failed.append(f"{coin} PDF(fpdf2 필요)")
-            except Exception as e:
-                failed.append(f"{coin} PDF: {e}")
 
     msg = f"{len(charts)}개 코인 저장 완료\n경로: {OUTPUT_DIR}\n\n" + "\n".join(saved[:16])
     if len(saved) > 16:
