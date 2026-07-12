@@ -13,7 +13,7 @@ from tkinter import ttk, messagebox
 from PIL import Image, ImageTk
 
 # ================== 설정 ==================
-OUTPUT_DIR = "/root/Pictures"  # 차트 출력 저장 경로. 안드로이드 Termux면 "/storage/emulated/0/Pictures"로 바꿀 것.
+OUTPUT_DIR = "/storage/emulated/0/Documents/chart"  # 차트 출력 저장 경로. 안드로이드 Termux면 "/storage/emulated/0/Pictures"로 바꿀 것.
 
 intervals = {
     "1분":   "minute1",
