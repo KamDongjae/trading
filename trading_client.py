@@ -51,6 +51,8 @@ current_margin_mode = "cross"  # 서버 기본값과 동일. read_account_snapsh
 bank_balance = 0.0
 bank_total_deposit = 0.0
 bank_total_spent = 0.0
+fng_value = None
+fng_class = ""
 ALLOWED_INTERVALS = ["1h", "2h", "6h", "12h"]
 
 def _f(v, default=0.0):
@@ -110,7 +112,7 @@ def read_market_snapshot():
         return None
 
 def read_account_snapshot():
-    global current_margin_mode, bank_balance, bank_total_deposit, bank_total_spent
+    global current_margin_mode, bank_balance, bank_total_deposit, bank_total_spent, fng_value, fng_class
     try:
         balance = 0
         ts = ""
@@ -133,6 +135,10 @@ def read_account_snapshot():
                     bank_total_deposit = round(_f(row[1]), 2)
                 elif row[0] == 'bank_total_spent':
                     bank_total_spent = round(_f(row[1]), 2)
+                elif row[0] == 'fng_value':
+                    fng_value = int(_f(row[1])) if len(row) > 1 and row[1] != '' else None
+                elif row[0] == 'fng_class':
+                    fng_class = row[1] if len(row) > 1 else ""
                 elif row[0] == 'positions':
                     parse_mode = 'positions'
                     continue
@@ -257,6 +263,8 @@ class TradingClient:
                                      relief="raised", bd=1, cursor="hand2", padx=6, pady=1)
         btn_bank_withdraw.pack(side="left", padx=4)
         btn_bank_withdraw.bind("<ButtonRelease-1>", lambda e: self.bank_withdraw())
+        self.fng_label = tk.Label(row0, text="공포탐욕지수: -", font=("Arial", FONT_BOLD_LABEL, "bold"), fg="gray")
+        self.fng_label.pack(side="right", padx=LABEL_PADX)
 
         row1 = tk.Frame(info_outer)
         row1.pack(fill="x", padx=4, pady=(3, 1))
@@ -547,7 +555,7 @@ class TradingClient:
 
     def _pos_motion(self, event):
         dy = event.y_root - self._pos_drag["y"]
-        if abs(dy) > 4:
+        if abs(dy) > 12:  # 터치스크린은 탭할 때도 손가락이 몇 px씩 흔들려서 4px는 너무 예민했음
             self._pos_drag["dragged"] = True
         h = max(self.pos_canvas.winfo_height(), 1)
         ylo, yhi = self.pos_canvas.yview()
@@ -793,12 +801,24 @@ class TradingClient:
                                  highlightbackground="#2b2f36", highlightthickness=1)
 
                 # --- 헤더: 배지 + 티커 + Perp/Cross 태그 + 경고 ---
-                hdr = tk.Frame(card, bg=DARK_BG)
+                hdr = tk.Frame(card, bg=DARK_BG, cursor="hand2")
                 hdr.pack(fill="x", padx=8, pady=(8, 4))
-                card._badge = tk.Label(hdr, font=("Arial", fs, "bold"), width=2, fg="white")
+                card._badge = tk.Label(hdr, font=("Arial", fs, "bold"), width=2, fg="white", cursor="hand2")
                 card._badge.pack(side="left")
-                card._title = tk.Label(hdr, font=("Arial", fs + 1, "bold"), bg=DARK_BG, fg=FG)
+                card._title = tk.Label(hdr, font=("Arial", fs + 1, "bold"), bg=DARK_BG, fg=FG, cursor="hand2")
                 card._title.pack(side="left", padx=(6, 6))
+
+                def _open_chart(e, tk_=t):
+                    # 드래그(스크롤)였다면 팝업 안 띄움 — 나머지 카드 영역의 티커채우기와 동일한 규칙
+                    if self._pos_drag.get("dragged"):
+                        return
+                    self.show_chart_popup(tk_)
+                # 이름 글자 하나만으로는 클릭 영역이 너무 좁아서 잘 안 눌렸다는 피드백 반영 —
+                # 헤더 줄(배지+이름) 전체를 클릭 영역으로 넓힌다.
+                for chart_wdg in (hdr, card._badge, card._title):
+                    chart_wdg.bind("<ButtonPress-1>", self._pos_press, add="+")
+                    chart_wdg.bind("<B1-Motion>", self._pos_motion, add="+")
+                    chart_wdg.bind("<ButtonRelease-1>", _open_chart, add="+")
                 card._tag_perp = tk.Label(hdr, text="Perp", font=("Arial", fs_small, "bold"),
                                            bg="#2b2f36", fg=DIM, padx=6, pady=1)
                 card._tag_perp.pack(side="left", padx=(0, 4))
@@ -878,7 +898,7 @@ class TradingClient:
                         return
                     self.ticker_entry.delete(0, tk.END)
                     self.ticker_entry.insert(0, tk_)
-                for wdg in (card, hdr, card._badge, card._title, card._tag_perp, card._tag_cross,
+                for wdg in (card, hdr, card._badge, card._tag_perp, card._tag_cross,
                             card._trend_light, pnl_row, pnl_col, card._pnl, roi_col, card._roe, row2, row3):
                     wdg.bind("<ButtonPress-1>", self._pos_press, add="+")
                     wdg.bind("<B1-Motion>", self._pos_motion, add="+")
@@ -967,6 +987,13 @@ class TradingClient:
             text=f"외부통장: ${bank_balance:,.2f}  (순수익 {net_profit:+,.2f})",
             fg="green" if net_profit >= 0 else "red"
         )
+        if fng_value is not None:
+            fng_colors = {
+                "Extreme Fear": "#8b0000", "Fear": "#f6465a", "Neutral": "#888888",
+                "Greed": "#3ddc84", "Extreme Greed": "#0ecb81",
+            }
+            self.fng_label.config(text=f"공포탐욕지수: {fng_value} ({fng_class})",
+                                   fg=fng_colors.get(fng_class, "gray"))
         self._render_pos_panel(pos_list)
 
     def _sort_key_fn(self):
@@ -1168,7 +1195,7 @@ class TradingClient:
 
     def _card_motion(self, event):
         dy = event.y_root - self._card_drag_state["y"]
-        if abs(dy) > 4:
+        if abs(dy) > 12:  # 터치스크린은 탭할 때도 손가락이 몇 px씩 흔들려서 4px는 너무 예민했음
             self._card_drag_state["dragged"] = True
         h = max(self.card_canvas.winfo_height(), 1)
         ylo, yhi = self.card_canvas.yview()
@@ -1219,6 +1246,263 @@ class TradingClient:
             messagebox.showwarning("응답 없음", "서버 응답이 없습니다.\ntrading_server.py 실행 여부를 확인하세요.")
             return
         self.root.after(500, lambda: self._wait_result(cmd_id, label, tries - 1))
+
+    def _send_and_wait_callback(self, action, on_success, ticker='', amount=0, leverage=0,
+                                 position_type='', label='', tries=16):
+        """_send_and_wait과 달리 성공 시 팝업 대신 on_success(msg) 콜백을 호출한다
+        (차트 팝업처럼, 응답 메시지 안의 데이터를 더 써먹어야 할 때 씀)."""
+        try:
+            cmd_id = send_command(action, ticker, amount, leverage, position_type)
+        except Exception as e:
+            messagebox.showerror("오류", f"명령 전송 실패: {e}")
+            return
+        self._wait_result_callback(cmd_id, label or action, tries=tries, on_success=on_success)
+
+    def _wait_result_callback(self, cmd_id, label, tries, on_success):
+        res = find_result(cmd_id)
+        if res:
+            status, msg = res
+            if status == 'ok':
+                on_success(msg)
+            else:
+                messagebox.showwarning(f"{label} 실패", msg)
+            return
+        if tries <= 0:
+            messagebox.showwarning("응답 없음", "서버 응답이 없습니다.\ntrading_server.py 실행 여부를 확인하세요.")
+            return
+        self.root.after(500, lambda: self._wait_result_callback(cmd_id, label, tries - 1, on_success))
+
+    def show_chart_popup(self, ticker, interval="1h"):
+        """포지션 카드의 티커 이름을 클릭하면 캔들차트 팝업을 띄운다."""
+        def on_success(msg):
+            path = msg.split(": ", 1)[1].strip() if ": " in msg else None
+            if not path or not os.path.exists(path):
+                messagebox.showerror("오류", f"차트 파일을 못 찾음: {msg}")
+                return
+            self._render_chart_window(ticker, path, interval)
+        # 캔들 조회는 빗썸 API를 실제로 호출해야 해서(재시도 포함 최대 20초 넘게 걸릴 수 있음)
+        # 다른 즉시 처리되는 명령들보다 훨씬 오래 기다려줘야 한다(60회×0.5초 = 30초).
+        # position_type 필드를 시간봉 문자열 전달용으로 재사용 (get_candles 전용 관례)
+        self._send_and_wait_callback('get_candles', on_success, ticker=ticker, position_type=interval,
+                                      label=f"{ticker} {interval} 차트 조회", tries=60)
+
+    def _render_chart_window(self, ticker, csv_path, interval):
+        """서버가 내려준 캔들+지표 CSV를 읽어서 Tkinter Canvas로 직접 그린다
+        (matplotlib 없이 — 클라이언트를 계속 무의존성으로 유지하려는 목적).
+        가격 패널(캔들+EMA20/60/120+볼린저밴드) + RSI 패널 + RSI Delta 패널, 3단 구성.
+        상단 버튼으로 시간봉을 바꾸면 서버에 다시 요청해서 같은 창에 새로 그린다."""
+        rows = []
+        try:
+            with open(csv_path, 'r', newline='', encoding='utf-8') as f:
+                for row in csv.DictReader(f):
+                    def gf(key):
+                        v = row.get(key, '')
+                        try:
+                            return float(v)
+                        except (TypeError, ValueError):
+                            return None
+                    o, h, l, c = gf('open'), gf('high'), gf('low'), gf('close')
+                    if None in (o, h, l, c):
+                        continue
+                    rows.append({
+                        'open': o, 'high': h, 'low': l, 'close': c,
+                        'rsi': gf('RSI'), 'rsi_delta': gf('RSI_Delta'),
+                        'ema20': gf('EMA20'), 'ema60': gf('EMA60'), 'ema120': gf('EMA120'),
+                        'bb_upper': gf('BB_UPPER'), 'bb_mid': gf('BB_MID'), 'bb_lower': gf('BB_LOWER'),
+                    })
+        except Exception as e:
+            messagebox.showerror("오류", f"차트 파일을 못 읽음: {e}")
+            return
+        if not rows:
+            messagebox.showerror("오류", "차트 데이터가 비어있습니다")
+            return
+
+        # 기존에 이 티커로 열려있던 차트 창이 있으면 재사용(시간봉 전환용), 없으면 새로 생성
+        win = getattr(self, '_chart_windows', {}).get(ticker)
+        if not (win and win.winfo_exists()):
+            win = tk.Toplevel(self.root)
+            if not hasattr(self, '_chart_windows'):
+                self._chart_windows = {}
+            self._chart_windows[ticker] = win
+            win.geometry("900x640")
+            win.configure(bg="#111111")
+
+            top = tk.Frame(win, bg="#111111")
+            top.pack(fill="x")
+            title_label = tk.Label(top, font=("Arial", 11, "bold"), bg="#111111", fg="white")
+            title_label.pack(side="left", padx=8, pady=6)
+            win._title_label = title_label
+
+            tf_bar = tk.Frame(top, bg="#111111")
+            tf_bar.pack(side="right", padx=8)
+            win._tf_buttons = {}
+            for iv in ALLOWED_INTERVALS:
+                b = tk.Label(tf_bar, text=iv, font=("Arial", 9, "bold"), padx=8, pady=2,
+                             cursor="hand2", relief="raised", bd=1)
+                b.pack(side="left", padx=2)
+                b.bind("<ButtonRelease-1>", lambda e, iv_=iv: self.show_chart_popup(ticker, iv_))
+                win._tf_buttons[iv] = b
+
+            price_canvas = tk.Canvas(win, bg="#111111", highlightthickness=0, height=340)
+            price_canvas.pack(fill="both", expand=True, padx=4)
+            rsi_canvas = tk.Canvas(win, bg="#111111", highlightthickness=0, height=110)
+            rsi_canvas.pack(fill="x", padx=4, pady=(4, 0))
+            rd_canvas = tk.Canvas(win, bg="#111111", highlightthickness=0, height=90)
+            rd_canvas.pack(fill="x", padx=4, pady=(4, 8))
+            win._price_canvas, win._rsi_canvas, win._rd_canvas = price_canvas, rsi_canvas, rd_canvas
+        else:
+            win.lift()
+
+        win.title(f"{ticker} {interval} 차트")
+        win._title_label.config(text=f"{ticker}  {interval}  (최근 {len(rows)}봉)")
+        for iv, b in win._tf_buttons.items():
+            active = (iv == interval)
+            b.config(bg="#1a7abf" if active else "#2b2f36", fg="white" if active else "#9aa0a6")
+
+        def draw_price(_event=None):
+            canvas = win._price_canvas
+            canvas.delete("all")
+            w, h = canvas.winfo_width(), canvas.winfo_height()
+            n = len(rows)
+            if n == 0 or w < 50 or h < 50:
+                return
+            pad_l, pad_r, pad_t, pad_b = 8, 65, 8, 8
+            plot_w, plot_h = w - pad_l - pad_r, h - pad_t - pad_b
+            if plot_w <= 0 or plot_h <= 0:
+                return
+            candle_w = plot_w / n
+            price_vals = [v for r in rows for v in (r['high'], r['low'],
+                          r.get('bb_upper') or r['high'], r.get('bb_lower') or r['low'])]
+            p_max, p_min = max(price_vals), min(price_vals)
+            p_range = (p_max - p_min) or 1
+
+            def y(price):
+                return pad_t + (p_max - price) / p_range * plot_h
+
+            for frac in (0, 0.25, 0.5, 0.75, 1.0):
+                price = p_max - frac * p_range
+                yy = pad_t + frac * plot_h
+                canvas.create_line(pad_l, yy, w - pad_r, yy, fill="#2a2a2a")
+                pfmt = f"{price:,.4f}" if price < 1 else f"{price:,.2f}"
+                canvas.create_text(w - pad_r + 5, yy, text=pfmt, fill="#cccccc",
+                                    font=("Arial", 8), anchor="w")
+
+            # 볼린저밴드 (상단/중단/하단 라인)
+            def plot_line(key, color):
+                pts = []
+                for i, r in enumerate(rows):
+                    v = r.get(key)
+                    if v is None:
+                        continue
+                    x_center = pad_l + i * candle_w + candle_w / 2
+                    pts.extend([x_center, y(v)])
+                if len(pts) >= 4:
+                    canvas.create_line(*pts, fill=color, width=1)
+
+            plot_line('bb_upper', "#5a6a7a")
+            plot_line('bb_mid', "#5a6a7a")
+            plot_line('bb_lower', "#5a6a7a")
+
+            # 캔들스틱
+            for i, r in enumerate(rows):
+                x_center = pad_l + i * candle_w + candle_w / 2
+                up = r['close'] >= r['open']
+                color = "#00ff88" if up else "#ff3838"
+                canvas.create_line(x_center, y(r['high']), x_center, y(r['low']), fill=color, width=1)
+                body_top, body_bot = y(max(r['open'], r['close'])), y(min(r['open'], r['close']))
+                bw = max(candle_w * 0.6, 1)
+                if abs(body_bot - body_top) < 1:
+                    body_bot = body_top + 1
+                canvas.create_rectangle(x_center - bw / 2, body_top, x_center + bw / 2, body_bot,
+                                         fill=color, outline=color)
+
+            # EMA20/60/120
+            plot_line('ema20', "#ffff00")
+            plot_line('ema60', "#00ffff")
+            plot_line('ema120', "#ff00ff")
+
+            legend_y = pad_t + 4
+            for text, color in (("EMA20", "#ffff00"), ("EMA60", "#00ffff"), ("EMA120", "#ff00ff"), ("BB", "#5a6a7a")):
+                canvas.create_text(pad_l + 4, legend_y, text=text, fill=color, font=("Arial", 8, "bold"), anchor="nw")
+                legend_y += 12
+
+        def draw_rsi(_event=None):
+            canvas = win._rsi_canvas
+            canvas.delete("all")
+            w, h = canvas.winfo_width(), canvas.winfo_height()
+            n = len(rows)
+            if n == 0 or w < 50 or h < 30:
+                return
+            pad_l, pad_r, pad_t, pad_b = 8, 65, 6, 6
+            plot_w, plot_h = w - pad_l - pad_r, h - pad_t - pad_b
+            if plot_w <= 0 or plot_h <= 0:
+                return
+            candle_w = plot_w / n
+
+            def y(v):
+                return pad_t + (100 - v) / 100 * plot_h
+
+            for level, dash in ((30, True), (50, False), (70, True)):
+                yy = y(level)
+                canvas.create_line(pad_l, yy, w - pad_r, yy, fill="#3a3a3a" if not dash else "#444444")
+                canvas.create_text(w - pad_r + 5, yy, text=str(level), fill="#999999",
+                                    font=("Arial", 7), anchor="w")
+            canvas.create_text(pad_l + 4, pad_t + 2, text="RSI(14)", fill="#ffa500",
+                                font=("Arial", 8, "bold"), anchor="nw")
+
+            pts = []
+            for i, r in enumerate(rows):
+                if r.get('rsi') is None:
+                    continue
+                x_center = pad_l + i * candle_w + candle_w / 2
+                pts.extend([x_center, y(max(0, min(100, r['rsi'])))])
+            if len(pts) >= 4:
+                canvas.create_line(*pts, fill="#ffa500", width=1.3)
+
+        def draw_rsi_delta(_event=None):
+            canvas = win._rd_canvas
+            canvas.delete("all")
+            w, h = canvas.winfo_width(), canvas.winfo_height()
+            n = len(rows)
+            if n == 0 or w < 50 or h < 30:
+                return
+            pad_l, pad_r, pad_t, pad_b = 8, 65, 6, 6
+            plot_w, plot_h = w - pad_l - pad_r, h - pad_t - pad_b
+            if plot_w <= 0 or plot_h <= 0:
+                return
+            candle_w = plot_w / n
+            deltas = [r['rsi_delta'] for r in rows if r.get('rsi_delta') is not None]
+            if not deltas:
+                return
+            d_max = max(abs(max(deltas)), abs(min(deltas)), 1)
+
+            def y(v):
+                return pad_t + (d_max - v) / (2 * d_max) * plot_h
+
+            zero_y = y(0)
+            canvas.create_line(pad_l, zero_y, w - pad_r, zero_y, fill="#555555")
+            canvas.create_text(w - pad_r + 5, zero_y, text="0", fill="#999999", font=("Arial", 7), anchor="w")
+            canvas.create_text(pad_l + 4, pad_t + 2, text="RSI Δ", fill="#00ccff",
+                                font=("Arial", 8, "bold"), anchor="nw")
+
+            pts = []
+            for i, r in enumerate(rows):
+                if r.get('rsi_delta') is None:
+                    continue
+                x_center = pad_l + i * candle_w + candle_w / 2
+                pts.extend([x_center, y(r['rsi_delta'])])
+            if len(pts) >= 4:
+                canvas.create_line(*pts, fill="#00ccff", width=1.3)
+
+        def draw_all(_event=None):
+            draw_price()
+            draw_rsi()
+            draw_rsi_delta()
+
+        win._price_canvas.bind("<Configure>", draw_all)
+        win._rsi_canvas.bind("<Configure>", draw_all)
+        win._rd_canvas.bind("<Configure>", draw_all)
+        win.after(50, draw_all)
 
     def generate_report(self):
         self._send_and_wait('generate_report', label="리포트 생성")

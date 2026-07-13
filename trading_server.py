@@ -201,6 +201,38 @@ def get_all_funding_rates():
             return _funding_cache
 
 # ============================================================
+# 비트코인 공포&탐욕 지수 (Alternative.me, 무료/무인증 API)
+# 하루에 한 번만 갱신되는 지표라 캐시를 넉넉히(1시간) 둔다.
+# ============================================================
+FNG_URL = "https://api.alternative.me/fng/?limit=1"
+_fng_cache = {"value": None, "classification": ""}
+_fng_cache_time = 0
+_fng_lock = threading.Lock()
+
+def get_fear_greed_index():
+    global _fng_cache, _fng_cache_time
+    now = time.time()
+    with _fng_lock:
+        if now - _fng_cache_time < 3600 and _fng_cache["value"] is not None:
+            return _fng_cache
+        try:
+            resp = requests.get(FNG_URL, timeout=10, verify=False)
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            if data:
+                item = data[0]
+                _fng_cache = {
+                    "value": int(item.get("value", 0)),
+                    "classification": item.get("value_classification", ""),
+                }
+                _fng_cache_time = now
+                print(f"✅ 공포탐욕지수 갱신: {_fng_cache['value']} ({_fng_cache['classification']})")
+            return _fng_cache
+        except Exception as e:
+            print(f"공포탐욕지수 갱신 실패: {e}")
+            return _fng_cache
+
+# ============================================================
 # 미체결약정(Open Interest) - 바이낸스 선물 OI 히스토리
 # ============================================================
 # 바이낸스는 전 심볼 OI를 한 번에 주는 엔드포인트가 없어(premiumIndex처럼) 심볼별로
@@ -1476,12 +1508,15 @@ def write_account_snapshot():
     with data_lock:
         pos_snap = {t: dict(p) for t, p in positions.items()}
         prices = dict(latest_prices_usd)
+    fng = get_fear_greed_index()
     rows = [['balance', round(balance, 2)],
             ['ts', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
             ['margin_mode', 'cross' if CROSS_MARGIN_MODE else 'isolated'],
             ['bank_balance', round(bank_balance, 2)],
             ['bank_total_deposit', round(bank_total_deposit, 2)],
             ['bank_total_spent', round(bank_total_spent, 2)],
+            ['fng_value', fng.get('value') if fng.get('value') is not None else ''],
+            ['fng_class', fng.get('classification', '')],
             ['positions', 'entry_price', 'amount', 'leverage', 'type',
              'entry_fee', 'entry_time', 'current_price', 'pnl', 'pnl_rate_pct', 'entry_score']]
     for t, pos in pos_snap.items():
@@ -1749,9 +1784,12 @@ def _report_draw_table(pdf, rows, title):
 
 def srv_generate_report(save_dir=None):
     """
-    서버가 들고 있는 현재 스코어 스냅샷으로 Long/Short Top10 지표 리포트(PDF)를 만든다.
+    서버가 들고 있는 현재 스코어 스냅샷으로 지표 리포트(PDF)를 만든다.
+    롱/숏 컷으로 Top10씩 뽑던 예전 방식 대신, 바이낸스에 상장된 코인 전부를 티커 이름순으로
+    정렬해서 10개씩 나눠 페이지를 채운다(사전 랭킹/필터링 없음 — Grok 등 후속 분석이
+    점수에 의해 이미 걸러지지 않은 원본을 보게 하려는 목적).
     save_dir을 안 주면 REPORT_SAVE_DIR(기본: 안드로이드 공용 문서함)에 저장한다.
-    각 섹션(표/설명)을 개별 try/except로 감싸서, 한 섹션에서 에러가 나도 나머지는
+    각 섹션(표 페이지들/설명)을 개별 try/except로 감싸서, 한 섹션에서 에러가 나도 나머지는
     최대한 정상적으로 만들어 저장한다(전부 날리지 않음).
     """
     try:
@@ -1763,9 +1801,14 @@ def srv_generate_report(save_dir=None):
     if not snap:
         return False, "아직 점수 데이터가 없습니다 (서버가 막 켜졌으면 잠시 후 다시 시도)"
 
-    rows = list(snap.values())
-    top_long = sorted(rows, key=lambda r: r.get('long_score', 0), reverse=True)[:10]
-    top_short = sorted(rows, key=lambda r: r.get('short_score', 0), reverse=True)[:10]
+    # 바이낸스 상장된 코인만(price_usd 있음), 티커 이름순 정렬
+    rows = [r for r in snap.values() if r.get('price_usd')]
+    rows.sort(key=lambda r: r.get('ticker', ''))
+    if not rows:
+        return False, "바이낸스 상장 코인 중 점수 데이터가 없습니다"
+
+    PAGE_SIZE = 10
+    pages = [rows[i:i + PAGE_SIZE] for i in range(0, len(rows), PAGE_SIZE)]
     ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     out_dir = save_dir or REPORT_SAVE_DIR
@@ -1780,19 +1823,14 @@ def srv_generate_report(save_dir=None):
         pdf.set_auto_page_break(True, margin=10)
         warnings = []
 
-        try:
-            pdf.add_page()
-            _report_draw_table(pdf, top_long, f"Top 10 by Long Score ({ts})")
-        except Exception as e:
-            warnings.append(f"Long 표 실패: {e}")
-            print(f"⚠️ 리포트 Long 표 생성 실패(건너뜀): {e}")
-
-        try:
-            pdf.add_page()
-            _report_draw_table(pdf, top_short, f"Top 10 by Short Score ({ts})")
-        except Exception as e:
-            warnings.append(f"Short 표 실패: {e}")
-            print(f"⚠️ 리포트 Short 표 생성 실패(건너뜀): {e}")
+        for i, page_rows in enumerate(pages, start=1):
+            try:
+                pdf.add_page()
+                _report_draw_table(pdf, page_rows,
+                                    f"Indicator Report — {i}/{len(pages)} ({ts}, alphabetical, Binance-listed only)")
+            except Exception as e:
+                warnings.append(f"{i}페이지 실패: {e}")
+                print(f"⚠️ 리포트 {i}페이지 생성 실패(건너뜀): {e}")
 
         try:
             full_w = pdf.w - pdf.l_margin - pdf.r_margin
@@ -1847,6 +1885,46 @@ def srv_set_report_dir(new_dir):
         return False, f"이 경로에 쓸 수 없습니다: {new_dir} ({e})"
     REPORT_SAVE_DIR = new_dir
     return True, f"리포트 저장 경로를 변경했습니다: {new_dir}"
+
+def srv_get_candles(ticker, interval=None):
+    """
+    포지션 카드에서 티커 이름을 클릭하면 뜨는 차트 팝업용 데이터를 만든다.
+    클라이언트에 matplotlib 같은 무거운 그래픽 라이브러리를 안 얹으려고(Termux에서
+    계속 패키지 설치로 고생했던 걸 감안), 서버가 캔들+지표 원본을 CSV로만 내려주고
+    실제 그리기는 클라이언트가 Tkinter Canvas로 직접 한다.
+    RSI/RSI Delta/EMA20·60·120/볼린저밴드를 같이 계산해서 넣어준다.
+    """
+    ticker = (ticker or "").strip().upper()
+    if not ticker:
+        return False, "티커 없음"
+    interval = interval if interval in ALLOWED_INTERVALS else CANDLE_INTERVAL
+    try:
+        df = fetch_candlestick(ticker, chart_intervals=interval)
+    except Exception as e:
+        return False, f"캔들 조회 실패: {e}"
+    if df is None or len(df) == 0:
+        return False, f"{ticker} 캔들 데이터를 못 가져왔습니다"
+    try:
+        df['RSI'] = calculate_rsi(df)
+        df['RSI_Delta'] = df['RSI'].diff()
+        df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
+        df['EMA60'] = df['close'].ewm(span=60, adjust=False).mean()
+        df['EMA120'] = df['close'].ewm(span=120, adjust=False).mean() if len(df) >= 30 else np.nan
+        bb_mid = df['close'].rolling(20).mean()
+        bb_std = df['close'].rolling(20).std()
+        df['BB_UPPER'] = bb_mid + bb_std * 2
+        df['BB_MID'] = bb_mid
+        df['BB_LOWER'] = bb_mid - bb_std * 2
+    except Exception as e:
+        return False, f"지표 계산 실패: {e}"
+    path = os.path.join(SCRIPT_DIR, f"chart_{ticker}.csv")
+    cols = ['open', 'high', 'low', 'close', 'RSI', 'RSI_Delta',
+            'EMA20', 'EMA60', 'EMA120', 'BB_UPPER', 'BB_MID', 'BB_LOWER']
+    try:
+        df.tail(150)[cols].to_csv(path)
+    except Exception as e:
+        return False, f"차트 데이터 저장 실패: {e}"
+    return True, f"차트 데이터 준비 완료 ({interval}): {path}"
 
 def srv_open(ticker, position_type, amount_won, leverage):
     global balance
@@ -2183,6 +2261,8 @@ def process_commands():
                 ok, msg = srv_generate_report()
             elif action == 'set_report_dir':
                 ok, msg = srv_set_report_dir(raw_ticker)
+            elif action == 'get_candles':
+                ok, msg = srv_get_candles(ticker, interval=ptype)
             else:
                 ok, msg = False, f"알 수 없는 명령: {action}"
             append_result(cmd_id, 'ok' if ok else 'fail', msg)
