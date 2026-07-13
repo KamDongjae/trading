@@ -1886,28 +1886,45 @@ def srv_set_report_dir(new_dir):
     REPORT_SAVE_DIR = new_dir
     return True, f"리포트 저장 경로를 변경했습니다: {new_dir}"
 
-def srv_get_candles(ticker):
+def srv_get_candles(ticker, interval=None):
     """
-    포지션 카드에서 티커 이름을 클릭하면 뜨는 차트 팝업용 캔들 데이터를 만든다.
+    포지션 카드에서 티커 이름을 클릭하면 뜨는 차트 팝업용 데이터를 만든다.
     클라이언트에 matplotlib 같은 무거운 그래픽 라이브러리를 안 얹으려고(Termux에서
-    계속 패키지 설치로 고생했던 걸 감안), 서버가 캔들 원본을 CSV로만 내려주고
+    계속 패키지 설치로 고생했던 걸 감안), 서버가 캔들+지표 원본을 CSV로만 내려주고
     실제 그리기는 클라이언트가 Tkinter Canvas로 직접 한다.
+    RSI/RSI Delta/EMA20·60·120/볼린저밴드를 같이 계산해서 넣어준다.
     """
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return False, "티커 없음"
+    interval = interval if interval in ALLOWED_INTERVALS else CANDLE_INTERVAL
     try:
-        df = fetch_candlestick(ticker)
+        df = fetch_candlestick(ticker, chart_intervals=interval)
     except Exception as e:
         return False, f"캔들 조회 실패: {e}"
     if df is None or len(df) == 0:
         return False, f"{ticker} 캔들 데이터를 못 가져왔습니다"
-    path = os.path.join(SCRIPT_DIR, f"chart_{ticker}.csv")
     try:
-        df.tail(100)[['open', 'high', 'low', 'close']].to_csv(path)
+        df['RSI'] = calculate_rsi(df)
+        df['RSI_Delta'] = df['RSI'].diff()
+        df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
+        df['EMA60'] = df['close'].ewm(span=60, adjust=False).mean()
+        df['EMA120'] = df['close'].ewm(span=120, adjust=False).mean() if len(df) >= 30 else np.nan
+        bb_mid = df['close'].rolling(20).mean()
+        bb_std = df['close'].rolling(20).std()
+        df['BB_UPPER'] = bb_mid + bb_std * 2
+        df['BB_MID'] = bb_mid
+        df['BB_LOWER'] = bb_mid - bb_std * 2
+    except Exception as e:
+        return False, f"지표 계산 실패: {e}"
+    path = os.path.join(SCRIPT_DIR, f"chart_{ticker}.csv")
+    cols = ['open', 'high', 'low', 'close', 'RSI', 'RSI_Delta',
+            'EMA20', 'EMA60', 'EMA120', 'BB_UPPER', 'BB_MID', 'BB_LOWER']
+    try:
+        df.tail(150)[cols].to_csv(path)
     except Exception as e:
         return False, f"차트 데이터 저장 실패: {e}"
-    return True, f"차트 데이터 준비 완료: {path}"
+    return True, f"차트 데이터 준비 완료 ({interval}): {path}"
 
 def srv_open(ticker, position_type, amount_won, leverage):
     global balance
@@ -2245,7 +2262,7 @@ def process_commands():
             elif action == 'set_report_dir':
                 ok, msg = srv_set_report_dir(raw_ticker)
             elif action == 'get_candles':
-                ok, msg = srv_get_candles(ticker)
+                ok, msg = srv_get_candles(ticker, interval=ptype)
             else:
                 ok, msg = False, f"알 수 없는 명령: {action}"
             append_result(cmd_id, 'ok' if ok else 'fail', msg)
