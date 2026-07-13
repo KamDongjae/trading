@@ -1248,7 +1248,7 @@ class TradingClient:
         self.root.after(500, lambda: self._wait_result(cmd_id, label, tries - 1))
 
     def _send_and_wait_callback(self, action, on_success, ticker='', amount=0, leverage=0,
-                                 position_type='', label=''):
+                                 position_type='', label='', tries=16):
         """_send_and_wait과 달리 성공 시 팝업 대신 on_success(msg) 콜백을 호출한다
         (차트 팝업처럼, 응답 메시지 안의 데이터를 더 써먹어야 할 때 씀)."""
         try:
@@ -1256,7 +1256,7 @@ class TradingClient:
         except Exception as e:
             messagebox.showerror("오류", f"명령 전송 실패: {e}")
             return
-        self._wait_result_callback(cmd_id, label or action, tries=16, on_success=on_success)
+        self._wait_result_callback(cmd_id, label or action, tries=tries, on_success=on_success)
 
     def _wait_result_callback(self, cmd_id, label, tries, on_success):
         res = find_result(cmd_id)
@@ -1280,9 +1280,11 @@ class TradingClient:
                 messagebox.showerror("오류", f"차트 파일을 못 찾음: {msg}")
                 return
             self._render_chart_window(ticker, path, interval)
+        # 캔들 조회는 빗썸 API를 실제로 호출해야 해서(재시도 포함 최대 20초 넘게 걸릴 수 있음)
+        # 다른 즉시 처리되는 명령들보다 훨씬 오래 기다려줘야 한다(60회×0.5초 = 30초).
         # position_type 필드를 시간봉 문자열 전달용으로 재사용 (get_candles 전용 관례)
         self._send_and_wait_callback('get_candles', on_success, ticker=ticker, position_type=interval,
-                                      label=f"{ticker} {interval} 차트 조회")
+                                      label=f"{ticker} {interval} 차트 조회", tries=60)
 
     def _render_chart_window(self, ticker, csv_path, interval):
         """서버가 내려준 캔들+지표 CSV를 읽어서 Tkinter Canvas로 직접 그린다
