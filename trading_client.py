@@ -555,7 +555,7 @@ class TradingClient:
 
     def _pos_motion(self, event):
         dy = event.y_root - self._pos_drag["y"]
-        if abs(dy) > 4:
+        if abs(dy) > 12:  # 터치스크린은 탭할 때도 손가락이 몇 px씩 흔들려서 4px는 너무 예민했음
             self._pos_drag["dragged"] = True
         h = max(self.pos_canvas.winfo_height(), 1)
         ylo, yhi = self.pos_canvas.yview()
@@ -1195,7 +1195,7 @@ class TradingClient:
 
     def _card_motion(self, event):
         dy = event.y_root - self._card_drag_state["y"]
-        if abs(dy) > 4:
+        if abs(dy) > 12:  # 터치스크린은 탭할 때도 손가락이 몇 px씩 흔들려서 4px는 너무 예민했음
             self._card_drag_state["dragged"] = True
         h = max(self.card_canvas.winfo_height(), 1)
         ylo, yhi = self.card_canvas.yview()
