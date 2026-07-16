@@ -676,7 +676,13 @@ def calculate_oi_synergy(price_chg, oi_change_pct):
 #   - ATR/거래대금 필터: "최소 유동성 하한선" 구체 수치가 없어 ATR≥0.3% & 24h거래대금
 #     ≥1천만원을 기준으로 임의 설정 (통과 5점 / 미통과 0점, 등급 없는 필터형)
 # ============================================================
-TOTAL_SCORE_WEIGHT = 105  # 위 7개 항목 배점의 합. 항목을 추가/변경하면 같이 맞춰야 함
+TOTAL_SCORE_WEIGHT = 105  # 위 7개 항목 배점의 합. 항목을 추가/변경하면 같이 맞춰야 함.
+                           # 롱 점수는 이 중 OI(15점)를 안 받지만, 분모는 그대로 105를 쓴다 —
+                           # 분모를 90으로 줄이면 남은 점수들이 상대적으로 부풀어서 진입컷을
+                           # 넘는 코인이 오히려 127개->345개로 늘어나는 부작용이 실측으로
+                           # 확인됐다(과열 캡의 효과가 재정규화로 상쇄돼버림). 분모를 그대로
+                           # 두면 OI를 안 받는 만큼 롱 점수 상한이 자연스럽게 ~86점으로
+                           # 낮아지면서 진입컷 비교가 원래 기준과 계속 맞는다.
 
 def score_ema_trend(price, ema20, ema60, ema120, direction):
     """
@@ -811,28 +817,54 @@ def score_liquidity_filter(atr_pct, vol_24h_m):
     except Exception:
         return 0
 
+def score_overextension_penalty_cap(final_score, ema_pts, pp_pts, cvd_pts, oi_pts, m30_pts, volz_pts, liq_pts):
+    """
+    과열 상한 캡. v3 롱/숏 세부 7개 항목은 개별로 보면 forward-return과의 상관관계가
+    거의 0(실측: -0.08~+0.05)이라 무해해 보이는데, 59시간치 실측 데이터로 확인해보니
+    "7개 중 5개 이상이 동시에 거의 만점(90%+)"인 경우에만 60분 후 시장대비 초과수익률이
+    뚜렷하게 마이너스(-0.52%)로 뒤집혔다(0~4개 겹칠 땐 오히려 점수가 높을수록 좋아지는
+    정상적인 패턴이었음). "모든 지표가 동시에 GO"인 상태 = 이미 다 오른 뒤 반전 직전인
+    경우가 많다는 뜻으로 해석한다.
+    처음엔 고정 감점(-15)으로 시도했는데, 85점짜리가 71점이 되는 식으로 여전히 진입컷을
+    넘는 경우가 많아서 실효성이 없었다(실측으로 확인함) — 그래서 감점이 아니라 진입컷보다
+    확실히 낮은 값으로 상한을 씌우는 방식으로 바꿨다.
+    """
+    maxes = [(ema_pts, 20), (pp_pts, 20), (cvd_pts, 15), (oi_pts, 15),
+             (m30_pts, 15), (volz_pts, 15), (liq_pts, 5)]
+    n_maxed = sum(1 for v, mx in maxes if v >= mx * 0.9)
+    if n_maxed >= 5:
+        return min(final_score, 45)
+    return final_score
+
 def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, chg_30m,
                           price_chg, extension_pct, vol_z=0.0, rsi_delta=0.0,
                           atr_pct=0.0, ema20=None, ema60=None, oi_notional_usd=None,
                           funding_rate=0.0, trade_value_usd=None,
                           price=None, ema120=None, vol_24h_m=0):
     """
-    105점 만점 롱 점수 = EMA삼중(20) + 가격위치(20) + CVD(15) + OI(15)
-                        + VolZ(15) + 30분모멘텀(15) + 유동성필터(5)
-    최종적으로 /105×100 환산한 0~100점을 반환한다.
+    실질 최대 90점(105점 만점 배점 중 EMA삼중20+가격위치20+CVD15+VolZ15+30분모멘텀15+유동성5)
+    롱 점수. OI(oi_sc, 15점)는 일부러 뺐다 — 59시간 실측으로 OI 급증이 롱보다 오히려 하락과
+    상관관계가 있는 걸 확인해서(숏 점수엔 그대로 유지, calculate_short_score 참고).
+    분모는 그대로 TOTAL_SCORE_WEIGHT(105)를 써서 /105×100 환산한다 — 분모를 90으로 줄이면
+    남은 항목들 점수가 상대적으로 부풀어서 진입컷을 넘는 코인이 오히려 늘어나는 부작용이
+    있었다(실측으로 확인, 127개→345개). 그래서 롱 점수 실질 상한은 자연히 ~86점이 된다.
     """
     raw = 0
     try:
-        raw += score_ema_trend(price, ema20, ema60, ema120, 'long')
-        raw += score_price_position_long(rsi, bb_percent)
-        raw += score_cvd_trend(cvd_diff, vol_window_sum, 'long')
-        raw += score_oi_v3(oi_change_pct)
-        raw += score_volz_v3(vol_z)
-        raw += score_chg30m_long(chg_30m)
-        raw += score_liquidity_filter(atr_pct, vol_24h_m)
+        p_ema = score_ema_trend(price, ema20, ema60, ema120, 'long')
+        p_pp = score_price_position_long(rsi, bb_percent)
+        p_cvd = score_cvd_trend(cvd_diff, vol_window_sum, 'long')
+        p_volz = score_volz_v3(vol_z)
+        p_m30 = score_chg30m_long(chg_30m)
+        p_liq = score_liquidity_filter(atr_pct, vol_24h_m)
+        raw = p_ema + p_pp + p_cvd + p_volz + p_m30 + p_liq
     except Exception:
-        pass
+        final = round(raw / TOTAL_SCORE_WEIGHT * 100)
+        return max(0, min(final, 100))
     final = round(raw / TOTAL_SCORE_WEIGHT * 100)
+    # oi_sc는 롱 총점에서 뺀 것과 동일하게, 과열 캡 판정(몇 개 항목이 동시에 만점인지)에서도
+    # 제외한다 — 백테스트 때 검증한 조건과 정확히 똑같이 맞추기 위함(0을 넘겨서 항상 미달 처리).
+    final = score_overextension_penalty_cap(final, p_ema, p_pp, p_cvd, 0, p_m30, p_volz, p_liq)
     return max(0, min(final, 100))
 
 def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, chg_30m,
@@ -840,19 +872,27 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
                            atr_pct=0.0, ema20=None, ema60=None, oi_notional_usd=None,
                            funding_rate=0.0, trade_value_usd=None,
                            price=None, ema120=None, vol_24h_m=0):
-    """105점 만점 숏 점수 (롱과 대칭). 최종 /105×100 환산."""
+    """105점 만점 숏 점수 (롱과 대칭, 과열 상한 캡도 동일 적용). 최종 /105×100 환산.
+    ema_s(EMA 완전 역배열, 20점)는 59시간 실측으로 120~240분 후 오히려 가격이 반등하는
+    경향이 확인돼서(완전히 다 떨어진 뒤라는 뜻으로 해석) 10점으로 다운그레이드한다 —
+    "부분 역배열"과 "완전 역배열"을 더 이상 구분해서 보너스 주지 않는다."""
     raw = 0
     try:
-        raw += score_ema_trend(price, ema20, ema60, ema120, 'short')
-        raw += score_price_position_short(rsi, bb_percent)
-        raw += score_cvd_trend(cvd_diff, vol_window_sum, 'short')
-        raw += score_oi_v3(oi_change_pct)
-        raw += score_volz_v3(vol_z)
-        raw += score_chg30m_short(chg_30m)
-        raw += score_liquidity_filter(atr_pct, vol_24h_m)
+        p_ema = score_ema_trend(price, ema20, ema60, ema120, 'short')
+        if p_ema >= 20:
+            p_ema = 10
+        p_pp = score_price_position_short(rsi, bb_percent)
+        p_cvd = score_cvd_trend(cvd_diff, vol_window_sum, 'short')
+        p_oi = score_oi_v3(oi_change_pct)
+        p_volz = score_volz_v3(vol_z)
+        p_m30 = score_chg30m_short(chg_30m)
+        p_liq = score_liquidity_filter(atr_pct, vol_24h_m)
+        raw = p_ema + p_pp + p_cvd + p_oi + p_volz + p_m30 + p_liq
     except Exception:
-        pass
+        final = round(raw / TOTAL_SCORE_WEIGHT * 100)
+        return max(0, min(final, 100))
     final = round(raw / TOTAL_SCORE_WEIGHT * 100)
+    final = score_overextension_penalty_cap(final, p_ema, p_pp, p_cvd, p_oi, p_m30, p_volz, p_liq)
     return max(0, min(final, 100))
 
 
@@ -1827,7 +1867,7 @@ def srv_generate_report(save_dir=None):
             try:
                 pdf.add_page()
                 _report_draw_table(pdf, page_rows,
-                                    f"Indicator Report — {i}/{len(pages)} ({ts}, alphabetical, Binance-listed only)")
+                                    f"Indicator Report - {i}/{len(pages)} ({ts}, alphabetical, Binance-listed only)")
             except Exception as e:
                 warnings.append(f"{i}페이지 실패: {e}")
                 print(f"⚠️ 리포트 {i}페이지 생성 실패(건너뜀): {e}")
@@ -1921,7 +1961,9 @@ def srv_get_candles(ticker, interval=None):
     cols = ['open', 'high', 'low', 'close', 'RSI', 'RSI_Delta',
             'EMA20', 'EMA60', 'EMA120', 'BB_UPPER', 'BB_MID', 'BB_LOWER']
     try:
-        df.tail(150)[cols].to_csv(path)
+        out_df = df.tail(150)[cols].copy()
+        out_df.index.name = 'timestamp'  # 클라이언트가 x축 날짜 라벨(mm.dd)에 쓸 수 있게 이름 고정
+        out_df.to_csv(path)
     except Exception as e:
         return False, f"차트 데이터 저장 실패: {e}"
     return True, f"차트 데이터 준비 완료 ({interval}): {path}"
