@@ -320,6 +320,7 @@ class TradingClient:
             ("롱 진입", "#44aa44", lambda e: self.open_position("long")),
             ("숏 진입", "#dd3333", lambda e: self.open_position("short")),
             ("청산", "#555555", lambda e: self.close_position()),
+            ("차트", "#3a6ea5", lambda e: self.open_chart_for_entry()),
             ("기록 보기", "#eeeeee", lambda e: self.show_history()),
         ]:
             btn = tk.Label(btn_frame, text=text, bg=color, fg="white" if color != "#eeeeee" else "black",
@@ -1634,6 +1635,14 @@ class TradingClient:
             messagebox.showwarning("경고", "티커를 입력하세요.")
             return
         self._send_and_wait('close', ticker=ticker, label="청산")
+
+    def open_chart_for_entry(self):
+        """티커 입력칸에 있는 코인의 차트를 띄운다 — 포지션 카드 클릭 시 뜨는 것과 동일한 팝업."""
+        ticker = self.ticker_entry.get().strip().upper()
+        if not ticker:
+            messagebox.showwarning("경고", "티커를 입력하세요.")
+            return
+        self.show_chart_popup(ticker)
 
     def close_ticker(self, ticker):
         if not messagebox.askyesno("청산 확인", f"{ticker} 포지션을 청산하시겠습니까?"):
