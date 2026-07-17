@@ -12,6 +12,11 @@ import socket
 import dns.resolver
 import ssl
 import requests
+import json
+import io
+import matplotlib
+matplotlib.use("Agg")  # 헤드리스(서버/Termux) 환경 — GUI 백엔드 없이 이미지만 렌더링
+import matplotlib.pyplot as plt
 from collections import deque, defaultdict
 
 # ====================== DNS + SSL 우회 ======================
@@ -262,8 +267,40 @@ _discord_alerted = set()  # {(ticker, 'long'|'short'), ...} — 지금 컷을 �
 _discord_last_alert_time = {}  # (ticker, direction) -> 마지막 알림 보낸 시각
 _DISCORD_ALERT_COOLDOWN = 300  # 같은 코인+방향은 이 시간(초) 안에는 재알림 안 함(경계 플래핑 스팸 방지)
 
+def render_candle_chart_png(df, ticker, n=48):
+    """
+    최근 n개 1시간봉을 간단한 캔들차트 PNG로 렌더링한다(mplfinance 등 추가
+    의존성 없이 matplotlib만으로 직접 그린다 — Termux에 이미 있는 라이브러리만 사용).
+    """
+    d = df.tail(n)
+    fig, ax = plt.subplots(figsize=(8, 4.5), dpi=110)
+    width = 0.6
+    for i, (_, row) in enumerate(d.iterrows()):
+        up = row['close'] >= row['open']
+        color = '#e03131' if up else '#1971c2'  # 국내 관례: 상승 빨강 / 하락 파랑
+        ax.plot([i, i], [row['low'], row['high']], color=color, linewidth=1)
+        lower = min(row['open'], row['close'])
+        height = abs(row['close'] - row['open'])
+        if height <= 0:
+            height = row['high'] * 0.0008  # 시가=종가(도지)일 때도 얇게라도 보이게
+        ax.add_patch(plt.Rectangle((i - width / 2, lower), width, height, color=color))
+    step = max(1, len(d) // 8)
+    ax.set_xticks(range(0, len(d), step))
+    ax.set_xticklabels([d.index[i].strftime('%m/%d %H:%M') for i in range(0, len(d), step)],
+                        rotation=30, ha='right', fontsize=8)
+    ax.set_title(f"{ticker}  1H", fontsize=11)
+    ax.set_xlim(-1, len(d))
+    ax.grid(alpha=0.2)
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png')
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
 def send_discord_alert(message):
-    """디스코드 웹후크 호출은 느리거나(네트워크 지연) 실패할 수 있는데, score_updater의
+    """텍스트만 보내는 기본 버전(차트가 없거나 캔들 조회에 실패했을 때의 폴백).
+    디스코드 웹후크 호출은 느리거나(네트워크 지연) 실패할 수 있는데, score_updater의
     메인 루프 안에서 동기(블로킹)로 호출하면 그 사이클 전체가 지연되고, 컷 경계에서
     점수가 왔다갔다하는 코인이 있으면 매 사이클 알림을 재시도하면서 서버 전체가
     느려지는 문제가 있었다(클라이언트 정렬/색칠이 같이 느려지는 걸로 나타남) —
@@ -277,10 +314,39 @@ def send_discord_alert(message):
             print(f"디스코드 알림 실패: {e}")
     threading.Thread(target=_fire, daemon=True).start()
 
-def check_discord_alerts(results, min_score):
-    """score_updater 한 사이클이 끝날 때마다 호출. 이번에 새로 컷을 넘은 코인만 알림 보낸다."""
+def send_discord_alert_with_chart(ticker, message):
+    """
+    [2026-07-19 추가] 전송시각 + 1시간봉 차트 첨부 버전. 캔들 조회/차트 렌더링/
+    웹후크 전송을 전부 백그라운드 스레드 안에서 처리해서 메인 스코어링 루프를
+    절대 블로킹하지 않는다(차트 렌더링이 네트워크 호출보다 훨씬 느릴 수 있어서
+    send_discord_alert처럼 POST만 스레드로 빼는 걸로는 부족함).
+    """
     if not DISCORD_WEBHOOK_URL:
         return
+    def _fire():
+        try:
+            df = fetch_candlestick(ticker, chart_intervals="1h", timeout=8, retries=1)
+            image_bytes = None
+            if df is not None and len(df) >= 5:
+                try:
+                    image_bytes = render_candle_chart_png(df, ticker)
+                except Exception as e:
+                    print(f"[{ticker}] 차트 렌더링 실패: {e}")
+            if image_bytes:
+                payload = json.dumps({"content": message})
+                files = {"file": (f"{ticker}_1h.png", image_bytes, "image/png")}
+                requests.post(DISCORD_WEBHOOK_URL, data={"payload_json": payload}, files=files, timeout=15)
+            else:
+                requests.post(DISCORD_WEBHOOK_URL, json={"content": message}, timeout=8)
+        except Exception as e:
+            print(f"디스코드 알림(차트) 실패: {e}")
+    threading.Thread(target=_fire, daemon=True).start()
+
+def check_discord_alerts(results, min_score):
+    """score_updater 한 사이클이 끝날 때마다 호출. 이번에 새로 컷을 넘은 코인은
+    (디스코드 웹후크 설정 여부와 무관하게) signal_outcomes.csv에 항상 기록해서
+    나중에 자동 가중치 재학습(analyze_and_update_weights)에 쓴다. 디스코드 알림
+    자체는 웹후크가 설정된 경우에만, 쿨다운을 적용해서 보낸다."""
     now_over = set()
     for r in results:
         t = r.get('ticker', '')
@@ -292,17 +358,22 @@ def check_discord_alerts(results, min_score):
     newly_over = now_over - _discord_alerted
     now = time.time()
     for t, direction in newly_over:
+        r = next((x for x in results if x['ticker'] == t), None)
+        if not r:
+            continue
+        log_signal_open(t, direction, r, current_market_regime)  # 학습용 로그 — 웹후크 유무와 무관
+        if not DISCORD_WEBHOOK_URL:
+            continue
         key = (t, direction)
         last = _discord_last_alert_time.get(key, 0)
         if now - last < _DISCORD_ALERT_COOLDOWN:
             continue  # 컷 경계에서 방금 왔다갔다한 것 — 스팸 방지로 건너뜀
-        r = next((x for x in results if x['ticker'] == t), None)
-        if not r:
-            continue
         score = r.get('long_score' if direction == 'long' else 'short_score', 0)
         emoji = "🟢" if direction == 'long' else "🔴"
         label = "롱" if direction == 'long' else "숏"
-        send_discord_alert(f"{emoji} **{t}** {label} 진입컷 돌파 ({score}점, 컷 {min_score}점)")
+        sent_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        msg = f"{emoji} **{t}** {label} 진입컷 돌파 ({score}점, 컷 {min_score}점)\n🕐 {sent_at}"
+        send_discord_alert_with_chart(t, msg)
         _discord_last_alert_time[key] = now
 
     _discord_alerted.clear()
@@ -916,7 +987,7 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
                           price_chg, extension_pct, vol_z=0.0, rsi_delta=0.0,
                           atr_pct=0.0, ema20=None, ema60=None, oi_notional_usd=None,
                           funding_rate=0.0, trade_value_usd=None,
-                          price=None, ema120=None, vol_24h_m=0):
+                          price=None, ema120=None, vol_24h_m=0, regime='normal'):
     """
     실질 최대 90점(105점 만점 배점 중 EMA삼중20+가격위치20+CVD15+VolZ15+30분모멘텀15+유동성5)
     롱 점수. OI(oi_sc, 15점)는 일부러 뺐다 — 59시간 실측으로 OI 급증이 롱보다 오히려 하락과
@@ -924,15 +995,22 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
     분모는 그대로 TOTAL_SCORE_WEIGHT(105)를 써서 /105×100 환산한다 — 분모를 90으로 줄이면
     남은 항목들 점수가 상대적으로 부풀어서 진입컷을 넘는 코인이 오히려 늘어나는 부작용이
     있었다(실측으로 확인, 127개→345개). 그래서 롱 점수 실질 상한은 자연히 ~86점이 된다.
+    regime: detect_market_regime()이 매긴 현재 시장 상태('상승장'/'하락장'/'횡보장'/'고변동성'/'normal').
+    REGIME_WEIGHT_MULTIPLIERS(상식 기반)와 learned_component_weights(실측 신호 로그 기반 자동
+    학습, analyze_and_update_weights 참고)를 곱해서 각 세부항목에 적용한다.
     """
     raw = 0
+    mult = REGIME_WEIGHT_MULTIPLIERS.get(regime, REGIME_WEIGHT_MULTIPLIERS['normal'])
+    lw = learned_component_weights['long']
     try:
-        p_ema = score_ema_trend(price, ema20, ema60, ema120, 'long')
-        p_pp = score_price_position_long(rsi, bb_percent)
-        p_cvd = score_cvd_trend(cvd_diff, vol_window_sum, 'long')
-        p_volz = score_volz_v3(vol_z)
-        p_m30 = score_chg30m_long(chg_30m)
-        p_liq = score_liquidity_filter(atr_pct, vol_24h_m)
+        # 배수 2개(레짐 x 학습)가 곱해지면 최대 1.3*1.6=2.08배까지 커질 수 있어, 원래
+        # 배점 상한을 넘지 않게 min()으로 잘라준다(과도한 인플레이션 방지).
+        p_ema = min(score_ema_trend(price, ema20, ema60, ema120, 'long') * mult['ema'] * lw['ema'], 20)
+        p_pp = min(score_price_position_long(rsi, bb_percent) * mult['pp'] * lw['pp'], 20)
+        p_cvd = min(score_cvd_trend(cvd_diff, vol_window_sum, 'long') * mult['cvd'] * lw['cvd'], 15)
+        p_volz = min(score_volz_v3(vol_z) * mult['volz'] * lw['volz'], 15)
+        p_m30 = min(score_chg30m_long(chg_30m) * mult['m30'] * lw['m30'], 15)
+        p_liq = min(score_liquidity_filter(atr_pct, vol_24h_m) * mult['liq'] * lw['liq'], 5)
         raw = p_ema + p_pp + p_cvd + p_volz + p_m30 + p_liq
     except Exception:
         final = round(raw / TOTAL_SCORE_WEIGHT * 100)
@@ -947,22 +1025,27 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
                            price_chg, extension_pct, vol_z=0.0, rsi_delta=0.0,
                            atr_pct=0.0, ema20=None, ema60=None, oi_notional_usd=None,
                            funding_rate=0.0, trade_value_usd=None,
-                           price=None, ema120=None, vol_24h_m=0):
+                           price=None, ema120=None, vol_24h_m=0, regime='normal'):
     """105점 만점 숏 점수 (롱과 대칭, 과열 상한 캡도 동일 적용). 최종 /105×100 환산.
     ema_s(EMA 완전 역배열, 20점)는 59시간 실측으로 120~240분 후 오히려 가격이 반등하는
     경향이 확인돼서(완전히 다 떨어진 뒤라는 뜻으로 해석) 10점으로 다운그레이드한다 —
-    "부분 역배열"과 "완전 역배열"을 더 이상 구분해서 보너스 주지 않는다."""
+    "부분 역배열"과 "완전 역배열"을 더 이상 구분해서 보너스 주지 않는다.
+    regime: calculate_long_score와 동일한 시장상태별(REGIME_WEIGHT_MULTIPLIERS) +
+    실측 자동학습(learned_component_weights) 가중치를 적용한다."""
     raw = 0
+    mult = REGIME_WEIGHT_MULTIPLIERS.get(regime, REGIME_WEIGHT_MULTIPLIERS['normal'])
+    lw = learned_component_weights['short']
     try:
         p_ema = score_ema_trend(price, ema20, ema60, ema120, 'short')
         if p_ema >= 20:
             p_ema = 10
-        p_pp = score_price_position_short(rsi, bb_percent)
-        p_cvd = score_cvd_trend(cvd_diff, vol_window_sum, 'short')
-        p_oi = score_oi_v3(oi_change_pct)
-        p_volz = score_volz_v3(vol_z)
-        p_m30 = score_chg30m_short(chg_30m)
-        p_liq = score_liquidity_filter(atr_pct, vol_24h_m)
+        p_ema = min(p_ema * mult['ema'] * lw['ema'], 20)
+        p_pp = min(score_price_position_short(rsi, bb_percent) * mult['pp'] * lw['pp'], 20)
+        p_cvd = min(score_cvd_trend(cvd_diff, vol_window_sum, 'short') * mult['cvd'] * lw['cvd'], 15)
+        p_oi = min(score_oi_v3(oi_change_pct) * mult['oi'] * lw['oi'], 15)
+        p_volz = min(score_volz_v3(vol_z) * mult['volz'] * lw['volz'], 15)
+        p_m30 = min(score_chg30m_short(chg_30m) * mult['m30'] * lw['m30'], 15)
+        p_liq = min(score_liquidity_filter(atr_pct, vol_24h_m) * mult['liq'] * lw['liq'], 5)
         raw = p_ema + p_pp + p_cvd + p_oi + p_volz + p_m30 + p_liq
     except Exception:
         final = round(raw / TOTAL_SCORE_WEIGHT * 100)
@@ -1245,6 +1328,60 @@ def calculate_preshort_score(oi_change_pct, cvd_1h, ema20, ema60, ema120, atr_pc
 #   추세장(평균 ATR% 높음)  → 컷 하향 (기회 포착)
 current_min_score = MIN_SCORE  # score_updater가 매 사이클 갱신, GUI가 읽어서 색칠 기준으로 사용
 
+# ============================================================
+# [2026-07-19 추가] 시장 상태별 자동 가중치 조정 (v8 6단계)
+#   주의: 아래 배수는 데이터로 최적화한 값이 아니라 "상승장엔 추세추종 지표를,
+#   횡보장엔 평균회귀 지표를 더 본다"는 상식적 방향성만 반영한 1차 버전이다.
+#   지난 실측(37,608행/32코인/4.5일)에서 v3 세부점수 개별 상관계수가 전부
+#   |corr|<0.07로 약해서, 이 레짐 배수가 실제로 승률을 개선하는지는 아직
+#   검증되지 않았다 — 로그가 몇 주치 더 쌓이면 detect_market_regime이 매긴
+#   레짐별로 실제 forward return을 다시 갈라서 배수 자체를 재조정해야 한다.
+#   배수는 항상 1.0 근처(0.7~1.3)로 제한해 레짐 판정이 잘못돼도 점수가
+#   과하게 튀지 않게 했다.
+# ============================================================
+REGIME_WEIGHT_MULTIPLIERS = {
+    #             ema   pp    cvd   oi    volz  m30   liq
+    '상승장':   {'ema': 1.3, 'pp': 1.0, 'cvd': 1.1, 'oi': 0.9, 'volz': 0.9, 'm30': 1.1, 'liq': 1.0},
+    '하락장':   {'ema': 1.1, 'pp': 1.0, 'cvd': 1.3, 'oi': 1.1, 'volz': 0.9, 'm30': 1.0, 'liq': 1.0},
+    '횡보장':   {'ema': 0.7, 'pp': 1.3, 'cvd': 0.9, 'oi': 0.8, 'volz': 1.0, 'm30': 0.7, 'liq': 1.2},
+    '고변동성': {'ema': 0.9, 'pp': 0.9, 'cvd': 1.0, 'oi': 1.0, 'volz': 1.3, 'm30': 0.8, 'liq': 1.0},
+    'normal':   {'ema': 1.0, 'pp': 1.0, 'cvd': 1.0, 'oi': 1.0, 'volz': 1.0, 'm30': 1.0, 'liq': 1.0},
+}
+current_market_regime = 'normal'  # score_updater가 매 사이클 끝에 갱신, 다음 사이클 점수계산에 반영(1사이클 지연)
+
+def detect_market_regime(results):
+    """
+    전체 코인 평균 ATR%(변동성)와 EMA 정배열/역배열 비율(추세 방향)로 시장 상태를
+    4가지로 분류한다. compute_dynamic_min_score와 같은 입력(results)을 재사용한다.
+    """
+    try:
+        atrs = [r.get('atr_pct', 0) for r in results if r.get('atr_pct', 0) > 0]
+        if not atrs:
+            return 'normal'
+        avg_atr = sum(atrs) / len(atrs)
+
+        bull = bear = 0
+        for r in results:
+            price = r.get('price'); e20 = r.get('ema20'); e60 = r.get('ema60'); e120 = r.get('ema120')
+            if price is None or e20 is None or e60 is None or e120 is None:
+                continue
+            if e20 > e60 > e120 and price > e20:
+                bull += 1
+            elif e20 < e60 < e120 and price < e20:
+                bear += 1
+        total = bull + bear
+        trend_bias = (bull - bear) / total if total > 0 else 0.0  # +1(전부 상승정배열) ~ -1(전부 하락역배열)
+
+        if avg_atr >= 2.0:
+            return '고변동성'
+        elif trend_bias >= 0.15:
+            return '상승장'
+        elif trend_bias <= -0.15:
+            return '하락장'
+        return '횡보장'
+    except Exception:
+        return 'normal'
+
 def compute_dynamic_min_score(results):
     """결과 리스트의 평균 ATR%로 시장 상태를 추정해 진입 컷을 반환한다.
     (개편안 v2 권장 기준: 65 관심 / 70 추세장 진입 / 75 일반장 진입 / 80 횡보장)"""
@@ -1261,6 +1398,253 @@ def compute_dynamic_min_score(results):
             return MIN_SCORE
     except Exception:
         return MIN_SCORE
+
+
+# ============================================================
+# [2026-07-19 추가] v8 — 실측 승률 기반 자동 가중치 학습 시스템
+#   "점수표를 사람이 정하는 게 아니라 데이터가 정하게" 하는 요청을 반영한 구현.
+#   흐름: 진입컷을 넘는 신호 발생 → signal_outcomes.csv에 그 순간 세부점수 스냅샷
+#   기록(log_signal_open) → 15분마다 120분 이상 지난 미해결 신호를 1시간봉으로 다시
+#   조회해 60분/120분 수익률·MFE·MAE 채움(resolve_signal_outcomes) → 해결된 신호가
+#   충분히 쌓이면(SIGNAL_MIN_TOTAL) 컴포넌트별 상관관계로 배수 재계산
+#   (analyze_and_update_weights) → learned_weights.json에 저장, calculate_long/
+#   short_score가 다음 계산부터 자동 반영.
+#
+#   과최적화 방지 안전장치 (지난 대화에서 지적한 표본 부족/레짐 편중 문제 때문에 필수):
+#     1) 표본 부족(<SIGNAL_MIN_SAMPLES_PER_COMPONENT) 컴포넌트는 배수를 안 건드림(유지)
+#     2) 상관관계 부호가 반대로 나온(역신호로 확인된) 컴포넌트는 무조건 최소배수(0.5)로—
+#        부호를 자동으로 뒤집어서 "매수신호였던 걸 매도신호로" 재해석하지는 않음
+#     3) 한 번 재학습에 배수가 이전 값 대비 ±0.25 이상 못 움직임(급변 방지, 완만한 적응)
+#     4) 전체 재학습은 해결된(=60/120분 뒤 결과가 이미 확정된) 신호만 사용 — 워크포워드,
+#        미래 데이터 참조 없음
+#     5) 재학습마다 weight_retrain_log.csv에 근거(상관계수/표본수/변경폭)를 남겨서
+#        나중에 "왜 이 배수로 바뀌었는지" 추적 가능
+#   그래도 근본적인 한계는 남는다 — 신호 자체가 드물게 나오는 구조라(진입컷 넘는
+#   경우만 기록) SIGNAL_MIN_TOTAL(300건)까지 쌓이는 데도 실제로는 몇 주 걸릴 수 있고,
+#   그 기간이 특정 장세에 쏠려 있으면 여전히 그 장세에 과적합된 배수가 나온다.
+# ============================================================
+SIGNAL_LOG_FILE = os.path.join(SCRIPT_DIR, "signal_outcomes.csv")
+LEARNED_WEIGHTS_FILE = os.path.join(SCRIPT_DIR, "learned_weights.json")
+WEIGHT_RETRAIN_LOG_FILE = os.path.join(SCRIPT_DIR, "weight_retrain_log.csv")
+SIGNAL_LOG_COLS = ["signal_id", "opened_ts", "ticker", "direction", "entry_price", "score", "regime",
+                    "ema", "pp", "cvd", "oi", "volz", "m30", "liq",
+                    "resolved", "resolve_ts", "ret_60m", "ret_120m", "mfe_pct", "mae_pct"]
+
+LONG_COMPONENTS = ['ema', 'pp', 'cvd', 'volz', 'm30', 'liq']
+SHORT_COMPONENTS = ['ema', 'pp', 'cvd', 'oi', 'volz', 'm30', 'liq']
+
+SIGNAL_MIN_TOTAL = 300                  # 이 이상 '해결된' 신호가 쌓여야 재학습 시작
+SIGNAL_MIN_SAMPLES_PER_COMPONENT = 30   # 컴포넌트별 최소 표본(부족하면 배수 유지)
+WEIGHT_MULT_MIN, WEIGHT_MULT_MAX = 0.5, 1.6
+WEIGHT_MULT_MAX_STEP = 0.25             # 한 번 재학습에 배수가 움직일 수 있는 최대폭
+RESOLVE_INTERVAL_SEC = 900              # 15분마다 미해결 신호 결과 확인 + 재학습 여부 체크
+RESOLVE_AFTER_MIN = 120                 # 신호 발생 후 이만큼 지나야 결과 확정 시도
+
+_signal_log_lock = threading.Lock()
+
+def _load_signal_log():
+    """resolved 컬럼이 CSV 왕복하면서 문자열("True"/"False")이 되는 문제를 정규화해서 읽는다."""
+    df = pd.read_csv(SIGNAL_LOG_FILE)
+    if 'resolved' in df.columns:
+        df['resolved'] = df['resolved'].astype(str).str.strip().eq('True')
+    return df
+
+def log_signal_open(ticker, direction, r, regime):
+    """진입컷을 새로 넘은 신호를 기록한다(결과는 나중에 resolve_signal_outcomes가 채움)."""
+    try:
+        comp = r.get('components', {}) or {}
+        signal_id = f"{ticker}_{direction}_{int(time.time() * 1000)}"
+        row = {
+            "signal_id": signal_id,
+            "opened_ts": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "ticker": ticker, "direction": direction,
+            "entry_price": r.get('price', 0),
+            "score": r.get('long_score' if direction == 'long' else 'short_score', 0),
+            "regime": regime,
+            "ema": comp.get('ema_l' if direction == 'long' else 'ema_s', 0),
+            "pp": comp.get('pp_l' if direction == 'long' else 'pp_s', 0),
+            "cvd": comp.get('cvd_l' if direction == 'long' else 'cvd_s', 0),
+            "oi": comp.get('oi_sc', 0) if direction == 'short' else 0,
+            "volz": comp.get('volz_sc', 0),
+            "m30": comp.get('m30_l' if direction == 'long' else 'm30_s', 0),
+            "liq": comp.get('liquidity_sc', 0),
+            "resolved": False, "resolve_ts": "", "ret_60m": "", "ret_120m": "", "mfe_pct": "", "mae_pct": "",
+        }
+        with _signal_log_lock:
+            file_exists = os.path.exists(SIGNAL_LOG_FILE)
+            with open(SIGNAL_LOG_FILE, 'a', newline='', encoding='utf-8') as f:
+                w = csv.DictWriter(f, fieldnames=SIGNAL_LOG_COLS)
+                if not file_exists:
+                    w.writeheader()
+                w.writerow(row)
+    except Exception as e:
+        print(f"신호 로그 기록 실패: {e}")
+
+def resolve_signal_outcomes():
+    """opened_ts로부터 RESOLVE_AFTER_MIN분 이상 지난 미해결 신호에 1시간봉을 다시
+    조회해서 60분/120분 후 수익률 + MFE/MAE(방향 기준으로 부호 정리)를 채운다."""
+    if not os.path.exists(SIGNAL_LOG_FILE):
+        return 0
+    try:
+        with _signal_log_lock:
+            df = _load_signal_log()
+        if df.empty:
+            return 0
+        df['opened_ts'] = pd.to_datetime(df['opened_ts'])
+        now = datetime.now()
+        pending_mask = (~df['resolved']) & ((now - df['opened_ts']).dt.total_seconds() >= RESOLVE_AFTER_MIN * 60)
+        if not pending_mask.any():
+            return 0
+        newly_resolved = 0
+        for ticker in df.loc[pending_mask, 'ticker'].unique():
+            candle = fetch_candlestick(ticker, chart_intervals="1h", timeout=8, retries=1)
+            if candle is None or len(candle) < 3:
+                continue
+            idxs = df.index[pending_mask & (df['ticker'] == ticker)]
+            for idx in idxs:
+                try:
+                    row = df.loc[idx]
+                    entry_time = row['opened_ts']
+                    entry_price = float(row['entry_price'])
+                    if entry_price <= 0:
+                        continue
+                    window = candle[(candle.index >= entry_time - pd.Timedelta(minutes=30)) &
+                                     (candle.index <= entry_time + pd.Timedelta(minutes=150))]
+                    if len(window) < 2:
+                        continue
+                    t60 = window[window.index >= entry_time + pd.Timedelta(minutes=45)]
+                    t120 = window[window.index >= entry_time + pd.Timedelta(minutes=105)]
+                    ret60 = (t60.iloc[0]['close'] - entry_price) / entry_price * 100 if len(t60) else None
+                    ret120 = (t120.iloc[0]['close'] - entry_price) / entry_price * 100 if len(t120) else None
+                    if ret60 is None and ret120 is None:
+                        continue  # 아직 그 시점 캔들이 안 나옴 — 다음 주기에 재시도
+                    post = window[window.index >= entry_time]
+                    mfe = (post['high'].max() - entry_price) / entry_price * 100 if len(post) else None
+                    mae = (post['low'].min() - entry_price) / entry_price * 100 if len(post) else None
+                    if row['direction'] == 'short' and mfe is not None and mae is not None:
+                        mfe, mae = -mae, -mfe  # 숏은 가격 하락이 이득 — MFE/MAE 부호를 방향 기준으로 뒤집음
+                    df.loc[idx, 'ret_60m'] = ret60
+                    df.loc[idx, 'ret_120m'] = ret120
+                    df.loc[idx, 'mfe_pct'] = mfe
+                    df.loc[idx, 'mae_pct'] = mae
+                    df.loc[idx, 'resolved'] = True
+                    df.loc[idx, 'resolve_ts'] = now.strftime('%Y-%m-%d %H:%M:%S')
+                    newly_resolved += 1
+                except Exception:
+                    continue
+        if newly_resolved:
+            with _signal_log_lock:
+                df.to_csv(SIGNAL_LOG_FILE, index=False)
+        return newly_resolved
+    except Exception as e:
+        print(f"신호 결과 해소 실패: {e}")
+        return 0
+
+def _load_learned_weights():
+    default = {'long': {c: 1.0 for c in LONG_COMPONENTS}, 'short': {c: 1.0 for c in SHORT_COMPONENTS}}
+    try:
+        if os.path.exists(LEARNED_WEIGHTS_FILE):
+            with open(LEARNED_WEIGHTS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            for d in ('long', 'short'):
+                default[d].update(data.get(d, {}))
+    except Exception as e:
+        print(f"학습 가중치 로드 실패, 기본값(1.0) 사용: {e}")
+    return default
+
+learned_component_weights = _load_learned_weights()  # calculate_long/short_score가 매번 참조하는 현재 배수
+
+def analyze_and_update_weights():
+    """resolved==True인 신호들의 컴포넌트-수익률 상관관계로 배수를 재계산한다.
+    반환값: 갱신됐으면 새 가중치 dict, 표본 부족 등으로 건너뛰면 None."""
+    global learned_component_weights
+    if not os.path.exists(SIGNAL_LOG_FILE):
+        return None
+    try:
+        df = _load_signal_log()
+        df = df[df['resolved']].dropna(subset=['ret_60m'])
+        if len(df) < SIGNAL_MIN_TOTAL:
+            print(f"[자동 재학습] 보류: 해결된 신호 {len(df)}건 (최소 {SIGNAL_MIN_TOTAL}건 필요)")
+            return None
+
+        report = {}
+        new_weights = {'long': dict(learned_component_weights['long']),
+                        'short': dict(learned_component_weights['short'])}
+
+        for direction, components in (('long', LONG_COMPONENTS), ('short', SHORT_COMPONENTS)):
+            sub = df[df['direction'] == direction]
+            if len(sub) < SIGNAL_MIN_SAMPLES_PER_COMPONENT:
+                continue
+            aligned_corrs = {}
+            for c in components:
+                n_valid = sub[c].notna().sum()
+                if n_valid < SIGNAL_MIN_SAMPLES_PER_COMPONENT:
+                    aligned_corrs[c] = None
+                    continue
+                corr = sub[c].corr(sub['ret_60m'])
+                # 숏은 가격 하락(음의 수익률)이 좋은 신호라 부호를 뒤집어서 "방향 정렬"한다
+                aligned = corr if direction == 'long' else -corr
+                aligned_corrs[c] = 0.0 if pd.isna(aligned) else aligned
+
+            positive = {c: v for c, v in aligned_corrs.items() if v is not None and v > 0}
+            total_pos = sum(positive.values()) or 1e-9
+            n = len(components)
+            for c in components:
+                old = learned_component_weights[direction].get(c, 1.0)
+                v = aligned_corrs.get(c)
+                if v is None:
+                    target = old                              # 표본 부족 — 그대로 유지
+                elif v <= 0:
+                    target = WEIGHT_MULT_MIN                   # 역방향 확인됨 — 최소배수로
+                else:
+                    share = v / total_pos
+                    target = max(WEIGHT_MULT_MIN, min(WEIGHT_MULT_MAX, share * n))
+                step = max(-WEIGHT_MULT_MAX_STEP, min(WEIGHT_MULT_MAX_STEP, target - old))
+                new_val = round(old + step, 3)
+                new_weights[direction][c] = new_val
+                report[f"{direction}_{c}"] = {"corr": None if v is None else round(v, 4),
+                                               "n": int(sub[c].notna().sum()),
+                                               "old_mult": old, "new_mult": new_val}
+
+        learned_component_weights = new_weights
+        try:
+            with open(LEARNED_WEIGHTS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(new_weights, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"학습 가중치 저장 실패: {e}")
+        try:
+            file_exists = os.path.exists(WEIGHT_RETRAIN_LOG_FILE)
+            with open(WEIGHT_RETRAIN_LOG_FILE, 'a', newline='', encoding='utf-8') as f:
+                w = csv.writer(f)
+                if not file_exists:
+                    w.writerow(["ts", "n_resolved", "detail_json"])
+                w.writerow([datetime.now().strftime('%Y-%m-%d %H:%M:%S'), len(df),
+                            json.dumps(report, ensure_ascii=False)])
+        except Exception as e:
+            print(f"재학습 로그 기록 실패: {e}")
+
+        print(f"[자동 재학습] 해결신호 {len(df)}건 기준 배수 갱신 완료: {new_weights}")
+        return new_weights
+    except Exception as e:
+        print(f"자동 재학습 실패: {e}")
+        return None
+
+def weight_learning_loop():
+    """RESOLVE_INTERVAL_SEC(기본 15분)마다 미해결 신호를 해소하고, 새로 해결된 신호가
+    50건 이상 늘었으면 재학습한다(=매번 하지 않음, 불필요한 재계산/급변 방지)."""
+    last_retrain_count = 0
+    while running:
+        try:
+            resolve_signal_outcomes()
+            if os.path.exists(SIGNAL_LOG_FILE):
+                df = _load_signal_log()
+                resolved_count = int(df['resolved'].sum()) if 'resolved' in df.columns else 0
+                if resolved_count >= SIGNAL_MIN_TOTAL and resolved_count - last_retrain_count >= 50:
+                    if analyze_and_update_weights() is not None:
+                        last_retrain_count = resolved_count
+        except Exception as e:
+            print(f"가중치 학습 루프 오류: {e}")
+        time.sleep(RESOLVE_INTERVAL_SEC)
 
 
 
@@ -1419,12 +1803,12 @@ def process_ticker(ticker):
         long_score = calculate_long_score(
             rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, chg_30m,
             price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
-            funding_rate, trade_value_usd, current_price, ema120, vol_million
+            funding_rate, trade_value_usd, current_price, ema120, vol_million, current_market_regime
         )
         short_score = calculate_short_score(
             rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, chg_30m,
             price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
-            funding_rate, trade_value_usd, current_price, ema120, vol_million
+            funding_rate, trade_value_usd, current_price, ema120, vol_million, current_market_regime
         )
         # Pre-Pump/Pre-Short (매집/분산 v3 — 장기 매집 사이클 탐지). cvd_1h는 별도 API가
         # 없어 위에서 이미 구한 cvd_diff(최근 CVD_WINDOW_CANDLES 캔들 변화량)를 근사치로
@@ -1564,8 +1948,9 @@ def score_updater(tickers_ref):
                 if res:
                     results.append(res)
         if results:
-            global current_min_score
+            global current_min_score, current_market_regime
             current_min_score = compute_dynamic_min_score(results)
+            current_market_regime = detect_market_regime(results)
             results.sort(key=lambda x: x['long_score'] + x['short_score'], reverse=True)
             with score_lock:
                 score_cache.clear()
@@ -2487,6 +2872,7 @@ if __name__ == "__main__":
     threading.Thread(target=ticker_updater, args=(tickers_ref,), daemon=True).start()
     threading.Thread(target=price_updater, args=(tickers_ref,), daemon=True).start()
     threading.Thread(target=score_updater, args=(tickers_ref,), daemon=True).start()
+    threading.Thread(target=weight_learning_loop, daemon=True).start()
     threading.Thread(target=snapshot_loop, daemon=True).start()
     threading.Thread(target=account_loop, daemon=True).start()
 
@@ -2497,7 +2883,7 @@ if __name__ == "__main__":
             if time.time() - last_status >= 60:
                 with score_lock:
                     n = len(score_cache)
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] 서버 가동 | 코인 {n}개 | 컷 {current_min_score} | 잔고 ${balance:,.2f} | 포지션 {len(positions)}개")
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] 서버 가동 | 코인 {n}개 | 컷 {current_min_score} | 장세 {current_market_regime} | 잔고 ${balance:,.2f} | 포지션 {len(positions)}개")
                 last_status = time.time()
     except KeyboardInterrupt:
         running = False
