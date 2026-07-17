@@ -1122,7 +1122,7 @@ class TradingClient:
                     card = tk.Frame(self.card_inner, bd=1, relief="solid")
                     lbl1 = tk.Label(card, font=("Arial", self.ui_font_base, "bold"), anchor="w",
                                     justify="left", wraplength=self.card_wraplength)
-                    lbl2 = tk.Label(card, font=("Arial", max(self.ui_font_base - 1, 4)), anchor="w",
+                    lbl2 = tk.Label(card, font=("Arial", max(round((self.ui_font_base - 1) * 1.5), 4)), anchor="w",
                                     justify="left", fg="#444444", wraplength=self.card_wraplength)
                     lbl1.pack(fill="x", padx=4, pady=(2, 0))
                     lbl2.pack(fill="x", padx=4, pady=(0, 2))
