@@ -172,9 +172,14 @@ def generate_indicator_report():
     if not ok:
         raise RuntimeError(f"리포트 생성 실패: {msg}")
     first_line = msg.split("\n")[0]
-    path = first_line.split("완료: ", 1)[1].strip() if "완료: " in first_line else None
+    # "리포트 생성 완료: {path}" 뿐 아니라 "리포트 생성 완료(일부 누락): {path}" 형식도 오므로
+    # 접두문구 문자열매칭 대신 ".pdf로 끝나는 경로"를 정규식으로 뽑는다(더 안정적).
+    m = re.search(r'([A-Za-z]:[\\/]\S*\.pdf|/\S*\.pdf)', first_line)
+    path = m.group(1).strip() if m else None
     if not path or not os.path.exists(path):
         raise RuntimeError(f"리포트 파일 경로를 못 찾음: {msg}")
+    if len(msg.split("\n")) > 1:
+        print(f"   ⚠️ 리포트 일부 페이지 누락됨(계속 진행): {msg.split(chr(10), 1)[1][:200]}")
     print("   ", path)
     return path
 
