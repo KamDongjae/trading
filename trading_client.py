@@ -970,7 +970,7 @@ class TradingClient:
             self._update_account_labels()
             if current_margin_mode != self._last_margin_mode_shown:
                 self._highlight_margin_mode(current_margin_mode)
-        self.root.after(700, self.poll_files)
+        self.root.after(1000, self.poll_files)
 
     def _update_account_labels(self):
         balance, ts, pos_list = self._account
@@ -1122,7 +1122,7 @@ class TradingClient:
                     card = tk.Frame(self.card_inner, bd=1, relief="solid")
                     lbl1 = tk.Label(card, font=("Arial", self.ui_font_base, "bold"), anchor="w",
                                     justify="left", wraplength=self.card_wraplength)
-                    lbl2 = tk.Label(card, font=("Arial", max(self.ui_font_base - 1, 4)), anchor="w",
+                    lbl2 = tk.Label(card, font=("Arial", max(round((self.ui_font_base - 1) * 1.5), 4)), anchor="w",
                                     justify="left", fg="#444444", wraplength=self.card_wraplength)
                     lbl1.pack(fill="x", padx=4, pady=(2, 0))
                     lbl2.pack(fill="x", padx=4, pady=(0, 2))
@@ -1309,6 +1309,7 @@ class TradingClient:
                         'rsi': gf('RSI'), 'rsi_delta': gf('RSI_Delta'),
                         'ema20': gf('EMA20'), 'ema60': gf('EMA60'), 'ema120': gf('EMA120'),
                         'bb_upper': gf('BB_UPPER'), 'bb_mid': gf('BB_MID'), 'bb_lower': gf('BB_LOWER'),
+                        'timestamp': row.get('timestamp', ''),
                     })
         except Exception as e:
             messagebox.showerror("오류", f"차트 파일을 못 읽음: {e}")
@@ -1366,7 +1367,7 @@ class TradingClient:
             n = len(rows)
             if n == 0 or w < 50 or h < 50:
                 return
-            pad_l, pad_r, pad_t, pad_b = 8, 65, 8, 8
+            pad_l, pad_r, pad_t, pad_b = 8, 65, 8, 18
             plot_w, plot_h = w - pad_l - pad_r, h - pad_t - pad_b
             if plot_w <= 0 or plot_h <= 0:
                 return
@@ -1425,6 +1426,26 @@ class TradingClient:
             for text, color in (("EMA20", "#ffff00"), ("EMA60", "#00ffff"), ("EMA120", "#ff00ff"), ("BB", "#5a6a7a")):
                 canvas.create_text(pad_l + 4, legend_y, text=text, fill=color, font=("Arial", 8, "bold"), anchor="nw")
                 legend_y += 12
+
+            # x축 날짜 라벨(mm.dd) — 회색 구분선 위에 표시. 캔들 몇 개당 하나씩만 찍어서 안 겹치게.
+            axis_y = pad_t + plot_h
+            canvas.create_line(pad_l, axis_y, w - pad_r, axis_y, fill="#444444")
+            label_every = max(n // 6, 1)
+            last_label = None
+            for i, r in enumerate(rows):
+                if i % label_every != 0:
+                    continue
+                ts = r.get('timestamp', '')
+                if not ts or len(ts) < 10:
+                    continue
+                mmdd = f"{ts[5:7]}.{ts[8:10]}"  # "YYYY-MM-DD HH:MM:SS" -> "MM.DD"
+                if mmdd == last_label:
+                    continue
+                last_label = mmdd
+                x_center = pad_l + i * candle_w + candle_w / 2
+                canvas.create_line(x_center, axis_y, x_center, axis_y + 3, fill="#666666")
+                canvas.create_text(x_center, axis_y + 5, text=mmdd, fill="#999999",
+                                    font=("Arial", 8), anchor="n")
 
         def draw_rsi(_event=None):
             canvas = win._rsi_canvas
