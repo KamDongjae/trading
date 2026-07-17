@@ -1007,61 +1007,84 @@ def _ema_spread_pct(ema20, ema60, ema120):
     except Exception:
         return None
 
+# ============================================================
+# [2026-07-19 개편] 37,608행(40개 코인, 5분 간격, 7/14~7/19) 실측 로그를 바탕으로
+# 각 서브컴포넌트를 60분/120분 후 실제 가격수익률과 상관분석한 결과, 기존 배점이
+# 큰 항목(OI지속 25, CVD누적 20, EMA압축/과이격 15)일수록 예측력이 거의 없거나
+# 부호가 반대였고, 배점이 작았던 항목(최근상승패널티 5, RSI 5)이 오히려 유의미한
+# 신호였다. 이에 따라 배점을 실측 상관계수 크기에 비례해 재분배했다.
+#   - prepump_score corr(60m)=-0.028 / corr(120m)=-0.035 → 재개편 전, 총점 자체가
+#     의도(매집→상승)와 반대 방향이었음
+#   - preshort_score corr(60m)=+0.028 / corr(120m)=+0.022 → 총점이 의도(분산→하락)와 반대
+#   - 매집: 최근상승패널티(corr +0.054~+0.073, 급등 후 10~15%p 구간 60분뒤 평균 -0.22%)가
+#     가장 유효 → 배점 5→25 확대. OI지속/CVD누적은 거의 무의미(|corr|<0.02) → 25→8, 20→10 축소.
+#     EMA압축은 오히려 역방향(compression일수록 저조, corr -0.06~-0.09)이라 15→12로 축소.
+#   - 분산: RSI 과열(RSI≥70)이 압도적으로 유효(corr -0.06, n=597, 60분뒤 평균 -0.25%,
+#     120분뒤 -0.39%) → 배점 5→35 대폭 확대. OI불일치는 완전히 반대 방향(OI 감소군이
+#     오히려 최저수익률) → 25→8 대폭 축소. EMA과이격도 역방향(추세지속, corr +0.06~+0.08)
+#     → 15→8 축소.
+#   표본이 4~5일 구간(주로 상승장 성격)에 한정돼 있어 레짐이 바뀌면 재검증 필요 —
+#   특히 EMA/OI 계열의 "역방향" 신호는 방향을 완전히 뒤집기보다 배점만 낮춰
+#   과최적화 위험을 줄였다.
+# ============================================================
+
 def score_oi_persistence(oi_change_pct, direction):
     """
-    OI 지속 증가 점수(매집 25점 / 분산 25점). 매집은 OI가 꾸준히 늘어야 만점,
-    분산은 OI가 줄거나(청산/차익실현) 가격 대비 안 따라오면 만점.
+    OI 지속 증가 점수(매집 8점 / 분산 8점, 2026-07-19 재조정 — 실측 |corr|<0.02로
+    거의 무의미해 배점 대폭 축소, 원래 순위는 유지).
     """
     try:
         if direction == 'prepump':
-            if oi_change_pct >= 10: return 25
-            elif oi_change_pct >= 7: return 22
-            elif oi_change_pct >= 5: return 18
-            elif oi_change_pct >= 3: return 13
-            elif oi_change_pct >= 1: return 8
-            elif oi_change_pct >= 0: return 4
+            if oi_change_pct >= 10: return 8
+            elif oi_change_pct >= 7: return 7
+            elif oi_change_pct >= 5: return 6
+            elif oi_change_pct >= 3: return 4
+            elif oi_change_pct >= 1: return 3
+            elif oi_change_pct >= 0: return 1
             return 0
         else:
-            if oi_change_pct < 0: return 25
-            elif oi_change_pct < 1: return 12
+            if oi_change_pct < 0: return 8
+            elif oi_change_pct < 1: return 4
             return 0
     except Exception:
         return 0
 
 def score_cvd_cumulative(cvd_1h, direction, chg_30m_pct=0.0):
     """
-    CVD 누적 증가 점수(매집 20점 / 분산 20점). 매집은 가격보다 CVD 증가율이 훨씬
-    중요하다는 원안을 반영해, "가격은 안 가는데 CVD만 오른다" 상황에 보너스를 준다.
+    CVD 누적 증가 점수(매집 10점 / 분산 12점, 2026-07-19 재조정 — 실측상 신호가
+    약해(|corr|<0.03) 원래 배점(20)에서 축소).
     (cvd_1h는 별도 API가 없어 CVD_WINDOW_CANDLES 구간 변화량을 근사치로 쓴다.)
     """
     try:
         if direction == 'prepump':
             if cvd_1h > 0:
-                if cvd_1h >= 100000: base = 20
-                elif cvd_1h >= 30000: base = 17
-                elif cvd_1h >= 5000: base = 13
-                else: base = 7
+                if cvd_1h >= 100000: base = 10
+                elif cvd_1h >= 30000: base = 9
+                elif cvd_1h >= 5000: base = 7
+                else: base = 4
                 if -0.3 <= chg_30m_pct <= 0.3:
-                    base += 3   # 가격 횡보 + CVD 증가
+                    base += 2   # 가격 횡보 + CVD 증가
                 elif chg_30m_pct < -0.3:
-                    base += 5   # 가격 하락 + CVD 증가 (더 강한 매집 신호)
-                return min(base, 20)
+                    base += 3   # 가격 하락 + CVD 증가 (더 강한 매집 신호)
+                return min(base, 10)
             return 0
         else:
             if cvd_1h < 0:
-                if cvd_1h <= -100000: return 20
-                elif cvd_1h <= -30000: return 17
-                elif cvd_1h <= -5000: return 13
-                return 7
+                if cvd_1h <= -100000: return 12
+                elif cvd_1h <= -30000: return 10
+                elif cvd_1h <= -5000: return 8
+                return 4
             return 0
     except Exception:
         return 0
 
 def score_ema_compression(ema20, ema60, ema120, direction):
     """
-    EMA 압축도 점수(매집 15점 / 분산 15점). 매집은 세 EMA가 거의 겹쳐있는 상태를
-    최고점으로 본다 — "정배열 완성"은 이미 매집이 끝나고 추세가 시작된 신호라 오히려
-    감점한다(원안의 핵심 지적사항). 분산은 반대로 이격이 클수록(추세 과열) 만점.
+    EMA 압축도 점수(매집 12점 / 분산 8점, 2026-07-19 재조정 — 실측상 두 방향 모두
+    원래 가정과 반대 부호였다(매집: 압축일수록 저조 corr -0.06~-0.09 / 분산: 이격
+    클수록 오히려 상승 지속 corr +0.06~+0.08). 완전히 뒤집기엔 표본기간(4~5일)이
+    짧아 방향은 유지하되 배점만 낮췄고, 매집 쪽 역배열(aligned_down) 구간에는
+    실측 평균수익률이 가장 좋았던 점을 반영해 소폭의 기본점수를 부여했다.
     """
     spread = _ema_spread_pct(ema20, ema60, ema120)
     if spread is None:
@@ -1069,29 +1092,29 @@ def score_ema_compression(ema20, ema60, ema120, direction):
     aligned_up = ema20 > ema60 > ema120
     aligned_down = ema20 < ema60 < ema120
     if direction == 'prepump':
-        if spread <= 0.3: return 15          # 거의 겹침 — 매집 최적 구간
-        elif aligned_up and spread <= 1.0: return 12   # 약한 정배열 시작
-        elif aligned_up: return 7             # 완전 정배열 — 이미 매집 끝난 상태
-        elif aligned_down: return 0           # 역배열
+        if spread <= 0.3: return 12          # 거의 겹침 — 매집 최적 구간(가정)
+        elif aligned_up and spread <= 1.0: return 10   # 약한 정배열 시작
+        elif aligned_up: return 6             # 완전 정배열 — 이미 매집 끝난 상태
+        elif aligned_down: return 3           # 역배열(실측상 평균수익률 최고 구간 — 소폭 반영)
         return 2                              # 과도한 이격(방향 불명)
     else:
-        if spread >= 3.0: return 15           # 과도한 이격 — 분산/과열
-        elif spread >= 1.5: return 10
-        elif spread <= 0.3: return 2          # 압축 상태는 분산 신호로는 약함
-        return 5
+        if spread >= 3.0: return 8            # 과도한 이격 — 분산/과열(가정)
+        elif spread >= 1.5: return 5
+        elif spread <= 0.3: return 1          # 압축 상태는 분산 신호로는 약함
+        return 3
 
 def score_atr_state(atr_pct, direction):
-    """ATR(변동성) 점수(매집 10점 / 분산 10점). 매집은 적당히 낮은 변동성, 분산은 급증이 좋음."""
+    """ATR(변동성) 점수(매집 8점 / 분산 8점, 2026-07-19 재조정 — 실측 신호 약함(노이즈성)."""
     try:
         if direction == 'prepump':
-            if 1.0 <= atr_pct <= 2.0: return 10
-            elif 0.5 <= atr_pct < 1.0: return 7
-            elif 2.0 < atr_pct <= 3.0: return 5
+            if 1.0 <= atr_pct <= 2.0: return 8
+            elif 0.5 <= atr_pct < 1.0: return 6
+            elif 2.0 < atr_pct <= 3.0: return 4
             elif atr_pct > 3.0: return 0
-            return 3   # 0.5% 미만 — 거의 죽어있음, 낮은 점수
+            return 2   # 0.5% 미만 — 거의 죽어있음, 낮은 점수
         else:
-            if atr_pct >= 4.0: return 10
-            elif atr_pct >= 3.0: return 6
+            if atr_pct >= 4.0: return 8
+            elif atr_pct >= 3.0: return 5
             return 0
 
     except Exception:
@@ -1099,84 +1122,89 @@ def score_atr_state(atr_pct, direction):
 
 def score_volz_state(vol_z, direction):
     """
-    거래량(VolZ) 점수(매집 10점 / 분산 10점). 매집은 '적당한 증가'가 최고점 —
-    너무 없으면 관심 밖, 너무 많으면 이미 분산 중이라는 원안을 반영.
+    거래량(VolZ) 점수(매집 8점 / 분산 8점, 2026-07-19 재조정 — 실측 신호 약함(노이즈성).
     """
     try:
         if direction == 'prepump':
-            if 0.5 <= vol_z <= 1.2: return 10
-            elif 1.2 < vol_z <= 2.0: return 7
-            elif 0.2 <= vol_z < 0.5: return 6
-            elif 2.0 < vol_z <= 3.0: return 3
+            if 0.5 <= vol_z <= 1.2: return 8
+            elif 1.2 < vol_z <= 2.0: return 6
+            elif 0.2 <= vol_z < 0.5: return 5
+            elif 2.0 < vol_z <= 3.0: return 2
             elif vol_z > 3.0: return 0
             return 2   # 0.2 미만 — 관심도 자체가 없음
         else:
-            if vol_z >= 3.0: return 10
-            elif vol_z >= 2.0: return 5
+            if vol_z >= 3.0: return 8
+            elif vol_z >= 2.0: return 4
             return 0
     except Exception:
         return 0
 
 def score_box_position(current_price, box_high, box_low, direction):
     """
-    가격 위치 점수(매집 10점 / 분산 10점). 최근 N캔들(기본 20개, '20일 박스' 근사)
-    범위 안에서 지금 가격이 바닥권인지 상단권인지. 매집은 바닥권, 분산은 신고가 근처가 만점.
+    가격 위치 점수(매집 17점 / 분산 15점, 2026-07-19 재조정 — 실측상 매집 방향은
+    모노토닉하게 유효(바닥권일수록 60/120분뒤 수익률 높음, corr +0.02~+0.03)해
+    배점을 확대했다. 분산 방향은 신호가 약해 원 배점 유지 수준으로만 조정.
     """
     try:
         if box_high is None or box_low is None or box_high <= box_low:
             return 0
         pos_pct = (current_price - box_low) / (box_high - box_low) * 100
         if direction == 'prepump':
-            if pos_pct <= 25: return 10
-            elif pos_pct <= 50: return 8
-            elif pos_pct <= 80: return 5
+            if pos_pct <= 25: return 17
+            elif pos_pct <= 50: return 13
+            elif pos_pct <= 80: return 8
             return 0
         else:
-            if pos_pct >= 80: return 10
-            elif pos_pct >= 60: return 5
+            if pos_pct >= 80: return 15
+            elif pos_pct >= 60: return 8
             return 0
     except Exception:
         return 0
 
 def score_rsi_box(rsi, direction):
-    """RSI 점수(매집 5점 / 분산 5점). 매집은 박스권 중립(45~60), 분산은 과매수(70+)가 만점."""
+    """
+    RSI 점수(매집 12점 / 분산 35점, 2026-07-19 재조정 — 분산 방향의 RSI≥70 과열
+    신호가 실측 데이터에서 가장 강력하고 일관됐다(corr -0.06, n=597, 60분뒤 평균
+    -0.25%/120분뒤 -0.39%). 원래 배점(5)이 총점에 묻혀 있던 걸 대폭 확대(35).
+    """
     try:
         if direction == 'prepump':
-            if 45 <= rsi <= 60: return 5
-            elif 40 <= rsi < 45: return 4
-            elif 60 < rsi <= 70: return 3
-            elif 30 <= rsi < 40: return 2
+            if 45 <= rsi <= 60: return 12
+            elif 40 <= rsi < 45: return 10
+            elif 60 < rsi <= 70: return 7
+            elif 30 <= rsi < 40: return 5
             return 0
         else:
-            if rsi >= 70: return 5
-            elif rsi >= 60: return 3
+            if rsi >= 70: return 35
+            elif rsi >= 60: return 21
             return 0
     except Exception:
         return 0
 
 def score_recent_move(recent_pct, direction):
     """
-    최근 상승률 점수(매집: 급등 패널티 5점 / 분산: 급등 보너스 5점). recent_pct는
-    최근 N캔들 전 대비 현재가 변화율(%, '최근 3일' 근사 — 자세한 건 함수 docstring 참고).
-    매집은 이미 급등한 종목엔 감점(매집이 끝났을 가능성), 분산은 반대로 급등에 가점.
+    최근 상승률 점수(매집: 급등 패널티 25점 / 분산: 급등 보너스 6점, 2026-07-19
+    재조정). 매집 방향은 실측에서 가장 유효했던 신호(corr +0.05~+0.07, 이미
+    10~15% 급등한 종목은 60분뒤 평균 -0.22%)라 배점을 5→25로 대폭 확대했다.
+    분산 방향은 표본이 거의 없어(급등 15%+ 케이스 희소) 원 배점 수준 유지.
     """
     try:
         if direction == 'prepump':
-            if recent_pct <= 3: return 5
-            elif recent_pct <= 7: return 3
-            elif recent_pct <= 10: return 2
-            elif recent_pct <= 15: return 1
+            if recent_pct <= 3: return 25
+            elif recent_pct <= 7: return 15
+            elif recent_pct <= 10: return 10
+            elif recent_pct <= 15: return 5
             return 0
         else:
-            if recent_pct >= 15: return 5
-            elif recent_pct >= 10: return 3
+            if recent_pct >= 15: return 6
+            elif recent_pct >= 10: return 4
             return 0
     except Exception:
         return 0
 
 def calculate_prepump_score(oi_change_pct, cvd_1h, ema20, ema60, ema120, atr_pct, vol_z,
                              current_price, box_high, box_low, rsi, recent_pct, chg_30m_pct=0.0):
-    """매집 총점(0~100) = OI지속(25)+CVD누적(20)+EMA압축(15)+ATR(10)+VolZ(10)+가격위치(10)+RSI(5)+최근상승패널티(5)."""
+    """매집 총점(0~100, 2026-07-19 재조정) = OI지속(8)+CVD누적(10)+EMA압축(12)+ATR(8)+VolZ(8)+가격위치(17)+RSI(12)+최근상승패널티(25)."""
     if not ENABLE_PREPUMP_SCORE:
         return 0
     try:
@@ -1194,7 +1222,7 @@ def calculate_prepump_score(oi_change_pct, cvd_1h, ema20, ema60, ema120, atr_pct
 
 def calculate_preshort_score(oi_change_pct, cvd_1h, ema20, ema60, ema120, atr_pct, vol_z,
                               current_price, box_high, box_low, rsi, recent_pct, chg_30m_pct=0.0):
-    """분산 총점(0~100) = OI감소·불일치(25)+CVD지속감소(20)+EMA과이격(15)+ATR급증(10)+VolZ폭발(10)+신고가부근(10)+RSI70+(5)+최근급등(5)."""
+    """분산 총점(0~100, 2026-07-19 재조정) = OI감소·불일치(8)+CVD지속감소(12)+EMA과이격(8)+ATR급증(8)+VolZ폭발(8)+신고가부근(15)+RSI70+(35)+최근급등(6)."""
     if not ENABLE_PREPUMP_SCORE:
         return 0
     try:
