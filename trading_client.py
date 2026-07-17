@@ -970,7 +970,7 @@ class TradingClient:
             self._update_account_labels()
             if current_margin_mode != self._last_margin_mode_shown:
                 self._highlight_margin_mode(current_margin_mode)
-        self.root.after(700, self.poll_files)
+        self.root.after(1000, self.poll_files)
 
     def _update_account_labels(self):
         balance, ts, pos_list = self._account
