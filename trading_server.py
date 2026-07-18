@@ -129,6 +129,8 @@ class _NullQueue:
     def empty(self): return True
 data_queue = _NullQueue()
 price_queue = _NullQueue()
+data_queue_upbit = _NullQueue()
+price_queue_upbit = _NullQueue()
 positions = {}
 balance = INITIAL_BALANCE
 # 외부 통장(거래소 바깥의 '내 진짜 지갑') — 거래소 잔고(balance)와 완전히 분리된 별도의 돈.
@@ -142,15 +144,19 @@ bank_total_spent = 0.0     # 누적 외부통장 출금액 = 실생활로 빠져
 trade_history = []   # 각 항목: dict {type, ticker, direction, amount, leverage, entry_price, exit_price, pnl, pnl_rate, entry_time, exit_time}
 running = True
 latest_prices = {}
-latest_prices_usd = {}   # 바이낸스 선물 체결가(USD). 거래/손익/청산 전부 이 가격 기준.
+latest_prices_usd = {}   # 바이낸스 선물 체결가(USD). 거래/손익/청산 전부 이 가격 기준(거래소 무관 공유).
+latest_prices_upbit = {}  # 업비트 KRW 현재가(코인탭 표시/차트 기준가용, 거래체결가로는 안 씀)
+_latest_upbit_ticker_info = {}  # market("KRW-BTC") -> 업비트 ticker API 원본(24h거래대금 등, price_updater_upbit가 갱신)
 data_lock = threading.Lock()
 score_lock = threading.Lock()
 score_cache = {}
+score_cache_upbit = {}
 
 # 최근 가격 히스토리 (30분/1시간 등 단기 변동률 계산용). price_updater가 PRICE_INTERVAL(2초)마다
 # 채워준다. 약 70분치를 보관해두면 30분/1시간 변동률을 캔들 fetch 없이 바로 구할 수 있다.
 PRICE_HISTORY_MAXLEN = int(70 * 60 / PRICE_INTERVAL)
 price_history = defaultdict(lambda: deque(maxlen=PRICE_HISTORY_MAXLEN))
+price_history_upbit = defaultdict(lambda: deque(maxlen=PRICE_HISTORY_MAXLEN))  # 업비트 전용(빗썸과 같은 티커라도 섞이면 안 됨)
 price_history_lock = threading.Lock()
 
 # 펀딩레이트 캐시
@@ -264,8 +270,8 @@ def get_fear_greed_index():
 # 매 사이클 넘는 코인마다 보내면 스팸이라, "컷 아래로 떨어졌다가 다시 넘을 때만"
 # 재알림하도록 상태를 기억한다(_discord_alerted에 지금 넘어있는 티커+방향을 계속 담아둠).
 # ============================================================
-_discord_alerted = set()  # {(ticker, 'long'|'short'), ...} — 지금 컷을 넘어있는 것들
-_discord_last_alert_time = {}  # (ticker, direction) -> 마지막 알림 보낸 시각
+_discord_alerted = {'bithumb': set(), 'upbit': set()}  # {(ticker,'long'|'short'),...} — 지금 컷을 넘어있는 것들(거래소별)
+_discord_last_alert_time = {}  # (exchange, ticker, direction) -> 마지막 알림 보낸 시각
 _DISCORD_ALERT_COOLDOWN = 300  # 같은 코인+방향은 이 시간(초) 안에는 재알림 안 함(경계 플래핑 스팸 방지)
 
 def render_candle_chart_png(df, ticker, n=48):
@@ -315,18 +321,22 @@ def send_discord_alert(message):
             print(f"디스코드 알림 실패: {e}")
     threading.Thread(target=_fire, daemon=True).start()
 
-def send_discord_alert_with_chart(ticker, message):
+def send_discord_alert_with_chart(ticker, message, exchange='bithumb'):
     """
     [2026-07-19 추가] 전송시각 + 1시간봉 차트 첨부 버전. 캔들 조회/차트 렌더링/
     웹후크 전송을 전부 백그라운드 스레드 안에서 처리해서 메인 스코어링 루프를
     절대 블로킹하지 않는다(차트 렌더링이 네트워크 호출보다 훨씬 느릴 수 있어서
     send_discord_alert처럼 POST만 스레드로 빼는 걸로는 부족함).
+    exchange='upbit'이면 업비트 캔들로 차트를 그린다(빗썸 심볼과 겹쳐도 정확한 소스로).
     """
     if not DISCORD_WEBHOOK_URL:
         return
     def _fire():
         try:
-            df = fetch_candlestick(ticker, chart_intervals="1h", timeout=8, retries=1)
+            if exchange == 'upbit':
+                df = fetch_candlestick_upbit(ticker, chart_intervals="1h", timeout=8, retries=1)
+            else:
+                df = fetch_candlestick(ticker, chart_intervals="1h", timeout=8, retries=1)
             image_bytes = None
             if df is not None and len(df) >= 5:
                 try:
@@ -343,11 +353,11 @@ def send_discord_alert_with_chart(ticker, message):
             print(f"디스코드 알림(차트) 실패: {e}")
     threading.Thread(target=_fire, daemon=True).start()
 
-def check_discord_alerts(results, min_score):
-    """score_updater 한 사이클이 끝날 때마다 호출. 이번에 새로 컷을 넘은 코인은
-    (디스코드 웹후크 설정 여부와 무관하게) signal_outcomes.csv에 항상 기록해서
-    나중에 자동 가중치 재학습(analyze_and_update_weights)에 쓴다. 디스코드 알림
-    자체는 웹후크가 설정된 경우에만, 쿨다운을 적용해서 보낸다."""
+def check_discord_alerts(results, min_score, exchange='bithumb'):
+    """score_updater 한 사이클이 끝날 때마다 호출(빗썸/업비트 각각). 이번에 새로 컷을
+    넘은 코인은 (디스코드 웹후크 설정 여부와 무관하게) signal_outcomes.csv에 항상
+    거래소 태그와 함께 기록해서 나중에 자동 가중치 재학습에 쓴다. 디스코드 알림
+    자체는 웹후크가 설정된 경우에만, 거래소별로 독립된 쿨다운을 적용해서 보낸다."""
     now_over = set()
     for r in results:
         t = r.get('ticker', '')
@@ -356,29 +366,33 @@ def check_discord_alerts(results, min_score):
         if r.get('short_score', 0) >= min_score:
             now_over.add((t, 'short'))
 
-    newly_over = now_over - _discord_alerted
+    alerted_set = _discord_alerted.setdefault(exchange, set())
+    newly_over = now_over - alerted_set
     now = time.time()
+    regime = current_market_regime if exchange == 'bithumb' else current_market_regime_upbit
     for t, direction in newly_over:
         r = next((x for x in results if x['ticker'] == t), None)
         if not r:
             continue
-        log_signal_open(t, direction, r, current_market_regime)  # 학습용 로그 — 웹후크 유무와 무관
+        log_signal_open(t, direction, r, regime, exchange=exchange)  # 학습용 로그 — 웹후크 유무와 무관
         if not DISCORD_WEBHOOK_URL:
             continue
-        key = (t, direction)
+        key = (exchange, t, direction)
         last = _discord_last_alert_time.get(key, 0)
         if now - last < _DISCORD_ALERT_COOLDOWN:
             continue  # 컷 경계에서 방금 왔다갔다한 것 — 스팸 방지로 건너뜀
         score = r.get('long_score' if direction == 'long' else 'short_score', 0)
         emoji = "🟢" if direction == 'long' else "🔴"
         label = "롱" if direction == 'long' else "숏"
+        ex_label = "빗썸" if exchange == 'bithumb' else "업비트"
         sent_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        msg = f"{emoji} **{t}** {label} 진입컷 돌파 ({score}점, 컷 {min_score}점)\n🕐 {sent_at}"
-        send_discord_alert_with_chart(t, msg)
+        msg = f"{emoji} **[{ex_label}] {t}** {label} 진입컷 돌파 ({score}점, 컷 {min_score}점)\n🕐 {sent_at}"
+        send_discord_alert_with_chart(t, msg, exchange=exchange)
         _discord_last_alert_time[key] = now
 
-    _discord_alerted.clear()
-    _discord_alerted.update(now_over)
+    alerted_set.clear()
+    alerted_set.update(now_over)
+    _discord_alerted[exchange] = alerted_set
 
 # ============================================================
 # 미체결약정(Open Interest) - 바이낸스 선물 OI 히스토리
@@ -478,22 +492,26 @@ def get_long_short_ratio(base):
 # ============================================================
 # 단기(30분/1시간) 가격 변동률 - 자체 수집한 가격 히스토리 기반
 # ============================================================
-def record_price_history(updates, ts=None):
-    """price_updater가 매 폴링마다 호출해서 (시각, 가격)을 ticker별로 누적한다."""
+def record_price_history(updates, ts=None, exchange='bithumb'):
+    """price_updater가 매 폴링마다 호출해서 (시각, 가격)을 ticker별로 누적한다.
+    exchange='upbit'이면 별도 저장소(price_history_upbit)를 써서 같은 심볼("BTC")이
+    두 거래소에서 겹쳐도 서로 섞이지 않는다."""
+    store = price_history_upbit if exchange == 'upbit' else price_history
     ts = ts or time.time()
     with price_history_lock:
         for ticker, price in updates.items():
             if price and price > 0:
-                price_history[ticker].append((ts, price))
+                store[ticker].append((ts, price))
 
-def get_recent_pct_change(ticker, minutes=30):
+def get_recent_pct_change(ticker, minutes=30, exchange='bithumb'):
     """
     자체 수집한 price_history에서 약 `minutes`분 전 대비 현재가 변동률(%)을 구한다.
     캔들 fetch 없이 price_updater가 이미 모아둔 데이터를 재사용하므로 API 호출이 추가로 들지 않는다.
     앱을 막 시작해서 히스토리가 부족하면 0.0을 반환한다.
     """
+    store = price_history_upbit if exchange == 'upbit' else price_history
     with price_history_lock:
-        hist = price_history.get(ticker)
+        hist = store.get(ticker)
         if not hist or len(hist) < 2:
             return 0.0
         now_ts, now_price = hist[-1]
@@ -988,7 +1006,7 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
                           price_chg, extension_pct, vol_z=0.0, rsi_delta=0.0,
                           atr_pct=0.0, ema20=None, ema60=None, oi_notional_usd=None,
                           funding_rate=0.0, trade_value_usd=None,
-                          price=None, ema120=None, vol_24h_m=0, regime='normal'):
+                          price=None, ema120=None, vol_24h_m=0, regime='normal', exchange='bithumb'):
     """
     실질 최대 90점(105점 만점 배점 중 EMA삼중20+가격위치20+CVD15+VolZ15+30분모멘텀15+유동성5)
     롱 점수. OI(oi_sc, 15점)는 일부러 뺐다 — 59시간 실측으로 OI 급증이 롱보다 오히려 하락과
@@ -997,12 +1015,14 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
     남은 항목들 점수가 상대적으로 부풀어서 진입컷을 넘는 코인이 오히려 늘어나는 부작용이
     있었다(실측으로 확인, 127개→345개). 그래서 롱 점수 실질 상한은 자연히 ~86점이 된다.
     regime: detect_market_regime()이 매긴 현재 시장 상태('상승장'/'하락장'/'횡보장'/'고변동성'/'normal').
+    exchange: 'bithumb'/'upbit' — learned_component_weights는 거래소별로 따로 학습되므로
+    반드시 그 값이 계산된 원본 거래소를 넘겨야 한다(안 넘기면 기본값 'bithumb' 사용).
     REGIME_WEIGHT_MULTIPLIERS(상식 기반)와 learned_component_weights(실측 신호 로그 기반 자동
     학습, analyze_and_update_weights 참고)를 곱해서 각 세부항목에 적용한다.
     """
     raw = 0
     mult = REGIME_WEIGHT_MULTIPLIERS.get(regime, REGIME_WEIGHT_MULTIPLIERS['normal'])
-    lw = learned_component_weights['long']
+    lw = learned_component_weights.get(exchange, learned_component_weights['bithumb'])['long']
     try:
         # 배수 2개(레짐 x 학습)가 곱해지면 최대 1.3*1.6=2.08배까지 커질 수 있어, 원래
         # 배점 상한을 넘지 않게 min()으로 잘라준다(과도한 인플레이션 방지).
@@ -1026,16 +1046,16 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
                            price_chg, extension_pct, vol_z=0.0, rsi_delta=0.0,
                            atr_pct=0.0, ema20=None, ema60=None, oi_notional_usd=None,
                            funding_rate=0.0, trade_value_usd=None,
-                           price=None, ema120=None, vol_24h_m=0, regime='normal'):
+                           price=None, ema120=None, vol_24h_m=0, regime='normal', exchange='bithumb'):
     """105점 만점 숏 점수 (롱과 대칭, 과열 상한 캡도 동일 적용). 최종 /105×100 환산.
     ema_s(EMA 완전 역배열, 20점)는 59시간 실측으로 120~240분 후 오히려 가격이 반등하는
     경향이 확인돼서(완전히 다 떨어진 뒤라는 뜻으로 해석) 10점으로 다운그레이드한다 —
     "부분 역배열"과 "완전 역배열"을 더 이상 구분해서 보너스 주지 않는다.
     regime: calculate_long_score와 동일한 시장상태별(REGIME_WEIGHT_MULTIPLIERS) +
-    실측 자동학습(learned_component_weights) 가중치를 적용한다."""
+    실측 자동학습(learned_component_weights, exchange별로 따로 학습) 가중치를 적용한다."""
     raw = 0
     mult = REGIME_WEIGHT_MULTIPLIERS.get(regime, REGIME_WEIGHT_MULTIPLIERS['normal'])
-    lw = learned_component_weights['short']
+    lw = learned_component_weights.get(exchange, learned_component_weights['bithumb'])['short']
     try:
         p_ema = score_ema_trend(price, ema20, ema60, ema120, 'short')
         if p_ema >= 20:
@@ -1328,6 +1348,7 @@ def calculate_preshort_score(oi_change_pct, cvd_1h, ema20, ema60, ema120, atr_pc
 #   횡보장(평균 ATR% 낮음)  → 컷 상향 (신호 남발 방지)
 #   추세장(평균 ATR% 높음)  → 컷 하향 (기회 포착)
 current_min_score = MIN_SCORE  # score_updater가 매 사이클 갱신, GUI가 읽어서 색칠 기준으로 사용
+current_min_score_upbit = MIN_SCORE  # 업비트 파이프라인 전용(빗썸과 독립적으로 시장상태에 따라 갱신)
 
 # ============================================================
 # [2026-07-19 추가] 시장 상태별 자동 가중치 조정 (v8 6단계)
@@ -1349,6 +1370,7 @@ REGIME_WEIGHT_MULTIPLIERS = {
     'normal':   {'ema': 1.0, 'pp': 1.0, 'cvd': 1.0, 'oi': 1.0, 'volz': 1.0, 'm30': 1.0, 'liq': 1.0},
 }
 current_market_regime = 'normal'  # score_updater가 매 사이클 끝에 갱신, 다음 사이클 점수계산에 반영(1사이클 지연)
+current_market_regime_upbit = 'normal'  # 업비트 전용
 
 def detect_market_regime(results):
     """
@@ -1427,15 +1449,17 @@ def compute_dynamic_min_score(results):
 SIGNAL_LOG_FILE = os.path.join(SCRIPT_DIR, "signal_outcomes.csv")
 LEARNED_WEIGHTS_FILE = os.path.join(SCRIPT_DIR, "learned_weights.json")
 WEIGHT_RETRAIN_LOG_FILE = os.path.join(SCRIPT_DIR, "weight_retrain_log.csv")
-SIGNAL_LOG_COLS = ["signal_id", "opened_ts", "ticker", "direction", "entry_price", "score", "regime",
+SIGNAL_LOG_COLS = ["signal_id", "opened_ts", "exchange", "ticker", "direction", "entry_price", "score", "regime",
                     "ema", "pp", "cvd", "oi", "volz", "m30", "liq",
                     "resolved", "resolve_ts", "ret_60m", "ret_120m", "mfe_pct", "mae_pct"]
 
 LONG_COMPONENTS = ['ema', 'pp', 'cvd', 'volz', 'm30', 'liq']
 SHORT_COMPONENTS = ['ema', 'pp', 'cvd', 'oi', 'volz', 'm30', 'liq']
+EXCHANGES = ['bithumb', 'upbit']  # [2026-07-19 추가] 업비트 병행 — signal_outcomes.csv 한 파일에
+                                  # exchange 컬럼으로 구분해서 같이 쌓고, 배수는 거래소별로 따로 학습한다.
 
-SIGNAL_MIN_TOTAL = 300                  # 이 이상 '해결된' 신호가 쌓여야 재학습 시작
-SIGNAL_MIN_SAMPLES_PER_COMPONENT = 30   # 컴포넌트별 최소 표본(부족하면 배수 유지)
+SIGNAL_MIN_TOTAL = 300                  # 이 이상 '해결된' 신호가(전체, 두 거래소 합산) 쌓여야 재학습 시작
+SIGNAL_MIN_SAMPLES_PER_COMPONENT = 30   # 거래소×방향×컴포넌트별 최소 표본(부족하면 배수 유지)
 WEIGHT_MULT_MIN, WEIGHT_MULT_MAX = 0.5, 1.6
 WEIGHT_MULT_MAX_STEP = 0.25             # 한 번 재학습에 배수가 움직일 수 있는 최대폭
 RESOLVE_INTERVAL_SEC = 900              # 15분마다 미해결 신호 결과 확인 + 재학습 여부 체크
@@ -1444,20 +1468,26 @@ RESOLVE_AFTER_MIN = 120                 # 신호 발생 후 이만큼 지나야 
 _signal_log_lock = threading.Lock()
 
 def _load_signal_log():
-    """resolved 컬럼이 CSV 왕복하면서 문자열("True"/"False")이 되는 문제를 정규화해서 읽는다."""
+    """resolved 컬럼이 CSV 왕복하면서 문자열("True"/"False")이 되는 문제를 정규화해서 읽는다.
+    exchange 컬럼이 없는 구버전 로그(업비트 추가 전에 쌓인 것)는 전부 'bithumb'으로 채운다."""
     df = pd.read_csv(SIGNAL_LOG_FILE)
     if 'resolved' in df.columns:
         df['resolved'] = df['resolved'].astype(str).str.strip().eq('True')
+    if 'exchange' not in df.columns:
+        df['exchange'] = 'bithumb'
+    else:
+        df['exchange'] = df['exchange'].fillna('bithumb')
     return df
 
-def log_signal_open(ticker, direction, r, regime):
+def log_signal_open(ticker, direction, r, regime, exchange='bithumb'):
     """진입컷을 새로 넘은 신호를 기록한다(결과는 나중에 resolve_signal_outcomes가 채움)."""
     try:
         comp = r.get('components', {}) or {}
-        signal_id = f"{ticker}_{direction}_{int(time.time() * 1000)}"
+        signal_id = f"{exchange}_{ticker}_{direction}_{int(time.time() * 1000)}"
         row = {
             "signal_id": signal_id,
             "opened_ts": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "exchange": exchange,
             "ticker": ticker, "direction": direction,
             "entry_price": r.get('price', 0),
             "score": r.get('long_score' if direction == 'long' else 'short_score', 0),
@@ -1483,7 +1513,8 @@ def log_signal_open(ticker, direction, r, regime):
 
 def resolve_signal_outcomes():
     """opened_ts로부터 RESOLVE_AFTER_MIN분 이상 지난 미해결 신호에 1시간봉을 다시
-    조회해서 60분/120분 후 수익률 + MFE/MAE(방향 기준으로 부호 정리)를 채운다."""
+    조회해서 60분/120분 후 수익률 + MFE/MAE(방향 기준으로 부호 정리)를 채운다.
+    거래소별로 캔들 조회 함수를 다르게 써야 해서 (exchange, ticker) 쌍으로 묶는다."""
     if not os.path.exists(SIGNAL_LOG_FILE):
         return 0
     try:
@@ -1497,11 +1528,13 @@ def resolve_signal_outcomes():
         if not pending_mask.any():
             return 0
         newly_resolved = 0
-        for ticker in df.loc[pending_mask, 'ticker'].unique():
-            candle = fetch_candlestick(ticker, chart_intervals="1h", timeout=8, retries=1)
+        pairs = df.loc[pending_mask, ['exchange', 'ticker']].drop_duplicates()
+        for exch, ticker in pairs.itertuples(index=False):
+            fetch_fn = fetch_candlestick_upbit if exch == 'upbit' else fetch_candlestick
+            candle = fetch_fn(ticker, chart_intervals="1h", timeout=8, retries=1)
             if candle is None or len(candle) < 3:
                 continue
-            idxs = df.index[pending_mask & (df['ticker'] == ticker)]
+            idxs = df.index[pending_mask & (df['ticker'] == ticker) & (df['exchange'] == exch)]
             for idx in idxs:
                 try:
                     row = df.loc[idx]
@@ -1542,22 +1575,30 @@ def resolve_signal_outcomes():
         return 0
 
 def _load_learned_weights():
-    default = {'long': {c: 1.0 for c in LONG_COMPONENTS}, 'short': {c: 1.0 for c in SHORT_COMPONENTS}}
+    default = {ex: {'long': {c: 1.0 for c in LONG_COMPONENTS}, 'short': {c: 1.0 for c in SHORT_COMPONENTS}}
+               for ex in EXCHANGES}
     try:
         if os.path.exists(LEARNED_WEIGHTS_FILE):
             with open(LEARNED_WEIGHTS_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            for d in ('long', 'short'):
-                default[d].update(data.get(d, {}))
+            if 'long' in data or 'short' in data:
+                # 업비트 추가 전(거래소 구분 없던 시절) 파일 — 그 값을 빗썸 값으로 이어받는다
+                default['bithumb']['long'].update(data.get('long', {}))
+                default['bithumb']['short'].update(data.get('short', {}))
+            else:
+                for ex in EXCHANGES:
+                    if ex in data:
+                        default[ex]['long'].update(data[ex].get('long', {}))
+                        default[ex]['short'].update(data[ex].get('short', {}))
     except Exception as e:
         print(f"학습 가중치 로드 실패, 기본값(1.0) 사용: {e}")
     return default
 
-learned_component_weights = _load_learned_weights()  # calculate_long/short_score가 매번 참조하는 현재 배수
+learned_component_weights = _load_learned_weights()  # calculate_long/short_score가 매번 참조하는 현재 배수(거래소별)
 
 def analyze_and_update_weights():
-    """resolved==True인 신호들의 컴포넌트-수익률 상관관계로 배수를 재계산한다.
-    반환값: 갱신됐으면 새 가중치 dict, 표본 부족 등으로 건너뛰면 None."""
+    """resolved==True인 신호들의 컴포넌트-수익률 상관관계로, 거래소×방향별 배수를 재계산한다.
+    반환값: 하나라도 갱신됐으면 새 가중치 dict, 전부 표본 부족이면 None."""
     global learned_component_weights
     if not os.path.exists(SIGNAL_LOG_FILE):
         return None
@@ -1565,47 +1606,55 @@ def analyze_and_update_weights():
         df = _load_signal_log()
         df = df[df['resolved']].dropna(subset=['ret_60m'])
         if len(df) < SIGNAL_MIN_TOTAL:
-            print(f"[자동 재학습] 보류: 해결된 신호 {len(df)}건 (최소 {SIGNAL_MIN_TOTAL}건 필요)")
+            print(f"[자동 재학습] 보류: 해결된 신호 {len(df)}건(전체 거래소 합산, 최소 {SIGNAL_MIN_TOTAL}건 필요)")
             return None
 
         report = {}
-        new_weights = {'long': dict(learned_component_weights['long']),
-                        'short': dict(learned_component_weights['short'])}
+        any_update = False
+        new_weights = {ex: {'long': dict(learned_component_weights[ex]['long']),
+                             'short': dict(learned_component_weights[ex]['short'])} for ex in EXCHANGES}
 
-        for direction, components in (('long', LONG_COMPONENTS), ('short', SHORT_COMPONENTS)):
-            sub = df[df['direction'] == direction]
-            if len(sub) < SIGNAL_MIN_SAMPLES_PER_COMPONENT:
-                continue
-            aligned_corrs = {}
-            for c in components:
-                n_valid = sub[c].notna().sum()
-                if n_valid < SIGNAL_MIN_SAMPLES_PER_COMPONENT:
-                    aligned_corrs[c] = None
+        for exchange in EXCHANGES:
+            edf = df[df['exchange'] == exchange]
+            for direction, components in (('long', LONG_COMPONENTS), ('short', SHORT_COMPONENTS)):
+                sub = edf[edf['direction'] == direction]
+                if len(sub) < SIGNAL_MIN_SAMPLES_PER_COMPONENT:
                     continue
-                corr = sub[c].corr(sub['ret_60m'])
-                # 숏은 가격 하락(음의 수익률)이 좋은 신호라 부호를 뒤집어서 "방향 정렬"한다
-                aligned = corr if direction == 'long' else -corr
-                aligned_corrs[c] = 0.0 if pd.isna(aligned) else aligned
+                aligned_corrs = {}
+                for c in components:
+                    n_valid = sub[c].notna().sum()
+                    if n_valid < SIGNAL_MIN_SAMPLES_PER_COMPONENT:
+                        aligned_corrs[c] = None
+                        continue
+                    corr = sub[c].corr(sub['ret_60m'])
+                    # 숏은 가격 하락(음의 수익률)이 좋은 신호라 부호를 뒤집어서 "방향 정렬"한다
+                    aligned = corr if direction == 'long' else -corr
+                    aligned_corrs[c] = 0.0 if pd.isna(aligned) else aligned
 
-            positive = {c: v for c, v in aligned_corrs.items() if v is not None and v > 0}
-            total_pos = sum(positive.values()) or 1e-9
-            n = len(components)
-            for c in components:
-                old = learned_component_weights[direction].get(c, 1.0)
-                v = aligned_corrs.get(c)
-                if v is None:
-                    target = old                              # 표본 부족 — 그대로 유지
-                elif v <= 0:
-                    target = WEIGHT_MULT_MIN                   # 역방향 확인됨 — 최소배수로
-                else:
-                    share = v / total_pos
-                    target = max(WEIGHT_MULT_MIN, min(WEIGHT_MULT_MAX, share * n))
-                step = max(-WEIGHT_MULT_MAX_STEP, min(WEIGHT_MULT_MAX_STEP, target - old))
-                new_val = round(old + step, 3)
-                new_weights[direction][c] = new_val
-                report[f"{direction}_{c}"] = {"corr": None if v is None else round(v, 4),
-                                               "n": int(sub[c].notna().sum()),
-                                               "old_mult": old, "new_mult": new_val}
+                positive = {c: v for c, v in aligned_corrs.items() if v is not None and v > 0}
+                total_pos = sum(positive.values()) or 1e-9
+                n = len(components)
+                for c in components:
+                    old = learned_component_weights[exchange][direction].get(c, 1.0)
+                    v = aligned_corrs.get(c)
+                    if v is None:
+                        target = old                              # 표본 부족 — 그대로 유지
+                    elif v <= 0:
+                        target = WEIGHT_MULT_MIN                   # 역방향 확인됨 — 최소배수로
+                    else:
+                        share = v / total_pos
+                        target = max(WEIGHT_MULT_MIN, min(WEIGHT_MULT_MAX, share * n))
+                    step = max(-WEIGHT_MULT_MAX_STEP, min(WEIGHT_MULT_MAX_STEP, target - old))
+                    new_val = round(old + step, 3)
+                    new_weights[exchange][direction][c] = new_val
+                    report[f"{exchange}_{direction}_{c}"] = {"corr": None if v is None else round(v, 4),
+                                                              "n": int(sub[c].notna().sum()),
+                                                              "old_mult": old, "new_mult": new_val}
+                any_update = True
+
+        if not any_update:
+            print("[자동 재학습] 보류: 거래소×방향별 최소 표본(각 30건)을 채운 조합이 아직 없음")
+            return None
 
         learned_component_weights = new_weights
         try:
@@ -1632,7 +1681,8 @@ def analyze_and_update_weights():
 
 def weight_learning_loop():
     """RESOLVE_INTERVAL_SEC(기본 15분)마다 미해결 신호를 해소하고, 새로 해결된 신호가
-    50건 이상 늘었으면 재학습한다(=매번 하지 않음, 불필요한 재계산/급변 방지)."""
+    50건 이상 늘었으면 재학습한다(=매번 하지 않음, 불필요한 재계산/급변 방지).
+    빗썸/업비트 신호가 signal_outcomes.csv 한 파일에 같이 쌓이므로 이 루프도 하나면 된다."""
     last_retrain_count = 0
     while running:
         try:
@@ -1713,6 +1763,112 @@ def fetch_candlestick(order_currency, payment_currency="KRW", chart_intervals=No
             return df
     # 알 수 없는 간격은 안전하게 1h로 폴백
     return _fetch_candlestick_raw(order_currency, payment_currency, "1h", timeout, retries)
+
+# ============================================================
+# [2026-07-19 추가] 업비트 공개 API (Quotation API — 키 불필요)
+#   빗썸과 별개의 두 번째 데이터소스. 코인탭에서 "업비트" 버튼을 누르면
+#   이 함수들로 조회한 데이터를 같은 calculate_long_score 등 채점 함수에
+#   그대로 넣어서(로직은 100% 동일) 빗썸 파이프라인과 나란히 돌린다.
+#   포지션/잔고/청산은 이미 바이낸스 USD 마크가격 기준이라 거래소와
+#   무관하게 그대로 공유된다 — 여기서 건드리는 건 오직 "시세/지표 조회처"뿐.
+# ============================================================
+UPBIT_MARKET_ALL_URL = "https://api.upbit.com/v1/market/all?isDetails=false"
+UPBIT_TICKER_URL = "https://api.upbit.com/v1/ticker"
+UPBIT_CANDLE_MINUTE_URL = "https://api.upbit.com/v1/candles/minutes/{unit}"
+UPBIT_NATIVE_MINUTE_UNITS = {"10m": 10, "30m": 30, "1h": 60}  # 업비트가 분캔들로 직접 지원하는 것만
+_upbit_market_list_cache = {"tickers": [], "ts": 0}
+
+def _fetch_upbit_candles_raw(market, unit, count=200, timeout=10, retries=2):
+    """업비트 분캔들(candles/minutes/{unit}) 원시 조회. 빗썸 쪽 _fetch_candlestick_raw와
+    동일한 형식(open/high/low/close/volume, KST naive datetime index)으로 맞춰서 반환한다
+    — 그래야 RSI/CVD/EMA 등 나머지 계산 코드를 손댈 필요가 없다."""
+    url = UPBIT_CANDLE_MINUTE_URL.format(unit=unit)
+    for attempt in range(retries + 1):
+        try:
+            resp = requests.get(url, params={"market": market, "count": count}, timeout=timeout)
+            data = resp.json()
+            if not isinstance(data, list) or not data:
+                return None
+            df = pd.DataFrame(data)
+            df = df.rename(columns={
+                "opening_price": "open", "high_price": "high", "low_price": "low",
+                "trade_price": "close", "candle_acc_trade_volume": "volume",
+            })
+            df["candle_date_time_kst"] = pd.to_datetime(df["candle_date_time_kst"])
+            df = df.set_index("candle_date_time_kst")[["open", "high", "low", "close", "volume"]]
+            df = df.sort_index()  # 업비트는 최신순으로 내려줘서 시간순으로 뒤집어야 함
+            return df.astype(float)
+        except Exception as e:
+            if attempt == retries:
+                print(f"[업비트:{market}] 캔들 조회 실패(재시도 {retries}회 소진): {e}")
+                return None
+            time.sleep(0.5)
+    return None
+
+def fetch_candlestick_upbit(ticker, chart_intervals=None, timeout=10, retries=2):
+    """빗썸의 fetch_candlestick과 대칭되는 업비트 버전. ticker는 순수 심볼("BTC")을
+    받아서 내부에서 "KRW-BTC"로 변환한다. 10m/30m/1h는 업비트가 직접 지원, 2h/6h/12h는
+    1시간봉을 리샘플해서 합성한다(빗썸의 2h 합성과 동일한 방식)."""
+    interval = chart_intervals or CANDLE_INTERVAL
+    market = f"KRW-{ticker}" if not ticker.startswith("KRW-") else ticker
+    if interval in UPBIT_NATIVE_MINUTE_UNITS:
+        return _fetch_upbit_candles_raw(market, UPBIT_NATIVE_MINUTE_UNITS[interval], timeout=timeout, retries=retries)
+    if interval in ("2h", "6h", "12h"):
+        df = _fetch_upbit_candles_raw(market, 60, count=200, timeout=timeout, retries=retries)
+        if df is None or len(df) < 2:
+            return df
+        try:
+            resampled = df.resample(interval).agg({
+                "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
+            })
+            return resampled.dropna(how="any")
+        except Exception as e:
+            print(f"[업비트:{ticker}] {interval} 리샘플 실패, 1h로 폴백: {e}")
+            return df
+    return _fetch_upbit_candles_raw(market, 60, timeout=timeout, retries=retries)
+
+def get_upbit_tickers(limit=None):
+    """업비트 원화(KRW-) 마켓 전체를 조회해서 24시간 거래대금 상위 순으로 순수 심볼
+    리스트("BTC","ETH",...)를 반환한다. 1분 캐시(빗썸 ticker_updater와 같은 갱신주기 감안)."""
+    now = time.time()
+    if _upbit_market_list_cache["tickers"] and now - _upbit_market_list_cache["ts"] < 55:
+        return _upbit_market_list_cache["tickers"]
+    try:
+        resp = requests.get(UPBIT_MARKET_ALL_URL, timeout=10)
+        markets = [m["market"] for m in resp.json() if m.get("market", "").startswith("KRW-")]
+        if not markets:
+            return _upbit_market_list_cache["tickers"] or []
+        # 한 번에 최대 100개까지 markets 파라미터로 묶어 조회 가능(문서 기준 넉넉히 잡음)
+        vol_map = {}
+        for i in range(0, len(markets), 100):
+            chunk = markets[i:i + 100]
+            r = requests.get(UPBIT_TICKER_URL, params={"markets": ",".join(chunk)}, timeout=10)
+            for row in r.json():
+                vol_map[row["market"]] = row.get("acc_trade_price_24h", 0) or 0
+        markets.sort(key=lambda m: vol_map.get(m, 0), reverse=True)
+        tickers = [m.replace("KRW-", "") for m in markets]
+        if limit:
+            tickers = tickers[:limit]
+        _upbit_market_list_cache["tickers"] = tickers
+        _upbit_market_list_cache["ts"] = now
+        return tickers
+    except Exception as e:
+        print(f"업비트 마켓 목록 조회 실패: {e}")
+        return _upbit_market_list_cache["tickers"] or []
+
+def fetch_upbit_ticker_bulk(markets):
+    """markets(["KRW-BTC",...]) 현재가/24h 거래대금을 한 번에 조회. 100개씩 나눠 호출."""
+    out = {}
+    try:
+        for i in range(0, len(markets), 100):
+            chunk = markets[i:i + 100]
+            r = requests.get(UPBIT_TICKER_URL, params={"markets": ",".join(chunk)}, timeout=10)
+            for row in r.json():
+                out[row["market"]] = row
+    except Exception as e:
+        print(f"업비트 현재가 일괄조회 실패: {e}")
+    return out
+
 
 def process_ticker(ticker):
     try:
@@ -1804,12 +1960,14 @@ def process_ticker(ticker):
         long_score = calculate_long_score(
             rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, chg_30m,
             price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
-            funding_rate, trade_value_usd, current_price, ema120, vol_million, current_market_regime
+            funding_rate, trade_value_usd, current_price, ema120, vol_million, current_market_regime,
+            exchange='bithumb'
         )
         short_score = calculate_short_score(
             rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, chg_30m,
             price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
-            funding_rate, trade_value_usd, current_price, ema120, vol_million, current_market_regime
+            funding_rate, trade_value_usd, current_price, ema120, vol_million, current_market_regime,
+            exchange='bithumb'
         )
         # Pre-Pump/Pre-Short (매집/분산 v3 — 장기 매집 사이클 탐지). cvd_1h는 별도 API가
         # 없어 위에서 이미 구한 cvd_diff(최근 CVD_WINDOW_CANDLES 캔들 변화량)를 근사치로
@@ -1885,6 +2043,168 @@ def process_ticker(ticker):
         return None
 
 
+def process_ticker_upbit(ticker):
+    """process_ticker의 업비트 버전. 채점 함수(calculate_long_score 등)와 OI/펀딩/LS비율
+    (전부 바이낸스 선물 기준이라 거래소 무관)은 완전히 그대로 재사용하고, 캔들/현재가/
+    24h거래대금/30분변동률 조회처만 업비트 공개 API로 바꿨다."""
+    try:
+        df = fetch_candlestick_upbit(ticker, chart_intervals=CANDLE_INTERVAL)
+        if df is None or len(df) < 30:
+            return None
+        df = df.astype(float)
+        df['RSI'] = calculate_rsi(df)
+        df['BB_MIDDLE'] = df['close'].rolling(20).mean()
+        df['BB_STD'] = df['close'].rolling(20).std()
+        df['BB_UPPER'] = df['BB_MIDDLE'] + df['BB_STD'] * 2
+        df['BB_LOWER'] = df['BB_MIDDLE'] - df['BB_STD'] * 2
+        df['CVD'] = calculate_cvd(df)
+
+        latest = df.iloc[-1]
+        current_price = float(latest['close'])
+        vz = calculate_vol_zscore(df)
+        cvd_value = float(df['CVD'].iloc[-1])
+        vol_window_sum = float(df['volume'].iloc[-CVD_WINDOW_CANDLES:].sum())
+        cvd_diff = cvd_value - float(df['CVD'].iloc[-2]) if len(df) >= 2 else 0.0
+        bb_percent = calculate_bb_percent(df, latest)
+        extension_pct = calculate_extension_pct(df)
+        atr_pct = calculate_atr_1h(df)
+        if MIN_ATR_PCT > 0 and atr_pct > 0 and atr_pct < MIN_ATR_PCT:
+            return None
+        # 단기(30분) 가격 변동률: 업비트 전용 히스토리(price_history_upbit)에서 조회
+        chg_30m = get_recent_pct_change(ticker, minutes=30, exchange='upbit')
+        price_chg = float(df['close'].iloc[-1]) - float(df['close'].iloc[-5])
+
+        with data_lock:
+            latest_prices_upbit[ticker] = current_price
+
+        # 펀딩레이트/USD가격/OI/LS비율은 전부 바이낸스 선물 기준(심볼만 일치하면 됨) — 거래소 무관, 그대로 재사용
+        funding_rate = 0.0
+        price_usd = None
+        base = ticker.replace("KRW-", "").strip().upper()
+        try:
+            cache = get_all_funding_rates()
+            entry = cache.get(base)
+            if entry:
+                funding_rate = entry.get('funding', 0.0) or 0.0
+                price_usd = entry.get('mark_price')
+        except:
+            pass
+
+        oi_change_pct, oi_value = get_oi_change_1h(base)
+        ls_ratio = get_long_short_ratio(base)
+        oi_notional_usd = (oi_value * price_usd) if (oi_value and price_usd) else None
+
+        try:
+            ema20 = float(df['close'].ewm(span=20, adjust=False).mean().iloc[-1])
+            ema60 = float(df['close'].ewm(span=60, adjust=False).mean().iloc[-1])
+            ema120 = float(df['close'].ewm(span=120, adjust=False).mean().iloc[-1]) if len(df) >= 30 else None
+        except Exception:
+            ema20 = ema60 = ema120 = None
+
+        rsi_val = float(latest['RSI'])
+        rsi_delta = rsi_val - float(df['RSI'].iloc[-5])
+
+        # 24h 거래대금(원화, 백만원 단위) — 업비트 ticker 벌크 캐시(_latest_upbit_ticker_info)에서 조회
+        vol_million = 0
+        try:
+            market = f"KRW-{ticker}"
+            info = _latest_upbit_ticker_info.get(market)
+            if isinstance(info, dict):
+                acc = info.get('acc_trade_price_24h', 0) or 0
+                vol_million = round(float(acc) / 1_000_000)
+        except:
+            pass
+        trade_value_usd = None
+        try:
+            if price_usd and price_usd > 0 and current_price > 0:
+                fx_rate = current_price / price_usd
+                trade_value_usd = (vol_million * 1_000_000) / fx_rate
+        except Exception:
+            trade_value_usd = None
+
+        long_score = calculate_long_score(
+            rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, chg_30m,
+            price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
+            funding_rate, trade_value_usd, current_price, ema120, vol_million, current_market_regime_upbit,
+            exchange='upbit'
+        )
+        short_score = calculate_short_score(
+            rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, chg_30m,
+            price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
+            funding_rate, trade_value_usd, current_price, ema120, vol_million, current_market_regime_upbit,
+            exchange='upbit'
+        )
+        try:
+            box_lookback = df.iloc[-20:] if len(df) >= 20 else df
+            box_high = float(box_lookback['high'].max())
+            box_low = float(box_lookback['low'].min())
+        except Exception:
+            box_high = box_low = None
+        try:
+            candles_per_3d = {"1h": 72, "2h": 36, "6h": 12, "12h": 6}.get(CANDLE_INTERVAL, 72)
+            ref_idx = -min(candles_per_3d, len(df) - 1) if len(df) > 1 else -1
+            ref_price = float(df['close'].iloc[ref_idx])
+            recent_pct = (current_price - ref_price) / ref_price * 100 if ref_price > 0 else 0.0
+        except Exception:
+            recent_pct = 0.0
+        # 매집/분산(prepump/preshort)은 거래소 학습가중치가 없는 정적 배점이라 그대로 재사용
+        prepump_score = calculate_prepump_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
+                                                 atr_pct, vz, current_price, box_high, box_low,
+                                                 rsi_val, recent_pct, chg_30m)
+        preshort_score = calculate_preshort_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
+                                                   atr_pct, vz, current_price, box_high, box_low,
+                                                   rsi_val, recent_pct, chg_30m)
+        components = {
+            "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long'),
+            "ema_s": score_ema_trend(current_price, ema20, ema60, ema120, 'short'),
+            "pp_l": score_price_position_long(rsi_val, bb_percent),
+            "pp_s": score_price_position_short(rsi_val, bb_percent),
+            "cvd_l": score_cvd_trend(cvd_diff, vol_window_sum, 'long'),
+            "cvd_s": score_cvd_trend(cvd_diff, vol_window_sum, 'short'),
+            "oi_sc": score_oi_v3(oi_change_pct),
+            "m30_l": score_chg30m_long(chg_30m),
+            "m30_s": score_chg30m_short(chg_30m),
+            "volz_sc": score_volz_v3(vz),
+            "liquidity_sc": score_liquidity_filter(atr_pct, vol_million),
+        }
+
+        return {
+            "ticker": ticker,
+            "exchange": "upbit",
+            "price": current_price,
+            "price_usd": price_usd,
+            "long_score": int(long_score),
+            "short_score": int(short_score),
+            "prepump_score": int(prepump_score),
+            "preshort_score": int(preshort_score),
+            "rsi": round(float(latest['RSI']), 1),
+            "rsi_delta": round(rsi_delta, 1),
+            "vol_z": round(vz, 1),
+            "bb_percent": round(bb_percent, 1),
+            "cvd": round(cvd_value, 2),
+            "cvd_diff": round(cvd_diff, 2),
+            "funding": funding_rate,
+            "vol_24h_m": vol_million,
+            "trade_value_usd": trade_value_usd,
+            "atr_pct": atr_pct,
+            "oi_change_pct": oi_change_pct,
+            "oi_value": oi_value,
+            "ls_ratio": ls_ratio,
+            "chg_30m": chg_30m,
+            "ema20": round(ema20, 8) if ema20 is not None else None,
+            "ema60": round(ema60, 8) if ema60 is not None else None,
+            "ema120": round(ema120, 8) if ema120 is not None else None,
+            "box_high": round(box_high, 8) if box_high is not None else None,
+            "box_low": round(box_low, 8) if box_low is not None else None,
+            "recent_pct": round(recent_pct, 3),
+            "extension_pct": round(extension_pct, 3) if extension_pct is not None else None,
+            "components": components,
+        }
+    except Exception as e:
+        print(f"[업비트:{ticker}] 데이터 수집 실패: {e}")
+        return None
+
+
 # ============================================================
 # 업데이터
 # ============================================================
@@ -1928,9 +2248,43 @@ def price_updater(tickers_ref):
             print(f"가격 업데이트 실패: {e}")
         time.sleep(PRICE_INTERVAL)
 
-def score_updater(tickers_ref):
-    global score_cache
-    # 첫 실행 전 펀딩레이트 미리 로드
+def price_updater_upbit(tickers_ref):
+    """price_updater의 업비트 버전. latest_prices_usd(바이낸스 마크가격)는 거래소 무관 공유라
+    여기서 또 갱신할 필요 없음 — bithumb 쪽 price_updater가 이미 채워준다."""
+    while running:
+        try:
+            tickers = tickers_ref[0]
+            if tickers:
+                markets = [f"KRW-{t}" for t in tickers]
+                bulk = fetch_upbit_ticker_bulk(markets)
+                updates = {}
+                for market, row in bulk.items():
+                    t = market.replace("KRW-", "")
+                    try:
+                        updates[t] = float(row.get('trade_price', 0) or 0)
+                    except Exception:
+                        updates[t] = 0.0
+                with data_lock:
+                    latest_prices_upbit.update(updates)
+                    _latest_upbit_ticker_info.update(bulk)
+                record_price_history(updates, exchange='upbit')
+                with score_lock:
+                    if score_cache_upbit:
+                        merged = [dict(row, price=latest_prices_upbit.get(t, row.get('price', 0)))
+                                  for t, row in score_cache_upbit.items()]
+                        merged.sort(key=lambda x: x.get('long_score', 0) + x.get('short_score', 0), reverse=True)
+                        price_queue_upbit.put(merged)
+        except Exception as e:
+            print(f"업비트 가격 업데이트 실패: {e}")
+        time.sleep(PRICE_INTERVAL)
+
+def score_updater(tickers_ref, exchange='bithumb'):
+    """exchange='bithumb'(기본)이면 기존과 완전히 동일하게 동작. exchange='upbit'이면
+    같은 로직을 process_ticker_upbit/score_cache_upbit/current_min_score_upbit 등
+    업비트 전용 상태로 돌린다 — 로직 자체(정렬/캐시 갱신/디스코드 체크 순서)는 100% 동일."""
+    global score_cache, score_cache_upbit
+    proc_fn = process_ticker if exchange == 'bithumb' else process_ticker_upbit
+    # 첫 실행 전 펀딩레이트 미리 로드 (거래소 무관 공유 캐시라 한쪽만 해도 됨, 중복 호출은 내부에서 캐시로 처리)
     try:
         get_all_funding_rates()
     except:
@@ -1942,26 +2296,40 @@ def score_updater(tickers_ref):
             continue
         results = []
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-            futures = {pool.submit(process_ticker, t): t for t in tickers}
+            futures = {pool.submit(proc_fn, t): t for t in tickers}
             for future in as_completed(futures):
                 if not running: break
                 res = future.result()
                 if res:
                     results.append(res)
         if results:
-            global current_min_score, current_market_regime
-            current_min_score = compute_dynamic_min_score(results)
-            current_market_regime = detect_market_regime(results)
             results.sort(key=lambda x: x['long_score'] + x['short_score'], reverse=True)
-            with score_lock:
-                score_cache.clear()
-                for r in results:
-                    score_cache[r['ticker']] = r
-            data_queue.put(results)
-            try:
-                check_discord_alerts(results, current_min_score)
-            except Exception as e:
-                print(f"디스코드 알림 체크 실패: {e}")
+            if exchange == 'bithumb':
+                global current_min_score, current_market_regime
+                current_min_score = compute_dynamic_min_score(results)
+                current_market_regime = detect_market_regime(results)
+                with score_lock:
+                    score_cache.clear()
+                    for r in results:
+                        score_cache[r['ticker']] = r
+                data_queue.put(results)
+                try:
+                    check_discord_alerts(results, current_min_score, exchange='bithumb')
+                except Exception as e:
+                    print(f"디스코드 알림 체크 실패: {e}")
+            else:
+                global current_min_score_upbit, current_market_regime_upbit
+                current_min_score_upbit = compute_dynamic_min_score(results)
+                current_market_regime_upbit = detect_market_regime(results)
+                with score_lock:
+                    score_cache_upbit.clear()
+                    for r in results:
+                        score_cache_upbit[r['ticker']] = r
+                data_queue_upbit.put(results)
+                try:
+                    check_discord_alerts(results, current_min_score_upbit, exchange='upbit')
+                except Exception as e:
+                    print(f"디스코드 알림 체크(업비트) 실패: {e}")
         time.sleep(SCORE_INTERVAL)
 
 def ticker_updater(tickers_ref):
@@ -1975,15 +2343,29 @@ def ticker_updater(tickers_ref):
                 tickers_ref[0] = ["BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "TRX", "AVAX", "LINK", "BNB"]
         time.sleep(60)
 
+def ticker_updater_upbit(tickers_ref):
+    while running:
+        try:
+            tickers = get_upbit_tickers(limit=TOP_COIN_COUNT)
+            if tickers:
+                tickers_ref[0] = tickers
+        except Exception as e:
+            print(f"업비트 티커 목록 갱신 실패: {e}")
+            if not tickers_ref[0]:
+                tickers_ref[0] = ["BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "TRX", "AVAX", "LINK", "BNB"]
+        time.sleep(60)
+
 # ============================================================
 # 서버 <-> 주문용(GUI) CSV 인터페이스
-#   server_market.csv   : 코인별 최신 지표/점수 스냅샷 (서버가 2초마다 원자적 갱신)
-#   server_account.csv  : 잔고/포지션/실시간 손익 스냅샷 (서버가 1초마다 갱신)
+#   server_market.csv        : 빗썸 코인별 최신 지표/점수 스냅샷 (서버가 2초마다 원자적 갱신)
+#   server_market_upbit.csv  : 업비트 버전 (동일 포맷)
+#   server_account.csv  : 잔고/포지션/실시간 손익 스냅샷 (서버가 1초마다 갱신, 거래소 무관 공유 — 포지션은 바이낸스 USD 기준)
 #   server_cmds/        : 주문용이 명령 파일(cmd_*.csv)을 떨어뜨리는 폴더
 #   server_results.csv  : 명령 처리 결과 (cmd_id, status, message) 누적
 # 계좌(잔고/포지션/강제청산)는 전부 서버가 관리한다. 주문용은 명령만 보낸다.
 # ============================================================
 MARKET_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_market.csv")
+MARKET_SNAPSHOT_UPBIT = os.path.join(SCRIPT_DIR, "server_market_upbit.csv")
 ACCOUNT_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_account.csv")
 CMD_DIR = os.path.join(SCRIPT_DIR, "server_cmds")
 RESULTS_FILE = os.path.join(SCRIPT_DIR, "server_results.csv")
@@ -2008,14 +2390,22 @@ MARKET_COLS = ['ticker', 'price', 'price_usd', 'long_score', 'short_score',
                'min_cut', 'watch_cut', 'pp_min_cut', 'interval', 'score_time', 'price_time']
 
 _last_score_time = [""]
+_last_score_time_upbit = [""]
 
-def write_market_snapshot():
+def write_market_snapshot(exchange='bithumb'):
+    """exchange='bithumb'이면 기존과 동일하게 server_market.csv에, 'upbit'이면
+    server_market_upbit.csv에 쓴다. 컬럼 포맷은 완전히 동일해서 클라이언트가
+    읽는 파서(read_market_snapshot)를 그대로 재사용할 수 있다."""
+    if exchange == 'bithumb':
+        cache, prices, path, min_score, score_time = score_cache, latest_prices, MARKET_SNAPSHOT, current_min_score, _last_score_time[0]
+    else:
+        cache, prices, path, min_score, score_time = score_cache_upbit, latest_prices_upbit, MARKET_SNAPSHOT_UPBIT, current_min_score_upbit, _last_score_time_upbit[0]
     with score_lock:
-        snap = {t: dict(r) for t, r in score_cache.items()}
+        snap = {t: dict(r) for t, r in cache.items()}
     if not snap:
         return
     with data_lock:
-        prices = dict(latest_prices)
+        prices = dict(prices)
     pt = datetime.now().strftime('%H:%M:%S')
     rows = [MARKET_COLS]
     for t, r in snap.items():
@@ -2031,12 +2421,12 @@ def write_market_snapshot():
             r.get('ls_ratio', '') if r.get('ls_ratio') is not None else '',
             r.get('ema20', '') if r.get('ema20') is not None else '',
             r.get('ema60', '') if r.get('ema60') is not None else '',
-            current_min_score, WATCH_MIN_SCORE, PREPUMP_MIN_SCORE, CANDLE_INTERVAL, _last_score_time[0], pt,
+            min_score, WATCH_MIN_SCORE, PREPUMP_MIN_SCORE, CANDLE_INTERVAL, score_time, pt,
         ])
     try:
-        _atomic_write_csv(MARKET_SNAPSHOT, rows)
+        _atomic_write_csv(path, rows)
     except Exception as e:
-        print(f"마켓 스냅샷 저장 실패: {e}")
+        print(f"마켓 스냅샷 저장 실패({exchange}): {e}")
 
 def write_account_snapshot():
     with data_lock:
@@ -2434,20 +2824,24 @@ def srv_set_report_dir(new_dir):
     REPORT_SAVE_DIR = new_dir
     return True, f"리포트 저장 경로를 변경했습니다: {new_dir}"
 
-def srv_get_candles(ticker, interval=None):
+def srv_get_candles(ticker, interval=None, exchange='bithumb'):
     """
     포지션 카드에서 티커 이름을 클릭하면 뜨는 차트 팝업용 데이터를 만든다.
     클라이언트에 matplotlib 같은 무거운 그래픽 라이브러리를 안 얹으려고(Termux에서
     계속 패키지 설치로 고생했던 걸 감안), 서버가 캔들+지표 원본을 CSV로만 내려주고
     실제 그리기는 클라이언트가 Tkinter Canvas로 직접 한다.
     RSI/RSI Delta/EMA20·60·120/볼린저밴드를 같이 계산해서 넣어준다.
+    exchange='upbit'이면 업비트 캔들로 조회한다.
     """
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return False, "티커 없음"
     interval = interval if interval in CHART_INTERVALS else CANDLE_INTERVAL
     try:
-        df = fetch_candlestick(ticker, chart_intervals=interval)
+        if exchange == 'upbit':
+            df = fetch_candlestick_upbit(ticker, chart_intervals=interval)
+        else:
+            df = fetch_candlestick(ticker, chart_intervals=interval)
     except Exception as e:
         return False, f"캔들 조회 실패: {e}"
     if df is None or len(df) == 0:
@@ -2476,7 +2870,7 @@ def srv_get_candles(ticker, interval=None):
         return False, f"차트 데이터 저장 실패: {e}"
     return True, f"차트 데이터 준비 완료 ({interval}): {path}"
 
-def srv_open(ticker, position_type, amount_won, leverage):
+def srv_open(ticker, position_type, amount_won, leverage, exchange='bithumb'):
     global balance
     if not ticker: return False, "티커 없음"
     existing = positions.get(ticker)
@@ -2511,7 +2905,7 @@ def srv_open(ticker, position_type, amount_won, leverage):
     # 진입 당시 '유효 점수'(추세추종/매집형 중 더 높은 쪽) 저장 — Predict Score의
     # Level 항목이 "진입 당시 원본 스코어"를 기준으로 하기 때문에 이 시점에 스냅샷을 남긴다.
     # (물타기/불타기로 추가 진입할 땐 최초 진입 점수를 그대로 유지 — Level은 '처음' 판단 기준이라서)
-    snap = score_cache.get(ticker, {})
+    snap = score_cache.get(ticker, {}) if exchange != 'upbit' else score_cache_upbit.get(ticker, {})
     if position_type == "long":
         entry_score = max(snap.get('long_score', 0), snap.get('prepump_score', 0))
     else:
@@ -2767,7 +3161,8 @@ def _check_isolated_liquidation():
 
 def process_commands():
     """server_cmds/ 폴더의 명령 파일을 처리하고 삭제한다.
-    명령 형식(1행): cmd_id,action,ticker,amount_won,leverage,position_type"""
+    명령 형식(1행): cmd_id,action,ticker,amount_won,leverage,position_type,exchange
+    (exchange는 [2026-07-19 추가] — 없는(구버전) 명령 파일은 'bithumb'으로 취급해 하위호환.)"""
     try:
         files = sorted(os.listdir(CMD_DIR))
     except Exception:
@@ -2787,6 +3182,9 @@ def process_commands():
             amount = round(float(row[3]), 2) if len(row) > 3 and row[3] else 0
             lev = int(float(row[4])) if len(row) > 4 and row[4] else DEFAULT_LEVERAGE
             ptype = row[5] if len(row) > 5 else 'long'
+            exchange = (row[6].strip().lower() if len(row) > 6 and row[6] else 'bithumb')
+            if exchange not in ('bithumb', 'upbit'):
+                exchange = 'bithumb'
             if action == 'charge':
                 ok, msg = srv_charge(amount)
             elif action == 'withdraw':
@@ -2796,7 +3194,7 @@ def process_commands():
             elif action == 'bank_withdraw':
                 ok, msg = srv_bank_withdraw(amount)
             elif action == 'open':
-                ok, msg = srv_open(ticker, ptype, amount, lev)
+                ok, msg = srv_open(ticker, ptype, amount, lev, exchange=exchange)
             elif action == 'close':
                 ok, msg = srv_close(ticker)
             elif action == 'close_all':
@@ -2814,7 +3212,7 @@ def process_commands():
             elif action == 'set_report_dir':
                 ok, msg = srv_set_report_dir(raw_ticker)
             elif action == 'get_candles':
-                ok, msg = srv_get_candles(ticker, interval=ptype)
+                ok, msg = srv_get_candles(ticker, interval=ptype, exchange=exchange)
             else:
                 ok, msg = False, f"알 수 없는 명령: {action}"
             append_result(cmd_id, 'ok' if ok else 'fail', msg)
@@ -2841,36 +3239,43 @@ def account_loop():
         time.sleep(1)
 
 def snapshot_loop():
-    """PRICE_INTERVAL 주기로 마켓 스냅샷 갱신 (가격은 최신, 지표는 마지막 스코어 사이클 값)"""
+    """PRICE_INTERVAL 주기로 마켓 스냅샷 갱신 (가격은 최신, 지표는 마지막 스코어 사이클 값).
+    빗썸/업비트 둘 다 매 주기 갱신 — 데이터가 없는 쪽(아직 첫 사이클 전)은 write_market_snapshot이
+    내부에서 조용히 스킵한다."""
     while running:
         try:
-            write_market_snapshot()
+            write_market_snapshot('bithumb')
+            write_market_snapshot('upbit')
         except Exception as e:
             print(f"snapshot_loop 오류: {e}")
         time.sleep(PRICE_INTERVAL)
 
 # score_updater가 돌 때 스코어 갱신 시각을 남기기 위한 래퍼
 _orig_score_updater = score_updater
-def score_updater(tickers_ref):  # noqa: F811
+def score_updater(tickers_ref, exchange='bithumb'):  # noqa: F811
     def _mark():
-        _last_score_time[0] = datetime.now().strftime('%H:%M:%S')
-    import types
+        if exchange == 'bithumb':
+            _last_score_time[0] = datetime.now().strftime('%H:%M:%S')
+        else:
+            _last_score_time_upbit[0] = datetime.now().strftime('%H:%M:%S')
     # 간단히: 원본을 그대로 돌리되, 스냅샷 시각은 data_queue.put 대신 여기서 주기 갱신
     def marker_loop():
+        cache = score_cache if exchange == 'bithumb' else score_cache_upbit
         while running:
             with score_lock:
-                if score_cache:
+                if cache:
                     _mark()
             time.sleep(SCORE_INTERVAL)
     threading.Thread(target=marker_loop, daemon=True).start()
-    _orig_score_updater(tickers_ref)
+    _orig_score_updater(tickers_ref, exchange=exchange)
 
 # ============================================================
 if __name__ == "__main__":
     print("=" * 50)
     print("트레이딩 서버 시작 (계산/계좌 엔진 — 마켓 로깅 없음, 수집은 별도 기기)")
     print(f"데이터 폴더: {SCRIPT_DIR}")
-    print(f"마켓 스냅샷: {MARKET_SNAPSHOT}")
+    print(f"마켓 스냅샷(빗썸): {MARKET_SNAPSHOT}")
+    print(f"마켓 스냅샷(업비트): {MARKET_SNAPSHOT_UPBIT}")
     print(f"명령 폴더: {CMD_DIR}")
     print("중지: Ctrl+C  (포지션은 서버가 계속 감시하므로 GUI는 꺼도 됨)")
     print("=" * 50)
@@ -2882,13 +3287,24 @@ if __name__ == "__main__":
     try:
         price_data = Bithumb.get_current_price("ALL")
         tickers_ref[0] = [k for k in list(price_data.keys()) if k != "date"][:TOP_COIN_COUNT]
-        print(f"티커 {len(tickers_ref[0])}개 로드")
+        print(f"빗썸 티커 {len(tickers_ref[0])}개 로드")
     except:
         tickers_ref[0] = ["BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "TRX", "AVAX", "LINK", "BNB"]
 
+    tickers_ref_upbit = [[]]
+    try:
+        tickers_ref_upbit[0] = get_upbit_tickers(limit=TOP_COIN_COUNT)
+        print(f"업비트 티커 {len(tickers_ref_upbit[0])}개 로드")
+    except Exception as e:
+        print(f"업비트 티커 목록 최초 로드 실패({e}), ticker_updater_upbit가 재시도함")
+        tickers_ref_upbit[0] = ["BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "TRX", "AVAX", "LINK", "BNB"]
+
     threading.Thread(target=ticker_updater, args=(tickers_ref,), daemon=True).start()
     threading.Thread(target=price_updater, args=(tickers_ref,), daemon=True).start()
-    threading.Thread(target=score_updater, args=(tickers_ref,), daemon=True).start()
+    threading.Thread(target=score_updater, args=(tickers_ref,), kwargs={'exchange': 'bithumb'}, daemon=True).start()
+    threading.Thread(target=ticker_updater_upbit, args=(tickers_ref_upbit,), daemon=True).start()
+    threading.Thread(target=price_updater_upbit, args=(tickers_ref_upbit,), daemon=True).start()
+    threading.Thread(target=score_updater, args=(tickers_ref_upbit,), kwargs={'exchange': 'upbit'}, daemon=True).start()
     threading.Thread(target=weight_learning_loop, daemon=True).start()
     threading.Thread(target=snapshot_loop, daemon=True).start()
     threading.Thread(target=account_loop, daemon=True).start()
@@ -2900,7 +3316,10 @@ if __name__ == "__main__":
             if time.time() - last_status >= 60:
                 with score_lock:
                     n = len(score_cache)
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] 서버 가동 | 코인 {n}개 | 컷 {current_min_score} | 장세 {current_market_regime} | 잔고 ${balance:,.2f} | 포지션 {len(positions)}개")
+                    n_upbit = len(score_cache_upbit)
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] 서버 가동 | 빗썸 {n}개(컷{current_min_score}/{current_market_regime}) | "
+                      f"업비트 {n_upbit}개(컷{current_min_score_upbit}/{current_market_regime_upbit}) | "
+                      f"잔고 ${balance:,.2f} | 포지션 {len(positions)}개")
                 last_status = time.time()
     except KeyboardInterrupt:
         running = False

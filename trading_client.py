@@ -37,6 +37,7 @@ except Exception:
     SCRIPT_DIR = _fallback_dir
 
 MARKET_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_market.csv")
+MARKET_SNAPSHOT_UPBIT = os.path.join(SCRIPT_DIR, "server_market_upbit.csv")
 ACCOUNT_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_account.csv")
 CMD_DIR = os.path.join(SCRIPT_DIR, "server_cmds")
 RESULTS_FILE = os.path.join(SCRIPT_DIR, "server_results.csv")
@@ -62,10 +63,11 @@ def _f(v, default=0.0):
     except Exception:
         return default
 
-def read_market_snapshot():
+def read_market_snapshot(path=None):
     global current_min_score, pp_current_min_score, watch_current_min_score, current_interval
+    path = path or MARKET_SNAPSHOT
     try:
-        with open(MARKET_SNAPSHOT, 'r', newline='', encoding='utf-8') as f:
+        with open(path, 'r', newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             rows = []
             score_time = price_time = ""
@@ -161,13 +163,13 @@ def read_account_snapshot():
     except Exception:
         return None
 
-def send_command(action, ticker='', amount=0, leverage=0, position_type=''):
+def send_command(action, ticker='', amount=0, leverage=0, position_type='', exchange='bithumb'):
     cmd_id = f"{int(time.time()*1000)}_{random.randint(1000, 9999)}"
     fname = f"cmd_{cmd_id}.csv"
     tmp = os.path.join(CMD_DIR, "." + fname)
     final = os.path.join(CMD_DIR, fname)
     with open(tmp, 'w', newline='', encoding='utf-8') as f:
-        csv.writer(f).writerow([cmd_id, action, ticker, amount, leverage, position_type])
+        csv.writer(f).writerow([cmd_id, action, ticker, amount, leverage, position_type, exchange])
     os.replace(tmp, final)
     return cmd_id
 
@@ -220,6 +222,7 @@ class TradingClient:
 
         self.history_win = None
         self.pinned_tickers = set()
+        self.current_exchange = 'bithumb'  # 코인탭 빗썸/업비트 토글 — open/close/차트 명령에도 그대로 씀
         self._last_render_data = []
         self._tap_state = {"last_time": 0.0, "last_ticker": None}
         self.DOUBLE_TAP_MS = 450
@@ -387,6 +390,20 @@ class TradingClient:
                                             padx=10, pady=3)
         self.btn_view_positions.pack(side="left", padx=(3, 0), fill="x", expand=True)
         self.btn_view_positions.bind("<ButtonRelease-1>", lambda e: self.switch_view('positions'))
+
+        # 거래소 토글 — 코인탭 전용(빗썸/업비트). 여기서 고른 거래소가 코인 목록/차트/
+        # 롱숏진입 명령에 그대로 쓰인다(self.current_exchange).
+        self.exchange_bar = exchange_bar = tk.Frame(self.root)
+        exchange_bar.pack(side="top", fill="x", padx=4, pady=(4, 0))
+        tk.Label(exchange_bar, text="거래소:", font=("Arial", self.FONT_SMALL, "bold")).pack(side="left", padx=(2, 4))
+        self._exchange_btn_widgets = {}
+        for ex, label in [("bithumb", "빗썸"), ("upbit", "업비트")]:
+            b = tk.Label(exchange_bar, text=label, font=("Arial", self.FONT_SMALL, "bold"),
+                         relief="raised", bd=1, cursor="hand2", padx=10, pady=3)
+            b.pack(side="left", padx=2)
+            b.bind("<ButtonRelease-1>", lambda e, ex_=ex: self.set_exchange(ex_))
+            self._exchange_btn_widgets[ex] = b
+        self._highlight_exchange_buttons()
 
         # 타임프레임(계산 기준 캔들) 전환 버튼 — 테이블 바로 위
         tf_bar = tk.Frame(self.root)
@@ -599,11 +616,13 @@ class TradingClient:
         self.view_mode = mode
         if mode == 'coins':
             self._hide_pos_panel()
+            self.exchange_bar.pack(side="top", fill="x", padx=4, pady=(4, 0))
             self.sortbar.pack(side="top", fill="x", padx=4, pady=(0, 2))
             self.tree_container.pack(fill="both", expand=True, padx=4, pady=2)
         else:
             self.tree_container.pack_forget()
             self.sortbar.pack_forget()
+            self.exchange_bar.pack_forget()
             self._show_pos_panel()
             _, _, pos_list = self._account
             self._render_pos_panel(pos_list)
@@ -616,6 +635,22 @@ class TradingClient:
         else:
             self._cfg(self.btn_view_coins, bg="#eeeeee", fg="black")
             self._cfg(self.btn_view_positions, bg="#1a7abf", fg="white")
+
+    def set_exchange(self, exchange):
+        """코인탭의 빗썸/업비트 토글. 코인 목록/가격/차트/롱숏진입이 전부 이 값을 따라간다."""
+        if exchange == self.current_exchange:
+            return
+        self.current_exchange = exchange
+        self._highlight_exchange_buttons()
+        self._market_mtime = 0.0  # 다음 poll_files 사이클(늦어도 1초 내)에 무조건 다시 읽게 강제
+        self._last_render_data = []
+
+    def _highlight_exchange_buttons(self):
+        for ex, w in self._exchange_btn_widgets.items():
+            if ex == self.current_exchange:
+                self._cfg(w, bg="#1a7abf", fg="white")
+            else:
+                self._cfg(w, bg="#eeeeee", fg="black")
 
     def _update_score_history(self, data_list):
         """매 스냅샷마다 티커별 '유효 점수'를 기록해둔다(값이 실제로 바뀔 때만 추가).
@@ -966,12 +1001,13 @@ class TradingClient:
         # 카드가 더 많으면 기존 드래그/휠 스크롤(_pos_press/_pos_motion)로 넘겨본다.
 
     def poll_files(self):
+        snapshot_path = MARKET_SNAPSHOT if self.current_exchange == 'bithumb' else MARKET_SNAPSHOT_UPBIT
         try:
-            mt = os.path.getmtime(MARKET_SNAPSHOT)
+            mt = os.path.getmtime(snapshot_path)
         except Exception:
             mt = 0
         if mt and mt != self._market_mtime:
-            res = read_market_snapshot()
+            res = read_market_snapshot(snapshot_path)
             if res:
                 rows, score_time, price_time = res
                 self._market_mtime = mt
@@ -979,10 +1015,11 @@ class TradingClient:
                 if current_interval != self._last_interval_shown:
                     self._highlight_interval_buttons(current_interval)
         age = time.time() - mt if mt else 1e9
+        ex_label = "빗썸" if self.current_exchange == 'bithumb' else "업비트"
         if age > STALE_SEC:
-            self.server_label.config(text="서버: 연결 끊김 (trading_server.py 실행 확인)", fg="red")
+            self.server_label.config(text=f"서버[{ex_label}]: 연결 끊김 (trading_server.py 실행 확인)", fg="red")
         else:
-            self.server_label.config(text=f"서버: 정상 (기준봉 {current_interval} / 관심 {watch_current_min_score}·컷 {current_min_score}점 / 매집·분산 컷 {pp_current_min_score}점, {age:.0f}초 전 갱신)", fg="gray")
+            self.server_label.config(text=f"서버[{ex_label}]: 정상 (기준봉 {current_interval} / 관심 {watch_current_min_score}·컷 {current_min_score}점 / 매집·분산 컷 {pp_current_min_score}점, {age:.0f}초 전 갱신)", fg="gray")
         acc = read_account_snapshot()
         if acc:
             self._account = acc
@@ -1244,9 +1281,10 @@ class TradingClient:
         if self._last_render_data:
             self._render_table(self._last_render_data)
 
-    def _send_and_wait(self, action, ticker='', amount=0, leverage=0, position_type='', label=''):
+    def _send_and_wait(self, action, ticker='', amount=0, leverage=0, position_type='', label='', exchange=None):
         try:
-            cmd_id = send_command(action, ticker, amount, leverage, position_type)
+            cmd_id = send_command(action, ticker, amount, leverage, position_type,
+                                   exchange=exchange or self.current_exchange)
         except Exception as e:
             messagebox.showerror("오류", f"명령 전송 실패: {e}")
             return
@@ -1267,11 +1305,12 @@ class TradingClient:
         self.root.after(500, lambda: self._wait_result(cmd_id, label, tries - 1))
 
     def _send_and_wait_callback(self, action, on_success, ticker='', amount=0, leverage=0,
-                                 position_type='', label='', tries=16):
+                                 position_type='', label='', tries=16, exchange=None):
         """_send_and_wait과 달리 성공 시 팝업 대신 on_success(msg) 콜백을 호출한다
         (차트 팝업처럼, 응답 메시지 안의 데이터를 더 써먹어야 할 때 씀)."""
         try:
-            cmd_id = send_command(action, ticker, amount, leverage, position_type)
+            cmd_id = send_command(action, ticker, amount, leverage, position_type,
+                                   exchange=exchange or self.current_exchange)
         except Exception as e:
             messagebox.showerror("오류", f"명령 전송 실패: {e}")
             return
