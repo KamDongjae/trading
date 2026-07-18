@@ -29,11 +29,13 @@ import sys
 import csv
 import re
 import io
+import json
+import random
 import time
 import base64
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 import python_bithumb
@@ -103,6 +105,62 @@ CHART_COUNT = 200               # 코인당 캔들 개수
 
 OUT_DIR = os.path.join(SCRIPT_DIR, "grok_run")
 os.makedirs(OUT_DIR, exist_ok=True)
+
+# ---- [정확도 개선 제안 PDF 반영] ----------------------------------------
+# ①④ 상위타임프레임(4H/일봉) EMA 정배열 확인용
+HTF_INTERVALS = [("minute240", "4H"), ("day", "1D")]
+HTF_CANDLE_COUNT = 80          # EMA60 계산에 필요한 최소치 + 여유분
+
+# ② ATR 변동성 필터, ③ ADX 추세강도 필터
+ATR_PERIOD = 14
+ADX_PERIOD = 14
+ADX_TREND_MIN = 20             # 이 밑이면 "횡보/무추세"로 보고 신호 신뢰도를 낮춤
+
+# ④ OBV/CMF 자금흐름
+CMF_PERIOD = 20
+
+# ⑤ 펀딩비 + 미결제약정 — 빗썸엔 없어서 바이낸스 선물 공개 API(키 불필요)로 보조 조회.
+#    코인이 바이낸스 선물에 없으면 조용히 스킵(현물만 있는 코인이 많아서 정상적인 상황).
+BINANCE_FUTURES_BASE = "https://fapi.binance.com"
+
+# ⑥ BTC/USDT 도미넌스 — 코인게코 공개 API(키 불필요), 실행당 1회만 조회
+COINGECKO_GLOBAL_URL = "https://api.coingecko.com/api/v3/global"
+
+# ⑦ 앙상블 스코어링: Grok 단독 판단 대신, 아래 정량 지표들을 조합한 rule_score(-1~+1)를
+#    별도로 계산해서 Grok한테 "참고 신호"로 같이 주고, Grok 응답 이후에도 rule_score와의
+#    합치 여부로 최종 신뢰도를 재조정한다 (완전 자동매매가 아니라 Grok+룰 혼합 판단).
+DEFAULT_WEIGHTS = {
+    "htf": 0.25,        # 상위 타임프레임(4H/1D) EMA 정배열 방향
+    "obv": 0.15,        # OBV 최근 기울기(자금 유입/유출)
+    "cmf": 0.15,        # CMF 부호(매집/분산)
+    "bb_macd": 0.20,    # BB 극단 위치 + MACD_Hist 반전 컨플루언스
+    "funding": 0.10,    # 펀딩비 역방향(쏠림 과열 시 반대 신호)
+    "dominance": 0.15,  # BTC 도미넌스 상승/하락에 따른 알트 가중치
+}
+WEIGHTS_STATE_PATH = os.path.join(SCRIPT_DIR, "grok_ensemble_weights.json")
+
+# ⑧ 워크포워드 백테스트 + 자동 가중치 최적화 — 단, 이번 실행에서 fetch한 시계열(빗썸
+#    시간봉 200개)만으로 재구성 가능한 신호(obv/cmf/bb_macd)만 최적화 대상이다. htf/
+#    funding/dominance는 "현재 시점 스냅샷"만 있고 과거 시계열을 안 쌓아서 워크포워드로
+#    최적화할 수 없다 — 이 3개는 DEFAULT_WEIGHTS 값 그대로 고정하고, 나머지 3개
+#    (obv/cmf/bb_macd) 비중만 과거 데이터로 재배분한다. 정직하게 밝히는 한계.
+BACKTEST_HOLD_BARS = 6          # 시간봉 6개(=6시간) 뒤 수익률로 라벨링
+BACKTEST_STEP = 4               # 4봉 간격으로 샘플링(계산량 절감)
+BACKTEST_MIN_LOOKBACK = 60      # 지표 워밍업(MA60 등) 확보를 위한 시작 오프셋
+BACKTEST_OPTIMIZABLE = ["obv", "cmf", "bb_macd"]
+BACKTEST_RANDOM_ITERS = 250     # 랜덤서치 반복 횟수 (scipy 없이 순수 파이썬으로)
+
+# ⑨ 신뢰도 점수 — Grok 응답에 confidence(0~1)를 같이 받아서, rule_score와의 합치도로
+#    보정한 최종 신뢰도가 기준 미달이면 그 픽은 버린다.
+CONFIDENCE_MIN_DEFAULT = 0.45
+
+# ⑩ 추천 결과 추적 + 재보정 — 매 실행마다 과거에 낸 추천이 EVAL_HORIZON_HOURS가 지났으면
+#    현재가로 승/패를 판정해서 로그에 기록하고, 최근 히트레이트로 CONFIDENCE_MIN을 조금씩
+#    자동 조정한다(성과가 나쁘면 더 깐깐하게, 좋으면 살짝 완화).
+RECOMMENDATION_LOG_PATH = os.path.join(SCRIPT_DIR, "grok_recommendation_log.json")
+EVAL_HORIZON_HOURS = 6          # BACKTEST_HOLD_BARS(6시간봉)와 맞춤
+HIT_RATE_LOOKBACK = 20          # 최근 몇 건으로 히트레이트 계산할지
+# ---------------------------------------------------------------------------
 # ===========================================
 
 
@@ -127,6 +185,46 @@ def _fetch_with_backoff(fetch_fn, max_retries=4, base_delay=0.6):
     if last_err:
         print(f"     ⚠️ 재시도 {max_retries}회 실패 (마지막 에러: {last_err})")
     return None
+
+
+def load_weights():
+    """직전 실행에서 백테스트로 최적화해둔 앙상블 가중치가 있으면 그걸 쓰고, 없으면 기본값."""
+    if os.path.exists(WEIGHTS_STATE_PATH):
+        try:
+            with open(WEIGHTS_STATE_PATH, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            weights = dict(DEFAULT_WEIGHTS)
+            weights.update({k: v for k, v in saved.items() if k in DEFAULT_WEIGHTS})
+            return weights
+        except Exception as e:
+            print(f"   ⚠️ 저장된 가중치 로드 실패({e}), 기본값 사용")
+    return dict(DEFAULT_WEIGHTS)
+
+
+def save_weights(weights):
+    try:
+        with open(WEIGHTS_STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(weights, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"   ⚠️ 가중치 저장 실패: {e}")
+
+
+def load_recommendation_log():
+    if os.path.exists(RECOMMENDATION_LOG_PATH):
+        try:
+            with open(RECOMMENDATION_LOG_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"   ⚠️ 추천 로그 로드 실패({e}), 빈 로그로 시작")
+    return []
+
+
+def save_recommendation_log(log):
+    try:
+        with open(RECOMMENDATION_LOG_PATH, "w", encoding="utf-8") as f:
+            json.dump(log, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"   ⚠️ 추천 로그 저장 실패: {e}")
 
 # 나눔고딕 등 한글 폰트 있으면 쓰고, 없으면 영문 라벨로 자동 전환 (chart.py와 동일한 로직)
 def _find_korean_font():
@@ -361,6 +459,41 @@ def load_data(coin):
     df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
     df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
 
+    # [정확도 개선 ② ATR(14)] 변동성 필터용 — 절대값과, 가격 대비 비율(%) 둘 다 남긴다.
+    prev_close = df['close'].shift(1)
+    tr = pd.concat([
+        df['high'] - df['low'],
+        (df['high'] - prev_close).abs(),
+        (df['low'] - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    df['ATR'] = tr.rolling(ATR_PERIOD).mean()
+    df['ATR_Pct'] = (df['ATR'] / df['close']) * 100
+
+    # [정확도 개선 ③ ADX(14)] 추세 강도 — Wilder 방식 +DI/-DI/DX/ADX
+    up_move = df['high'].diff()
+    down_move = -df['low'].diff()
+    plus_dm = pd.Series(0.0, index=df.index)
+    minus_dm = pd.Series(0.0, index=df.index)
+    plus_dm[(up_move > down_move) & (up_move > 0)] = up_move[(up_move > down_move) & (up_move > 0)]
+    minus_dm[(down_move > up_move) & (down_move > 0)] = down_move[(down_move > up_move) & (down_move > 0)]
+    atr_wilder = tr.ewm(alpha=1 / ADX_PERIOD, adjust=False).mean()
+    plus_di = 100 * (plus_dm.ewm(alpha=1 / ADX_PERIOD, adjust=False).mean() / atr_wilder.replace(0, float('nan')))
+    minus_di = 100 * (minus_dm.ewm(alpha=1 / ADX_PERIOD, adjust=False).mean() / atr_wilder.replace(0, float('nan')))
+    dx = ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, float('nan'))) * 100
+    df['ADX'] = dx.ewm(alpha=1 / ADX_PERIOD, adjust=False).mean()
+    df['Plus_DI'] = plus_di
+    df['Minus_DI'] = minus_di
+
+    # [정확도 개선 ④ OBV + CMF] 자금 흐름 확인 (가격만으론 안 보이는 매집/분산 신호)
+    direction = pd.Series(0, index=df.index)
+    direction[df['close'] > prev_close] = 1
+    direction[df['close'] < prev_close] = -1
+    df['OBV'] = (direction * df['volume']).fillna(0).cumsum()
+
+    mf_multiplier = ((df['close'] - df['low']) - (df['high'] - df['close'])) / (df['high'] - df['low']).replace(0, float('nan'))
+    mf_volume = mf_multiplier * df['volume']
+    df['CMF'] = mf_volume.rolling(CMF_PERIOD).sum() / df['volume'].rolling(CMF_PERIOD).sum()
+
     return df
 
 
@@ -420,6 +553,262 @@ def build_figure(df, ticker):
     return fig
 
 
+def get_htf_trend(coin):
+    """
+    [정확도 개선 ①] 4H/1D 상위타임프레임 EMA20/60 정배열 여부를 확인한다.
+    시간봉만 보고 픽하면 상위 프레임에서 역행하는 신호를 놓칠 수 있어서, 4H·1D 둘 다
+    정배열(EMA20>EMA60=상승, 반대=하락)이면 강한 신호, 둘이 엇갈리면 "혼조"로 판단.
+    반환: {"4H": 1/-1/0, "1D": 1/-1/0, "agree": bool, "score": -1~+1}
+    """
+    ticker = f"KRW-{coin}"
+    result = {}
+    for interval, label in HTF_INTERVALS:
+        df = _fetch_with_backoff(
+            lambda i=interval: python_bithumb.get_ohlcv(ticker=ticker, interval=i, count=HTF_CANDLE_COUNT)
+        )
+        if df is None or len(df) < 20:
+            result[label] = 0
+            continue
+        ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
+        ema60 = df['close'].ewm(span=min(60, len(df) - 1), adjust=False).mean().iloc[-1]
+        if ema20 > ema60:
+            result[label] = 1
+        elif ema20 < ema60:
+            result[label] = -1
+        else:
+            result[label] = 0
+    vals = [v for v in result.values()]
+    agree = len(set(vals)) == 1 and vals[0] != 0
+    score = (sum(vals) / len(vals)) if vals else 0.0
+    result["agree"] = agree
+    result["score"] = score
+    return result
+
+
+def get_funding_oi(coin):
+    """
+    [정확도 개선 ⑤] 바이낸스 선물 공개 API(키 불필요)에서 펀딩비 + 미결제약정 조회.
+    빗썸엔 선물이 없어서 방향성 참고용 보조 신호로만 쓴다. 코인이 바이낸스 선물에 없으면
+    (신규/잡코인) 조용히 None 반환 — 에러 취급 안 함(흔한 정상 케이스라서).
+    """
+    symbol = f"{coin}USDT"
+    try:
+        r1 = requests.get(f"{BINANCE_FUTURES_BASE}/fapi/v1/premiumIndex",
+                           params={"symbol": symbol}, timeout=8)
+        r2 = requests.get(f"{BINANCE_FUTURES_BASE}/fapi/v1/openInterest",
+                           params={"symbol": symbol}, timeout=8)
+        if r1.status_code != 200 or r2.status_code != 200:
+            return None
+        funding_rate = float(r1.json().get("lastFundingRate", 0.0))
+        open_interest = float(r2.json().get("openInterest", 0.0))
+        return {"funding_rate": funding_rate, "open_interest": open_interest}
+    except Exception:
+        return None
+
+
+def get_dominance():
+    """
+    [정확도 개선 ⑥] 코인게코 공개 API(키 불필요)에서 BTC/USDT 도미넌스를 실행당 1회만 조회.
+    BTC 도미넌스 상승 = 자금이 알트에서 BTC로 쏠리는 국면(알트 약세 경향),
+    USDT 도미넌스 상승 = 관망/현금화 심리(전반적 위험회피) 참고 신호로 쓴다.
+    """
+    try:
+        resp = requests.get(COINGECKO_GLOBAL_URL, timeout=10)
+        if resp.status_code != 200:
+            return None
+        pct = resp.json().get("data", {}).get("market_cap_percentage", {})
+        return {"btc_dominance": pct.get("btc"), "usdt_dominance": pct.get("usdt")}
+    except Exception:
+        return None
+
+
+def _obv_slope_signal(df):
+    """최근 OBV 기울기 부호를 -1~+1로 정규화 (최근 20봉 선형추세 방향)."""
+    obv = df['OBV'].dropna()
+    if len(obv) < 20:
+        return 0.0
+    recent = obv.iloc[-20:]
+    x = list(range(len(recent)))
+    mean_x, mean_y = sum(x) / len(x), recent.mean()
+    num = sum((xi - mean_x) * (yi - mean_y) for xi, yi in zip(x, recent))
+    den = sum((xi - mean_x) ** 2 for xi in x) or 1e-9
+    slope = num / den
+    scale = (abs(recent).max() or 1) / len(recent)  # 코인마다 OBV 스케일이 달라서 정규화
+    return max(-1.0, min(1.0, slope / (scale + 1e-9) / 5))
+
+
+def _bb_macd_confluence_signal(df):
+    """BB_Position 극단 + MACD_Hist 반전이 동시에 나타나면 강한 신호로 본다 (기존 프롬프트
+    지침과 동일한 논리를 rule_score에도 반영)."""
+    if len(df) < 3:
+        return 0.0
+    last = df.iloc[-1]
+    bb_pos = last.get('BB_Position', 0.5)
+    hist_now, hist_prev = last.get('MACD_Hist', 0), df.iloc[-2].get('MACD_Hist', 0)
+    signal = 0.0
+    if bb_pos <= 0.05 and hist_now > hist_prev:      # 하단 눌림 + 히스토그램 반등 시작
+        signal = 1.0
+    elif bb_pos >= 0.95 and hist_now < hist_prev:    # 상단 눌림 + 히스토그램 하락 시작
+        signal = -1.0
+    else:
+        signal = max(-1.0, min(1.0, (bb_pos - 0.5) * -2 * (1 if hist_now < hist_prev else -1) * 0.3))
+    return signal
+
+
+def compute_rule_score(df, htf, funding_oi, dominance, is_btc, weights):
+    """
+    [정확도 개선 ⑦ 앙상블] Grok의 정성 판단과 별개로, 정량 지표만으로 -1(숏 우세)~+1(롱 우세)
+    사이 rule_score를 계산한다. ADX가 낮으면(횡보) 신뢰도를 통째로 낮춰서 무추세 구간에서
+    과신호를 내지 않게 한다.
+    반환: (rule_score, confidence_scale, detail_dict)
+    """
+    if df is None or len(df) < 20:
+        return 0.0, 0.3, {}
+
+    last = df.iloc[-1]
+    htf_score = htf.get("score", 0.0) if htf else 0.0
+    obv_score = _obv_slope_signal(df)
+    cmf_val = last.get('CMF', 0.0)
+    cmf_score = max(-1.0, min(1.0, ((cmf_val if pd.notna(cmf_val) else 0.0)) * 5))  # CMF는 보통 -0.3~+0.3 범위라 5배 확대
+    bb_macd_score = _bb_macd_confluence_signal(df)
+
+    funding_score = 0.0
+    if funding_oi and funding_oi.get("funding_rate") is not None:
+        # 펀딩비가 과도하게 양수(롱 쏠림)면 역방향(하락 압력) 소신호, 반대는 반대.
+        fr = funding_oi["funding_rate"]
+        funding_score = max(-1.0, min(1.0, -fr * 200))  # 0.01(1%)이면 이미 극단으로 취급
+
+    dominance_score = 0.0
+    if dominance and dominance.get("btc_dominance") is not None and not is_btc:
+        # 알트코인 한정: BTC 도미넌스가 높은 국면일수록 알트에는 약한 역풍으로 반영.
+        # 50%를 중립으로 보고 그보다 높으면 알트 약세 쪽으로 소폭 감점.
+        btc_dom = dominance["btc_dominance"]
+        dominance_score = max(-1.0, min(1.0, -(btc_dom - 50) / 25))
+
+    composite = (
+        weights.get("htf", 0) * htf_score +
+        weights.get("obv", 0) * obv_score +
+        weights.get("cmf", 0) * cmf_score +
+        weights.get("bb_macd", 0) * bb_macd_score +
+        weights.get("funding", 0) * funding_score +
+        weights.get("dominance", 0) * dominance_score
+    )
+
+    # ADX 게이트: 추세가 약하면(횡보) 신호를 죽이지는 않되 신뢰도 배율을 낮춘다.
+    adx_val = last.get('ADX', 0); adx_val = 0.0 if pd.isna(adx_val) else float(adx_val)
+    confidence_scale = 1.0 if adx_val >= ADX_TREND_MIN else max(0.3, adx_val / ADX_TREND_MIN)
+
+    detail = {
+        "htf_score": round(htf_score, 3), "obv_score": round(obv_score, 3),
+        "cmf_score": round(cmf_score, 3), "bb_macd_score": round(bb_macd_score, 3),
+        "funding_score": round(funding_score, 3), "dominance_score": round(dominance_score, 3),
+        "adx": round(float(adx_val), 1),
+    }
+    return max(-1.0, min(1.0, composite)), confidence_scale, detail
+
+
+# ============================================================
+# ⑧ 워크포워드 백테스트 + 자동 가중치 최적화
+#    (obv/cmf/bb_macd만 최적화 — htf/funding/dominance는 과거 시계열이 없어서 고정, 위
+#    DEFAULT_WEIGHTS 주석 참고)
+# ============================================================
+def _backtest_score_sample(df, idx, weights):
+    """idx 시점까지의 데이터만 써서 rule_score 재계산 (미래 데이터 참조 금지)."""
+    sub = df.iloc[:idx + 1]
+    obv_score = _obv_slope_signal(sub)
+    cmf_val = sub.iloc[-1].get('CMF', 0.0)
+    cmf_score = max(-1.0, min(1.0, ((cmf_val if pd.notna(cmf_val) else 0.0)) * 5))
+    bb_macd_score = _bb_macd_confluence_signal(sub)
+    return (weights.get("obv", 0) * obv_score +
+            weights.get("cmf", 0) * cmf_score +
+            weights.get("bb_macd", 0) * bb_macd_score)
+
+
+def _build_backtest_samples(dfs_by_ticker):
+    """코인별 df에서 (시점 idx, 미래 forward_return) 페어를 뽑아둔다. 무거운 지표 재계산은
+    가중치와 무관한 부분(obv/cmf/bb_macd 원재료)이라 샘플 추출 시 한 번만 하고, 가중치
+    최적화 루프에서는 이미 계산된 시그널 값만 재조합한다(랜덤서치 250회를 매번 지표
+    재계산하면 너무 느려서, 시그널 3개를 미리 뽑아 캐싱)."""
+    samples = []  # list of (obv_score, cmf_score, bb_macd_score, forward_return)
+    for coin, df in dfs_by_ticker.items():
+        if df is None or len(df) < BACKTEST_MIN_LOOKBACK + BACKTEST_HOLD_BARS + 5:
+            continue
+        n = len(df)
+        for idx in range(BACKTEST_MIN_LOOKBACK, n - BACKTEST_HOLD_BARS, BACKTEST_STEP):
+            sub = df.iloc[:idx + 1]
+            obv_score = _obv_slope_signal(sub)
+            cmf_val = sub.iloc[-1].get('CMF', 0.0)
+            cmf_score = max(-1.0, min(1.0, ((cmf_val if pd.notna(cmf_val) else 0.0)) * 5))
+            bb_macd_score = _bb_macd_confluence_signal(sub)
+            p0 = df['close'].iloc[idx]
+            p1 = df['close'].iloc[idx + BACKTEST_HOLD_BARS]
+            fwd_ret = (p1 - p0) / p0 if p0 else 0.0
+            samples.append((obv_score, cmf_score, bb_macd_score, fwd_ret))
+    return samples
+
+
+def _objective(samples, w_obv, w_cmf, w_bbm):
+    """가중치 조합 하나의 성능 = (rule_score 방향과 실제 미래수익률 방향이 맞은 히트레이트)
+    x 평균 수익률 크기. 단순 상관 대신 히트레이트를 써서 "방향을 맞췄는가"에 집중한다."""
+    if not samples:
+        return 0.0
+    hits, total, ret_sum = 0, 0, 0.0
+    for obv_s, cmf_s, bbm_s, fwd_ret in samples:
+        score = w_obv * obv_s + w_cmf * cmf_s + w_bbm * bbm_s
+        if abs(score) < 0.05:   # 신호가 너무 약하면 판단 보류(무추세로 간주, 채점 제외)
+            continue
+        total += 1
+        predicted_up = score > 0
+        actual_up = fwd_ret > 0
+        if predicted_up == actual_up:
+            hits += 1
+        ret_sum += (fwd_ret if predicted_up else -fwd_ret)
+    if total == 0:
+        return 0.0
+    hit_rate = hits / total
+    avg_signed_ret = ret_sum / total
+    return hit_rate * 0.7 + max(-1.0, min(1.0, avg_signed_ret * 20)) * 0.3
+
+
+def run_walk_forward_backtest(dfs_by_ticker, base_weights):
+    """
+    이번 실행에서 이미 fetch해둔 시간봉 200개 히스토리로 워크포워드 방식(각 시점까지의
+    데이터만 사용, 미래 참조 없음)으로 obv/cmf/bb_macd 3개 가중치를 랜덤서치로 재배분한다.
+    표본이 코인당 최대 (200-66)/4 ≈ 33개 x 코인수 정도라 완전한 백테스트라기보단 "최근
+    수일간 어떤 신호 조합이 잘 맞았는지"를 매 실행마다 가볍게 재추정하는 온라인 재보정에
+    가깝다 — 정직하게 그 한계를 로그에 남긴다.
+    """
+    print("⑧ 워크포워드 백테스트로 앙상블 가중치 재추정 중...")
+    samples = _build_backtest_samples(dfs_by_ticker)
+    if len(samples) < 30:
+        print(f"   ⚠️ 백테스트 표본 부족({len(samples)}개) — 기존 가중치 유지")
+        return base_weights
+
+    fixed_sum = sum(v for k, v in base_weights.items() if k not in BACKTEST_OPTIMIZABLE)
+    optimizable_budget = max(0.05, 1.0 - fixed_sum)  # obv+cmf+bb_macd가 나눠 가질 총량
+
+    base_score = _objective(
+        samples, base_weights["obv"], base_weights["cmf"], base_weights["bb_macd"]
+    )
+
+    best = (base_weights["obv"], base_weights["cmf"], base_weights["bb_macd"])
+    best_score = base_score
+    for _ in range(BACKTEST_RANDOM_ITERS):
+        a, b, c = random.random(), random.random(), random.random()
+        s = (a + b + c) or 1e-9
+        w_obv, w_cmf, w_bbm = (a / s) * optimizable_budget, (b / s) * optimizable_budget, (c / s) * optimizable_budget
+        score = _objective(samples, w_obv, w_cmf, w_bbm)
+        if score > best_score:
+            best_score = score
+            best = (w_obv, w_cmf, w_bbm)
+
+    new_weights = dict(base_weights)
+    new_weights["obv"], new_weights["cmf"], new_weights["bb_macd"] = best
+    print(f"   표본 {len(samples)}개, 목적함수 {base_score:+.3f} → {best_score:+.3f} "
+          f"(obv={best[0]:.2f}, cmf={best[1]:.2f}, bb_macd={best[2]:.2f})")
+    return new_weights
+
+
 def _pick_high_detail_tickers(rows, top_n=HIGH_DETAIL_TOP_N):
     """
     [개선] 이미지 토큰 비용 효율화: 전부 low로 보내면 해상도 저하로 RSI 다이버전스나 미세한
@@ -436,15 +825,21 @@ def _pick_high_detail_tickers(rows, top_n=HIGH_DETAIL_TOP_N):
     return {r['ticker'] for r in (top + bottom)}
 
 
-def build_combined_outputs(tickers, rows=None):
+def build_combined_outputs(tickers, rows=None, weights=None, dominance=None):
     """20개 코인 차트를 한 PDF(여러 페이지)로, 데이터를 한 CSV로 합친다.
 
     rows가 주어지면(점수 데이터 포함) 롱/숏 점수차 상위·하위 HIGH_DETAIL_TOP_N개 코인만
     high 디테일 이미지로 보내고 나머지는 저비용 low를 유지한다 (이미지 토큰 비용 효율화).
+
+    [정확도 개선 ①⑤⑥⑦] 코인마다 HTF(4H/1D) 추세, 펀딩비/OI, 도미넌스를 추가로 조회해서
+    rule_score(정량 앙상블 신호)를 계산하고 CSV에 컬럼으로 얹어 Grok한테도 넘긴다. 또한
+    코인별 원본 df와 컨텍스트를 별도로 돌려줘서(dfs_by_ticker, coin_context) 이후 단계
+    (워크포워드 백테스트, 최종 신뢰도 재계산)에서 다시 fetch하지 않고 재사용한다.
     """
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     combined_pdf_path = os.path.join(OUT_DIR, f"charts_{ts}.pdf")
     combined_csv_path = os.path.join(OUT_DIR, f"data_{ts}.csv")
+    weights = weights or DEFAULT_WEIGHTS
 
     high_detail_set = _pick_high_detail_tickers(rows) if rows else set()
     if high_detail_set:
@@ -454,22 +849,43 @@ def build_combined_outputs(tickers, rows=None):
     csv_frames = []
     chart_images_b64 = []  # (coin, b64, detail)
     ok_tickers = []
+    dfs_by_ticker = {}
+    coin_context = {}
 
     with PdfPages(combined_pdf_path) as pdf_pages:
         for coin in tickers:
-            print(f"   - {coin} 차트/데이터 생성 중...")
+            print(f"   - {coin} 차트/데이터/HTF/펀딩·OI 생성 중...")
             df = load_data(coin)
             if df is None:
                 print(f"     ⚠️ {coin} 데이터 못 가져옴, 건너뜀")
                 continue
+
+            htf = get_htf_trend(coin)
+            funding_oi = get_funding_oi(coin)
+            rule_score, conf_scale, detail = compute_rule_score(
+                df, htf, funding_oi, dominance, is_btc=(coin == 'BTC'), weights=weights
+            )
+            coin_context[coin] = {
+                "rule_score": rule_score, "confidence_scale": conf_scale, "detail": detail,
+                "htf": htf, "funding_oi": funding_oi,
+            }
+            df = df.copy()
+            df['rule_score'] = rule_score
+            df['rule_confidence_scale'] = conf_scale
+            df['htf_4h'] = htf.get("4H", 0) if htf else 0
+            df['htf_1d'] = htf.get("1D", 0) if htf else 0
+            df['funding_rate'] = funding_oi.get("funding_rate") if funding_oi else None
+            df['open_interest'] = funding_oi.get("open_interest") if funding_oi else None
+            dfs_by_ticker[coin] = df
+
             fig = build_figure(df, coin)
             pdf_pages.savefig(fig, facecolor=fig.get_facecolor())
 
             if len(chart_images_b64) < MAX_CHART_IMAGES:
                 buf = io.BytesIO()
                 fig.savefig(buf, format='png', facecolor=fig.get_facecolor(), bbox_inches='tight')
-                detail = "high" if coin in high_detail_set else IMAGE_DETAIL
-                chart_images_b64.append((coin, base64.b64encode(buf.getvalue()).decode('utf-8'), detail))
+                detail_lvl = "high" if coin in high_detail_set else IMAGE_DETAIL
+                chart_images_b64.append((coin, base64.b64encode(buf.getvalue()).decode('utf-8'), detail_lvl))
             plt.close(fig)
 
             d = df.copy()
@@ -489,7 +905,7 @@ def build_combined_outputs(tickers, rows=None):
         raise RuntimeError(f"CSV 저장 함수는 에러 없이 끝났는데 파일이 실제로 없습니다: {combined_csv_path}")
     print(f"   ✅ CSV 저장 확인됨 ({os.path.getsize(combined_csv_path):,} bytes)")
 
-    return combined_pdf_path, combined_csv_path, chart_images_b64, ok_tickers
+    return combined_pdf_path, combined_csv_path, chart_images_b64, ok_tickers, dfs_by_ticker, coin_context
 
 
 # ============================================================
@@ -505,7 +921,7 @@ def _low_liquidity_tickers(all_rows, bottom_pct=LIQUIDITY_BOTTOM_PCT):
 
 
 def ask_grok(indicator_pdf_path, combined_csv_path, chart_images_b64, all_tickers,
-             regime, regime_detail, all_rows=None):
+             regime, regime_detail, all_rows=None, dominance=None):
     if not XAI_API_KEY:
         raise RuntimeError("API 키가 없습니다 — 같은 폴더에 API_KEY.txt 파일을 만들고 그 안에 "
                             "키만 한 줄로 넣으세요 (또는 환경변수 XAI_API_KEY=xai-...)")
@@ -574,15 +990,23 @@ def ask_grok(indicator_pdf_path, combined_csv_path, chart_images_b64, all_ticker
         "liquidity qualitatively from the indicator report instead."
     )
 
+    dominance_note = (
+        f"BTC dominance {dominance['btc_dominance']:.1f}%, USDT dominance "
+        f"{dominance['usdt_dominance']:.1f}% (snapshot at run time)."
+        if dominance and dominance.get("btc_dominance") is not None
+        else "Dominance data unavailable this run."
+    )
+
     system_prompt = (
         "You are a crypto futures trading analyst. You are given (1) an indicator report with raw "
         "indicator values for the coins currently tracked, (2) recent OHLCV+indicator history samples "
-        "per coin (including BB_Position, MACD/MACD_Signal/MACD_Hist, and chg_30m), and (3) candlestick "
-        "chart images per coin. This is NOT a pre-filtered shortlist — it is the full set of coins "
-        "currently tracked, with no prior ranking or bias applied. You must judge every coin yourself "
-        "from the raw data and decide its direction (if any). "
+        "per coin (including BB_Position, MACD/MACD_Signal/MACD_Hist, ATR/ATR_Pct, ADX/Plus_DI/Minus_DI, "
+        "OBV, CMF, chg_30m, and rule_score/rule_confidence_scale), and (3) candlestick chart images per "
+        "coin. This is NOT a pre-filtered shortlist — it is the full set of coins currently tracked, "
+        "with no prior ranking or bias applied. You must judge every coin yourself from the raw data "
+        "and decide its direction (if any). "
         f"MARKET REGIME (computed from breadth across all these coins): "
-        f"{regime} — {regime_detail} {bias_instruction} "
+        f"{regime} — {regime_detail} {bias_instruction} MARKET DOMINANCE: {dominance_note} "
         f"The candidate pool (same pool for both LONG and SHORT — you decide each coin's direction, "
         f"if any) is: {', '.join(all_tickers)}. "
         "\n\nADDITIONAL ANALYSIS REQUIREMENTS:\n"
@@ -595,7 +1019,20 @@ def ask_grok(indicator_pdf_path, combined_csv_path, chart_images_b64, all_ticker
         "signal (e.g. histogram flipping sign or shrinking against the prevailing trend) at the same "
         "time — that confluence is a stronger signal than either alone.\n"
         f"3) {low_liq_note}\n"
-        "4) Format Strictness: reason internally as much as you need, but the FINAL output must be "
+        "4) Trend Strength & Noise Filter: ADX below ~20 means the coin is choppy/range-bound — be "
+        "more skeptical of breakout-style setups there. ATR_Pct tells you how volatile/noisy the coin "
+        "currently is; very high ATR_Pct relative to the coin's own recent history means wider, less "
+        "reliable swings, so demand a clearer setup before picking it.\n"
+        "5) Ensemble Signal: rule_score (range -1 to +1) is an independent quantitative ensemble score "
+        "computed from higher-timeframe (4H/1D) trend alignment, OBV/CMF money flow, BB+MACD "
+        "confluence, funding-rate crowding, and BTC-dominance regime — NOT from an LLM. Treat it as a "
+        "second opinion: when your own read and rule_score agree (same sign), that's a stronger case. "
+        "When they clearly disagree, lower your confidence for that ticker rather than ignoring the "
+        "disagreement.\n"
+        "6) Confidence Score: for every ticker you pick, output your own confidence from 0.00 to 1.00 "
+        "(how sure you are of that direction, not how big a mover you expect). Do not pick a ticker "
+        "with confidence below 0.40 — leave it out instead.\n"
+        "7) Format Strictness: reason internally as much as you need, but the FINAL output must be "
         "exactly one line in the exact format below — no markdown, no explanation, no extra "
         "whitespace or commentary before or after it.\n\n"
         "Pick UP TO 3 tickers for LONG and UP TO 3 for SHORT, only from the candidate pool "
@@ -604,11 +1041,12 @@ def ask_grok(indicator_pdf_path, combined_csv_path, chart_images_b64, all_ticker
         "reach 3, and do NOT force a balanced 3-and-3 split just for symmetry. Let the market regime "
         "above and each coin's own setup drive how many you pick on each side — it's fine (and often "
         "correct) for one side to have more picks than the other, or for a side to be completely blank. "
-        "Reply with ONLY one line, lowercase tickers, no extra commentary, in exactly this format "
-        "(a blank side just has nothing between the colon and the slash):\n"
-        "long:xrp,btc,eth / short:doge,bch,mtl\n"
-        "long: / short:doge,bch,mtl\n"
-        "long:xrp / short:"
+        "Reply with ONLY one line, lowercase tickers, each followed by :confidence (two decimals), "
+        "no extra commentary, in exactly this format (a blank side just has nothing between the colon "
+        "and the slash):\n"
+        "long:xrp:0.82,btc:0.65,eth:0.51 / short:doge:0.70,bch:0.55,mtl:0.42\n"
+        "long: / short:doge:0.70,bch:0.55,mtl:0.42\n"
+        "long:xrp:0.60 / short:"
     )
 
     content = [
@@ -638,7 +1076,101 @@ def ask_grok(indicator_pdf_path, combined_csv_path, chart_images_b64, all_ticker
     return data["choices"][0]["message"]["content"].strip()
 
 
+def _parse_side_picks(side_str):
+    """'xrp:0.82,btc:0.65' 형태를 [(티커, 신뢰도), ...]로 파싱. 신뢰도 누락/파싱 실패시 0.5 기본값."""
+    picks = []
+    for item in side_str.split(','):
+        item = item.strip()
+        if not item:
+            continue
+        parts = item.split(':')
+        ticker = parts[0].strip().upper()
+        conf = 0.5
+        if len(parts) > 1:
+            try:
+                conf = float(parts[1])
+            except ValueError:
+                conf = 0.5
+        if ticker:
+            picks.append((ticker, max(0.0, min(1.0, conf))))
+    return picks
+
+
+def evaluate_pending_recommendations(log):
+    """[정확도 개선 ⑩] EVAL_HORIZON_HOURS가 지난 pending 추천을 현재가로 승/패 판정."""
+    now = datetime.now()
+    price_cache = {}
+    updated = False
+    for entry in log:
+        if entry.get("status") != "pending":
+            continue
+        try:
+            ts = datetime.fromisoformat(entry["timestamp"])
+        except Exception:
+            continue
+        if now - ts < timedelta(hours=EVAL_HORIZON_HOURS):
+            continue
+        coin = entry["ticker"]
+        if coin not in price_cache:
+            try:
+                price_cache[coin] = python_bithumb.get_current_price(f"KRW-{coin}")
+            except Exception:
+                price_cache[coin] = None
+        cur_price = price_cache[coin]
+        if not cur_price:
+            continue
+        entry_price = entry["entry_price"]
+        pnl_pct = ((cur_price - entry_price) / entry_price * 100 if entry["side"] == "long"
+                   else (entry_price - cur_price) / entry_price * 100)
+        entry["exit_price"] = cur_price
+        entry["pnl_pct"] = round(pnl_pct, 3)
+        entry["status"] = "won" if pnl_pct > 0 else "lost"
+        entry["evaluated_at"] = now.isoformat()
+        updated = True
+    return updated
+
+
+def compute_hit_rate(log, lookback=HIT_RATE_LOOKBACK):
+    resolved = [e for e in log if e.get("status") in ("won", "lost")][-lookback:]
+    if not resolved:
+        return None, 0
+    wins = sum(1 for e in resolved if e["status"] == "won")
+    return wins / len(resolved), len(resolved)
+
+
+def adaptive_confidence_min(hit_rate):
+    """[정확도 개선 ⑩ 재보정] 최근 히트레이트가 나쁘면 신뢰도 기준을 높여 더 깐깐하게,
+    좋으면 살짝 낮춰서 기회를 더 잡는다. 표본이 없으면 기본값 그대로."""
+    if hit_rate is None:
+        return CONFIDENCE_MIN_DEFAULT
+    if hit_rate < 0.40:
+        return min(0.75, CONFIDENCE_MIN_DEFAULT + 0.15)
+    if hit_rate < 0.50:
+        return CONFIDENCE_MIN_DEFAULT + 0.05
+    if hit_rate > 0.65:
+        return max(0.30, CONFIDENCE_MIN_DEFAULT - 0.05)
+    return CONFIDENCE_MIN_DEFAULT
+
+
 def main():
+    # ⑩ 이전 실행에서 낸 추천 중 평가 시점이 지난 것들을 먼저 승/패 판정
+    reco_log = load_recommendation_log()
+    if evaluate_pending_recommendations(reco_log):
+        save_recommendation_log(reco_log)
+    hit_rate, hit_n = compute_hit_rate(reco_log)
+    confidence_min = adaptive_confidence_min(hit_rate)
+    if hit_rate is not None:
+        print(f"⓪ 최근 추천 히트레이트: {hit_rate*100:.0f}% ({hit_n}건) → "
+              f"이번 실행 신뢰도 기준선 {confidence_min:.2f}")
+    else:
+        print(f"⓪ 과거 추천 기록 없음 → 기본 신뢰도 기준선 {confidence_min:.2f}")
+
+    weights = load_weights()
+    dominance = get_dominance()
+    if dominance and dominance.get("btc_dominance") is not None:
+        print(f"   BTC 도미넌스 {dominance['btc_dominance']:.1f}% / "
+              f"USDT 도미넌스 {dominance['usdt_dominance']:.1f}%")
+
     computed_rows = compute_scores_standalone()
 
     print("② 바이낸스 상장 코인 후보군 확정 중...")
@@ -650,28 +1182,76 @@ def main():
 
     indicator_pdf = generate_indicator_report()
 
-    print(f"④ {len(all_tickers)}개 코인 차트/CSV 생성 중...")
-    combined_pdf, combined_csv, images, ok_tickers = build_combined_outputs(all_tickers, rows=all_rows)
+    print(f"④ {len(all_tickers)}개 코인 차트/CSV/HTF/펀딩·OI/rule_score 생성 중...")
+    combined_pdf, combined_csv, images, ok_tickers, dfs_by_ticker, coin_context = build_combined_outputs(
+        all_tickers, rows=all_rows, weights=weights, dominance=dominance
+    )
     print("   차트 PDF:", combined_pdf)
     print("   데이터 CSV:", combined_csv)
 
+    # ⑧ 이번에 모은 시계열로 obv/cmf/bb_macd 가중치를 워크포워드로 재추정, 다음 실행을 위해 저장
+    new_weights = run_walk_forward_backtest(dfs_by_ticker, weights)
+    save_weights(new_weights)
+
     answer = ask_grok(indicator_pdf, combined_csv, images, all_tickers,
-                       regime, regime_detail, all_rows=all_rows)
+                       regime, regime_detail, all_rows=all_rows, dominance=dominance)
     print("\n=== Grok 원본 응답 ===")
     print(answer)
 
     # 정규식 예외 처리 강화: Grok이 대소문자를 혼용하거나 예외적인 공백을 섞어 반환해도
     # 메인 루프 파싱이 끊기지 않도록, 공백을 완전히 제거한 뒤 매칭한다.
     clean_answer = answer.lower().replace(" ", "")
-    m = re.search(r'long\s*:\s*([a-zA-Z0-9,]*)\s*/\s*short\s*:\s*([a-zA-Z0-9,]*)', clean_answer, re.IGNORECASE)
-    if m:
-        longs = [t.strip().upper() for t in m.group(1).split(',') if t.strip()]
-        shorts = [t.strip().upper() for t in m.group(2).split(',') if t.strip()]
-        print(f"\n=== 최종 추천 (시장 국면: {regime}) ===")
-        # 후보가 없으면(빈 리스트) 그냥 빈칸으로 나온다 — 억지로 3개 채우지 않음
-        print(f"long:{','.join(longs).lower()} / short:{','.join(shorts).lower()}")
-    else:
+    m = re.search(r'long\s*:\s*([a-z0-9:.,]*)\s*/\s*short\s*:\s*([a-z0-9:.,]*)', clean_answer)
+    if not m:
         print("\n⚠️ 응답 형식이 예상과 달라 자동 파싱 실패 — 위 원본 텍스트를 직접 확인하세요")
+        return
+
+    long_raw = _parse_side_picks(m.group(1))
+    short_raw = _parse_side_picks(m.group(2))
+
+    def _finalize(picks, side):
+        """⑦⑨ Grok 신뢰도 + rule_score 합치도를 6:4로 블렌딩한 최종 신뢰도로 필터링."""
+        finalized, rejected = [], []
+        for ticker, grok_conf in picks:
+            info = coin_context.get(ticker, {})
+            rule_score = info.get("rule_score", 0.0)
+            conf_scale = info.get("confidence_scale", 1.0)
+            directional = rule_score if side == "long" else -rule_score
+            agreement = max(0.0, directional) * conf_scale  # 방향 불일치면 가산 없음(0)
+            final_conf = 0.6 * grok_conf + 0.4 * min(1.0, agreement)
+            if final_conf >= confidence_min:
+                finalized.append((ticker, round(final_conf, 3)))
+            else:
+                rejected.append((ticker, round(final_conf, 3)))
+        return finalized, rejected
+
+    final_longs, rejected_longs = _finalize(long_raw, "long")
+    final_shorts, rejected_shorts = _finalize(short_raw, "short")
+
+    print(f"\n=== 최종 추천 (시장 국면: {regime}, 신뢰도 기준 {confidence_min:.2f}) ===")
+    longs_txt = ",".join(f"{t.lower()}:{c}" for t, c in final_longs)
+    shorts_txt = ",".join(f"{t.lower()}:{c}" for t, c in final_shorts)
+    print(f"long:{longs_txt} / short:{shorts_txt}")
+    if rejected_longs or rejected_shorts:
+        rej_txt = ", ".join(f"{t}(long,{c})" for t, c in rejected_longs) + \
+                  (", " if rejected_longs and rejected_shorts else "") + \
+                  ", ".join(f"{t}(short,{c})" for t, c in rejected_shorts)
+        print(f"   ⑨ 신뢰도 미달로 제외됨: {rej_txt}")
+
+    # ⑩ 이번에 확정된 추천을 로그에 pending으로 기록 (다음 실행들에서 평가·재보정에 사용)
+    now_iso = datetime.now().isoformat()
+    for side, picks in (("long", final_longs), ("short", final_shorts)):
+        for ticker, conf in picks:
+            df = dfs_by_ticker.get(ticker)
+            entry_price = float(df['close'].iloc[-1]) if df is not None and len(df) else None
+            if entry_price is None:
+                continue
+            reco_log.append({
+                "timestamp": now_iso, "ticker": ticker, "side": side,
+                "entry_price": entry_price, "confidence": conf,
+                "regime": regime, "status": "pending",
+            })
+    save_recommendation_log(reco_log)
 
 
 if __name__ == "__main__":
