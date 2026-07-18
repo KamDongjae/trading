@@ -40,7 +40,7 @@ MARKET_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_market.csv")
 ACCOUNT_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_account.csv")
 CMD_DIR = os.path.join(SCRIPT_DIR, "server_cmds")
 RESULTS_FILE = os.path.join(SCRIPT_DIR, "server_results.csv")
-HISTORY_FILE = os.path.join(SCRIPT_DIR, "trade_history.csv")
+HISTORY_FILE = os.path.join(SCRIPT_DIR, "trade_history_usd.csv")  # 서버가 실제로 쓰는 파일명과 일치시킴(기존엔 이름이 달라서 청산기록이 항상 비어 보였음)
 os.makedirs(CMD_DIR, exist_ok=True)
 
 current_min_score = FALLBACK_MIN_SCORE
@@ -54,6 +54,7 @@ bank_total_spent = 0.0
 fng_value = None
 fng_class = ""
 ALLOWED_INTERVALS = ["1h", "2h", "6h", "12h"]
+CHART_INTERVALS = ["10m", "30m", "1h", "2h", "6h", "12h"]  # 차트 팝업 전용(기준봉 전환 버튼과는 별개)
 
 def _f(v, default=0.0):
     try:
@@ -537,8 +538,25 @@ class TradingClient:
         tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
 
-        tk.Button(self.history_win, text="닫기", command=self.history_win.destroy, 
-                  font=("Arial", 11, "bold"), padx=30, pady=8).pack(pady=10)
+        btn_bar = tk.Frame(self.history_win)
+        btn_bar.pack(pady=10)
+        tk.Button(btn_bar, text="닫기", command=self.history_win.destroy,
+                  font=("Arial", 11, "bold"), padx=30, pady=8).pack(side="left", padx=6)
+        tk.Button(btn_bar, text="청산 기록 초기화", command=self._reset_history_clicked,
+                  bg="#cc4444", fg="white", font=("Arial", 11, "bold"), padx=20, pady=8).pack(side="left", padx=6)
+
+    def _reset_history_clicked(self):
+        """'끝난 것만 삭제' — 청산/진입 로그(trade_history_usd.csv)만 지운다.
+        보유 중인 포지션은 이 파일과 무관하게 서버 positions에 그대로 남아있어서
+        영향받지 않는다(서버 srv_reset_history 참고)."""
+        if not messagebox.askyesno("확인", "청산된 거래 기록을 전부 지웁니다.\n(진행중인 포지션은 그대로 유지됩니다)\n계속할까요?"):
+            return
+        def on_success(msg):
+            messagebox.showinfo("완료", msg)
+            if self.history_win and self.history_win.winfo_exists():
+                self.history_win.destroy()
+            self.show_history()
+        self._send_and_wait_callback('reset_history', on_success, ticker="", label="청산 기록 초기화")
 
     def _on_card_canvas_configure(self, event):
         self.card_canvas.itemconfig(self._card_window, width=event.width)
@@ -1338,7 +1356,7 @@ class TradingClient:
             tf_bar = tk.Frame(top, bg="#111111")
             tf_bar.pack(side="right", padx=8)
             win._tf_buttons = {}
-            for iv in ALLOWED_INTERVALS:
+            for iv in CHART_INTERVALS:
                 b = tk.Label(tf_bar, text=iv, font=("Arial", 9, "bold"), padx=8, pady=2,
                              cursor="hand2", relief="raised", bd=1)
                 b.pack(side="left", padx=2)

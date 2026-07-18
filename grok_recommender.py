@@ -87,8 +87,15 @@ def _load_api_key():
 XAI_API_KEY = _load_api_key()
 GROK_MODEL = "grok-4.3"   # xAI 콘솔에서 다른 모델로 바꿔도 됨 (예: grok-4-fast-reasoning)
 MAX_CHART_IMAGES = 40      # 이제 40개 다 후보군이라 이미지도 다 보냄 (필요하면 낮춰서 비용 절감)
-IMAGE_DETAIL = "low"        # "low"면 이미지 하나당 고정된 적은 토큰만 소모(훨씬 쌈, 대신 세밀한
-                            # 패턴은 덜 보임). 정밀하게 보고 싶으면 "high"로 바꾸되 비용 늘어남.
+IMAGE_DETAIL = "low"        # 기본 디테일. "low"면 이미지 하나당 고정된 적은 토큰만 소모(훨씬 쌈,
+                            # 대신 세밀한 패턴은 덜 보임). HIGH_DETAIL_TOP_N에 뽑힌 상/하위
+                            # 후보만 예외적으로 "high"로 승급된다 (아래 build_combined_outputs 참고).
+HIGH_DETAIL_TOP_N = 15      # 롱/숏 점수차 기준 상위 N개 + 하위 N개만 high 디테일 이미지로 전송
+                            # (나머지는 low 유지) — 해상도 저하로 인한 RSI 다이버전스/미세 캔들
+                            # 패턴 인식 실패를 막으면서도 토큰 비용은 억제하는 절충안.
+
+LIQUIDITY_BOTTOM_PCT = 0.20  # 거래대금(vol_24h_m) 하위 20%는 "허위 펌핑/덤핑" 필터 대상으로
+                             # Grok에게 별도로 명시(제외는 안 하고 후순위 권고만)
 
 BITHUMB_INTERVAL = "minute60"   # 차트/CSV용 봉 간격 (python_bithumb 규격)
 INTERVAL_LABEL = "60min"
@@ -97,6 +104,29 @@ CHART_COUNT = 200               # 코인당 캔들 개수
 OUT_DIR = os.path.join(SCRIPT_DIR, "grok_run")
 os.makedirs(OUT_DIR, exist_ok=True)
 # ===========================================
+
+
+def _fetch_with_backoff(fetch_fn, max_retries=4, base_delay=0.6):
+    """
+    python_bithumb 호출을 감싸서 Rate Limit 등으로 None이 오거나 예외가 나면 지수 백오프로
+    재시도한다 (0.6s, 1.2s, 2.4s, 4.8s ...). 코인 수만큼 순차/병렬 호출이 몰릴 때 빗썸 API가
+    None을 반환하는 경우를 흡수해서 "데이터 못 가져옴, 건너뜀"이 되는 빈도를 줄인다.
+    """
+    delay = base_delay
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            result = fetch_fn()
+            if result is not None and len(result) > 0:
+                return result
+        except Exception as e:
+            last_err = e
+        if attempt < max_retries - 1:
+            time.sleep(delay)
+            delay *= 2
+    if last_err:
+        print(f"     ⚠️ 재시도 {max_retries}회 실패 (마지막 에러: {last_err})")
+    return None
 
 # 나눔고딕 등 한글 폰트 있으면 쓰고, 없으면 영문 라벨로 자동 전환 (chart.py와 동일한 로직)
 def _find_korean_font():
@@ -283,8 +313,18 @@ def detect_market_regime(rows):
 #    안전하지 않아서, 필요한 부분만 복제했다)
 # ============================================================
 def load_data(coin):
+    """
+    grok_recommender_improvement 가이드의 [개선 1~3] 반영:
+      - chg_30m: 워밍업 방식 대신 minute30봉 2개를 직접 fetch해서 "현재 종가 vs 30분 전 종가"
+        괴리율을 역산 (서버 히스토리에 의존하지 않는 정확한 30분 변동률)
+      - BB_Position: 볼린저 밴드(20,2) 및 밴드 내 현재가 위치 비율(0~1)
+      - MACD/Signal/Hist: MACD(12,26,9) 오실레이터
+    빗썸 API Rate Limit으로 인한 None 응답에 대비해 두 fetch 모두 지수 백오프 재시도 적용.
+    """
     ticker = f"KRW-{coin}"
-    df = python_bithumb.get_ohlcv(ticker=ticker, interval=BITHUMB_INTERVAL, count=CHART_COUNT)
+    df = _fetch_with_backoff(
+        lambda: python_bithumb.get_ohlcv(ticker=ticker, interval=BITHUMB_INTERVAL, count=CHART_COUNT)
+    )
     if df is None or len(df) == 0:
         return None
     df.index = pd.to_datetime(df.index)
@@ -297,6 +337,30 @@ def load_data(coin):
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
     df['RSI_Delta'] = df['RSI'].diff()
+
+    # [개선 1] 워밍업 프리 30분 변동률 역산
+    df_30m = _fetch_with_backoff(
+        lambda: python_bithumb.get_ohlcv(ticker=ticker, interval="minute30", count=2)
+    )
+    if df_30m is not None and len(df_30m) >= 2:
+        p_ago = df_30m['close'].iloc[-2]
+        df['chg_30m'] = ((df['close'] - p_ago) / p_ago) * 100
+    else:
+        df['chg_30m'] = 0.0
+
+    # [개선 2] 볼린저 밴드(20, 2) + 밴드 내 위치 비율
+    std20 = df['close'].rolling(20).std()
+    df['BB_Upper'] = df['MA20'] + (2 * std20)
+    df['BB_Lower'] = df['MA20'] - (2 * std20)
+    df['BB_Position'] = (df['close'] - df['BB_Lower']) / (df['BB_Upper'] - df['BB_Lower'] + 1e-8)
+
+    # [개선 3] MACD(12, 26, 9) 오실레이터 + 히스토그램
+    ema12 = df['close'].ewm(span=12, adjust=False).mean()
+    ema26 = df['close'].ewm(span=26, adjust=False).mean()
+    df['MACD'] = ema12 - ema26
+    df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
+
     return df
 
 
@@ -356,14 +420,39 @@ def build_figure(df, ticker):
     return fig
 
 
-def build_combined_outputs(tickers):
-    """20개 코인 차트를 한 PDF(여러 페이지)로, 데이터를 한 CSV로 합친다."""
+def _pick_high_detail_tickers(rows, top_n=HIGH_DETAIL_TOP_N):
+    """
+    [개선] 이미지 토큰 비용 효율화: 전부 low로 보내면 해상도 저하로 RSI 다이버전스나 미세한
+    캔들 패턴 인식이 어려워지므로, 롱/숏 점수차(long_score - short_score) 기준 상위 N개
+    (가장 롱 우세) + 하위 N개(가장 숏 우세)만 골라 high 디테일로 승급시킨다. 나머지는 저비용
+    low 유지.
+    """
+    scored = [r for r in rows if r.get('long_score') is not None and r.get('short_score') is not None]
+    if not scored:
+        return set()
+    scored.sort(key=lambda r: r['long_score'] - r['short_score'])
+    bottom = scored[:top_n]                       # 가장 숏 우세
+    top = scored[-top_n:] if top_n else []          # 가장 롱 우세
+    return {r['ticker'] for r in (top + bottom)}
+
+
+def build_combined_outputs(tickers, rows=None):
+    """20개 코인 차트를 한 PDF(여러 페이지)로, 데이터를 한 CSV로 합친다.
+
+    rows가 주어지면(점수 데이터 포함) 롱/숏 점수차 상위·하위 HIGH_DETAIL_TOP_N개 코인만
+    high 디테일 이미지로 보내고 나머지는 저비용 low를 유지한다 (이미지 토큰 비용 효율화).
+    """
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     combined_pdf_path = os.path.join(OUT_DIR, f"charts_{ts}.pdf")
     combined_csv_path = os.path.join(OUT_DIR, f"data_{ts}.csv")
 
+    high_detail_set = _pick_high_detail_tickers(rows) if rows else set()
+    if high_detail_set:
+        print(f"   이미지 high 디테일 승급 대상 ({len(high_detail_set)}개): "
+              f"{', '.join(sorted(high_detail_set))}")
+
     csv_frames = []
-    chart_images_b64 = []
+    chart_images_b64 = []  # (coin, b64, detail)
     ok_tickers = []
 
     with PdfPages(combined_pdf_path) as pdf_pages:
@@ -379,7 +468,8 @@ def build_combined_outputs(tickers):
             if len(chart_images_b64) < MAX_CHART_IMAGES:
                 buf = io.BytesIO()
                 fig.savefig(buf, format='png', facecolor=fig.get_facecolor(), bbox_inches='tight')
-                chart_images_b64.append((coin, base64.b64encode(buf.getvalue()).decode('utf-8')))
+                detail = "high" if coin in high_detail_set else IMAGE_DETAIL
+                chart_images_b64.append((coin, base64.b64encode(buf.getvalue()).decode('utf-8'), detail))
             plt.close(fig)
 
             d = df.copy()
@@ -405,8 +495,17 @@ def build_combined_outputs(tickers):
 # ============================================================
 # ④ Grok API에 보내서 롱3/숏3 추천 받기
 # ============================================================
+def _low_liquidity_tickers(all_rows, bottom_pct=LIQUIDITY_BOTTOM_PCT):
+    """거래대금(vol_24h_m) 하위 bottom_pct에 해당하는 티커 목록 (허위 펌핑/덤핑 필터용)."""
+    vols = sorted(((r.get('vol_24h_m') or 0), r['ticker']) for r in all_rows)
+    if not vols:
+        return []
+    cutoff = max(1, int(len(vols) * bottom_pct))
+    return [t for _, t in vols[:cutoff]]
+
+
 def ask_grok(indicator_pdf_path, combined_csv_path, chart_images_b64, all_tickers,
-             regime, regime_detail):
+             regime, regime_detail, all_rows=None):
     if not XAI_API_KEY:
         raise RuntimeError("API 키가 없습니다 — 같은 폴더에 API_KEY.txt 파일을 만들고 그 안에 "
                             "키만 한 줄로 넣으세요 (또는 환경변수 XAI_API_KEY=xai-...)")
@@ -464,17 +563,42 @@ def ask_grok(indicator_pdf_path, combined_csv_path, chart_images_b64, all_ticker
             "own merits with no directional bias."
         )
 
+    low_liq = _low_liquidity_tickers(all_rows) if all_rows else []
+    low_liq_note = (
+        f"LIQUIDITY FILTER: these tickers are in the bottom {int(LIQUIDITY_BOTTOM_PCT*100)}% of this "
+        f"pool by 24h traded value (vol_24h_m) — small-cap/thin liquidity: {', '.join(low_liq)}. "
+        "Even if their technical indicators look good, treat them as likely fake pump/dump signals — "
+        "exclude them or push them to the bottom of consideration unless the setup is exceptional."
+        if low_liq else
+        "LIQUIDITY FILTER: no reliable 24h-volume data available to rank liquidity this run — weight "
+        "liquidity qualitatively from the indicator report instead."
+    )
+
     system_prompt = (
         "You are a crypto futures trading analyst. You are given (1) an indicator report with raw "
         "indicator values for the coins currently tracked, (2) recent OHLCV+indicator history samples "
-        "per coin, and (3) candlestick chart images per coin. This is NOT a pre-filtered shortlist — "
-        "it is the full set of coins currently tracked, with no prior ranking or bias applied. "
-        "You must judge every coin yourself from the raw data and decide its direction (if any). "
+        "per coin (including BB_Position, MACD/MACD_Signal/MACD_Hist, and chg_30m), and (3) candlestick "
+        "chart images per coin. This is NOT a pre-filtered shortlist — it is the full set of coins "
+        "currently tracked, with no prior ranking or bias applied. You must judge every coin yourself "
+        "from the raw data and decide its direction (if any). "
         f"MARKET REGIME (computed from breadth across all these coins): "
         f"{regime} — {regime_detail} {bias_instruction} "
         f"The candidate pool (same pool for both LONG and SHORT — you decide each coin's direction, "
         f"if any) is: {', '.join(all_tickers)}. "
-        "Pick UP TO 3 tickers for LONG and UP TO 3 for SHORT, only from this pool "
+        "\n\nADDITIONAL ANALYSIS REQUIREMENTS:\n"
+        "1) Multi-Timeframe Check: from the CSV data, first establish each coin's MA5/MA20/MA60 "
+        "alignment (bullish stack, bearish stack, or mixed) and check whether short-term indicators "
+        "agree with that longer-term trend before picking a direction.\n"
+        "2) Divergence & BB Cross: look for divergence between price action and RSI across the chart "
+        "images and indicator history. Give extra weight to tickers where BB_Position is near 1 "
+        "(pressing the upper band) or near 0 (pressing the lower band) AND MACD_Hist shows a reversal "
+        "signal (e.g. histogram flipping sign or shrinking against the prevailing trend) at the same "
+        "time — that confluence is a stronger signal than either alone.\n"
+        f"3) {low_liq_note}\n"
+        "4) Format Strictness: reason internally as much as you need, but the FINAL output must be "
+        "exactly one line in the exact format below — no markdown, no explanation, no extra "
+        "whitespace or commentary before or after it.\n\n"
+        "Pick UP TO 3 tickers for LONG and UP TO 3 for SHORT, only from the candidate pool "
         "(never invent tickers outside the pool, never put the same ticker on both sides). "
         "Only include a ticker if you are genuinely confident in it — do NOT pad the list just to "
         "reach 3, and do NOT force a balanced 3-and-3 split just for symmetry. Let the market regime "
@@ -491,10 +615,10 @@ def ask_grok(indicator_pdf_path, combined_csv_path, chart_images_b64, all_ticker
         {"type": "text", "text": "=== Indicator report (text-extracted from PDF) ===\n" + report_text},
         {"type": "text", "text": "=== Recent OHLCV+indicator sample (last 20 rows per coin) ===\n" + csv_text},
     ]
-    for coin, b64 in chart_images_b64:
+    for coin, b64, detail in chart_images_b64:
         content.append({"type": "text", "text": f"--- Chart image: {coin} ---"})
         content.append({"type": "image_url",
-                         "image_url": {"url": f"data:image/png;base64,{b64}", "detail": IMAGE_DETAIL}})
+                         "image_url": {"url": f"data:image/png;base64,{b64}", "detail": detail}})
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -527,16 +651,19 @@ def main():
     indicator_pdf = generate_indicator_report()
 
     print(f"④ {len(all_tickers)}개 코인 차트/CSV 생성 중...")
-    combined_pdf, combined_csv, images, ok_tickers = build_combined_outputs(all_tickers)
+    combined_pdf, combined_csv, images, ok_tickers = build_combined_outputs(all_tickers, rows=all_rows)
     print("   차트 PDF:", combined_pdf)
     print("   데이터 CSV:", combined_csv)
 
     answer = ask_grok(indicator_pdf, combined_csv, images, all_tickers,
-                       regime, regime_detail)
+                       regime, regime_detail, all_rows=all_rows)
     print("\n=== Grok 원본 응답 ===")
     print(answer)
 
-    m = re.search(r'long\s*:\s*([a-zA-Z0-9,\s]*?)\s*/\s*short\s*:\s*([a-zA-Z0-9,\s]*)', answer, re.IGNORECASE)
+    # 정규식 예외 처리 강화: Grok이 대소문자를 혼용하거나 예외적인 공백을 섞어 반환해도
+    # 메인 루프 파싱이 끊기지 않도록, 공백을 완전히 제거한 뒤 매칭한다.
+    clean_answer = answer.lower().replace(" ", "")
+    m = re.search(r'long\s*:\s*([a-zA-Z0-9,]*)\s*/\s*short\s*:\s*([a-zA-Z0-9,]*)', clean_answer, re.IGNORECASE)
     if m:
         longs = [t.strip().upper() for t in m.group(1).split(',') if t.strip()]
         shorts = [t.strip().upper() for t in m.group(2).split(',') if t.strip()]

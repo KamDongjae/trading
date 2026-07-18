@@ -106,7 +106,8 @@ DATA_FILE = os.path.join(SCRIPT_DIR, "simulation_data_usd.csv")
 PRICE_INTERVAL = 2
 SCORE_INTERVAL = 10
 MAX_WORKERS = 8
-ALLOWED_INTERVALS = ["1h", "2h", "6h", "12h"]   # 클라이언트 버튼으로 전환 가능한 계산 기준 캔들
+ALLOWED_INTERVALS = ["1h", "2h", "6h", "12h"]   # 클라이언트 버튼으로 전환 가능한 계산 기준 캔들("기준봉")
+CHART_INTERVALS = ["10m", "30m", "1h", "2h", "6h", "12h"]  # 포지션/티커 차트 팝업 전용(계산 기준봉과는 별개)
 CANDLE_INTERVAL = "1h"   # 점수 계산에 쓰는 기준 캔들. srv_set_interval()로 실행 중에도 전환 가능
                           # (빗썸이 2h를 직접 지원하지 않아 2h는 1h 캔들 2개를 합쳐 재구성한다)
 CVD_WINDOW_CANDLES = 2   # CANDLE_INTERVAL 기준 캔들 개수(예: 1h면 최근 2시간, 6h면 최근 12시간)
@@ -1652,7 +1653,7 @@ def weight_learning_loop():
 # 단일 코인 처리
 # ============================================================
 BITHUMB_CANDLESTICK_URL = "https://api.bithumb.com/public/candlestick/{}_{}/{}"
-BITHUMB_NATIVE_INTERVALS = {"1h", "6h", "12h"}  # 빗썸 캔들스틱 API가 직접 지원하는 간격
+BITHUMB_NATIVE_INTERVALS = {"10m", "30m", "1h", "6h", "12h"}  # 빗썸 캔들스틱 API가 직접 지원하는 간격
 
 def _fetch_candlestick_raw(order_currency, payment_currency="KRW", chart_intervals="1h", timeout=10, retries=2):
     """
@@ -2145,6 +2146,20 @@ def srv_reset_balance():
     save_to_csv()
     return True, "거래소 잔고와 외부통장을 모두 $0 으로 리셋했습니다"
 
+def srv_reset_history():
+    """청산 기록(trade_history.csv)만 비운다. 보유 중인 포지션/잔고는 절대 안 건드림 —
+    positions는 이 함수가 아예 참조하지 않고, HISTORY_FILE(청산+진입로그)만 초기화한다."""
+    global trade_history
+    trade_history = []
+    try:
+        with open(HISTORY_FILE, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['type', 'ticker', 'direction', 'amount', 'leverage',
+                              'entry_price', 'exit_price', 'pnl', 'pnl_rate_pct', 'entry_time', 'exit_time'])
+        return True, "청산/거래 기록을 초기화했습니다 (보유 포지션은 그대로 유지됩니다)"
+    except Exception as e:
+        return False, f"기록 초기화 실패: {e}"
+
 def srv_set_interval(interval):
     """
     계산 기준 캔들 간격을 전환한다 (1h/2h/6h/12h). 클라이언트의 타임프레임
@@ -2430,7 +2445,7 @@ def srv_get_candles(ticker, interval=None):
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return False, "티커 없음"
-    interval = interval if interval in ALLOWED_INTERVALS else CANDLE_INTERVAL
+    interval = interval if interval in CHART_INTERVALS else CANDLE_INTERVAL
     try:
         df = fetch_candlestick(ticker, chart_intervals=interval)
     except Exception as e:
@@ -2788,6 +2803,8 @@ def process_commands():
                 ok, msg = srv_close_all()
             elif action == 'reset':
                 ok, msg = srv_reset_balance()
+            elif action == 'reset_history':
+                ok, msg = srv_reset_history()
             elif action == 'set_interval':
                 ok, msg = srv_set_interval(ticker)
             elif action == 'set_margin_mode':
