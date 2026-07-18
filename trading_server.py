@@ -881,7 +881,7 @@ def score_ema_trend(price, ema20, ema60, ema120, direction):
     except Exception:
         return 0
 
-def score_price_position_long(rsi, bb_percent):
+def score_price_position_long(rsi, bb_percent, rsi_delta=0.0):
     """
     가격위치 결합조건 점수(최대 20점). bb_percent는 0~100 스케일(%B*100)이라
     문서의 %B(0~1) 기준값에 100을 곱해 맞췄다.
@@ -889,11 +889,13 @@ def score_price_position_long(rsi, bb_percent):
       10점: %B≥70 & RSI>80 (단기 과열권 진입 부담)
        5점: %B<50 또는 RSI<45 (추세 상실)
        0점: 위 어느 조건에도 안 맞음
+    [2026-07-19 추가] RSI가 이미 꺾여 내려가는 중(rsi_delta<-1)이면 상단권이어도
+    "막 돌아서는 고점"일 수 있어 만점 구간에서 제외한다(숏 쪽 실측 문제의 반대 케이스 방어).
     """
     try:
-        if bb_percent >= 80 and 55 <= rsi <= 70:
+        if bb_percent >= 80 and 55 <= rsi <= 70 and rsi_delta >= -1:
             return 20
-        elif bb_percent >= 70 and rsi > 80:
+        elif bb_percent >= 70 and rsi > 80 and rsi_delta >= -1:
             return 10
         elif bb_percent < 50 or rsi < 45:
             return 5
@@ -901,12 +903,15 @@ def score_price_position_long(rsi, bb_percent):
     except Exception:
         return 0
 
-def score_price_position_short(rsi, bb_percent):
-    """가격위치 결합조건 숏 점수(최대 20점, 롱과 대칭)."""
+def score_price_position_short(rsi, bb_percent, rsi_delta=0.0):
+    """가격위치 결합조건 숏 점수(최대 20점, 롱과 대칭).
+    [2026-07-19 추가] 디스코드 실측(THETA/ZIL)에서 이미 많이 하락한 뒤 RSI가 반등
+    중인 시점에 숏 신호가 뜨는 문제 확인 — RSI가 이미 오르는 중(rsi_delta>1)이면
+    "하락 초입"도 "깊은 과매도"도 아니라 반등 신호일 가능성이 커서 0점 처리한다."""
     try:
-        if bb_percent <= 20 and 30 <= rsi <= 45:
+        if bb_percent <= 20 and 30 <= rsi <= 45 and rsi_delta <= 1:
             return 20
-        elif bb_percent <= 30 and rsi < 20:
+        elif bb_percent <= 30 and rsi < 20 and rsi_delta <= 1:
             return 10
         elif bb_percent > 50 or rsi > 55:
             return 5
@@ -1028,7 +1033,7 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
         # 배수 2개(레짐 x 학습)가 곱해지면 최대 1.3*1.6=2.08배까지 커질 수 있어, 원래
         # 배점 상한을 넘지 않게 min()으로 잘라준다(과도한 인플레이션 방지).
         p_ema = min(score_ema_trend(price, ema20, ema60, ema120, 'long') * mult['ema'] * lw['ema'], 20)
-        p_pp = min(score_price_position_long(rsi, bb_percent) * mult['pp'] * lw['pp'], 20)
+        p_pp = min(score_price_position_long(rsi, bb_percent, rsi_delta) * mult['pp'] * lw['pp'], 20)
         p_cvd = min(score_cvd_trend(cvd_diff, vol_window_sum, 'long') * mult['cvd'] * lw['cvd'], 15)
         p_volz = min(score_volz_v3(vol_z) * mult['volz'] * lw['volz'], 15)
         p_m30 = min(score_chg30m_long(chg_30m) * mult['m30'] * lw['m30'], 15)
@@ -1062,7 +1067,7 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
         if p_ema >= 20:
             p_ema = 10
         p_ema = min(p_ema * mult['ema'] * lw['ema'], 20)
-        p_pp = min(score_price_position_short(rsi, bb_percent) * mult['pp'] * lw['pp'], 20)
+        p_pp = min(score_price_position_short(rsi, bb_percent, rsi_delta) * mult['pp'] * lw['pp'], 20)
         p_cvd = min(score_cvd_trend(cvd_diff, vol_window_sum, 'short') * mult['cvd'] * lw['cvd'], 15)
         p_oi = min(score_oi_v3(oi_change_pct) * mult['oi'] * lw['oi'], 15)
         p_volz = min(score_volz_v3(vol_z) * mult['volz'] * lw['volz'], 15)
