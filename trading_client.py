@@ -76,6 +76,7 @@ def read_market_snapshot(path=None):
                     'ticker': r.get('ticker', ''),
                     'price': _f(r.get('price')),
                     'price_usd': _f(r.get('price_usd')) if r.get('price_usd') not in (None, '',) else None,
+                    'chg_24h': _f(r.get('chg_24h'), 0),
                     'long_score': int(_f(r.get('long_score'))),
                     'short_score': int(_f(r.get('short_score'))),
                     # 신설: 출발 전 매집 구간 탐지 점수 (없는 구버전 CSV라도 안전하게 0 처리)
@@ -1143,6 +1144,8 @@ class TradingClient:
                     usd_str = f"USD {price_usd:,.4f}" if price_usd < 1 else f"USD {price_usd:,.2f}"
                 else:
                     usd_str = "N/A"
+                chg24h = row.get('chg_24h', 0)
+                chg24h_str = f"{chg24h:+.2f}%"
 
                 cvd_val = row.get('cvd', 0)
                 cvd_str = f"{cvd_val:+,.0f}" if abs(cvd_val) >= 100 else f"{cvd_val:+.2f}"
@@ -1164,7 +1167,7 @@ class TradingClient:
                 else:
                     bg = "white"
                 display_ticker = f"[{ticker}]" if ticker in self.pinned_tickers else ticker
-                line1 = f"{display_ticker}  {usd_str} ({krw_str})  롱{ls} 숏{ss}  매집{pp} 분산{ps}"
+                line1 = f"{display_ticker}  {chg24h_str} ({krw_str})  {usd_str}  롱{ls} 숏{ss}  매집{pp} 분산{ps}"
                 lsr = row.get('ls_ratio')
                 ls_str = f"{lsr:.2f}" if lsr is not None else "N/A"
                 line2 = (f"RSI {row['rsi']}({row['rsi_delta']:+}) BB {row['bb_percent']:.0f}% "

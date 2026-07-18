@@ -144,6 +144,7 @@ bank_total_spent = 0.0     # 누적 외부통장 출금액 = 실생활로 빠져
 trade_history = []   # 각 항목: dict {type, ticker, direction, amount, leverage, entry_price, exit_price, pnl, pnl_rate, entry_time, exit_time}
 running = True
 latest_prices = {}
+latest_chg24h = {}  # 빗썸 24시간 변동률(%) 캐시 — price_updater가 벌크조회 김에 같이 채움(업비트는 _latest_upbit_ticker_info에서 바로 계산)
 latest_prices_usd = {}   # 바이낸스 선물 체결가(USD). 거래/손익/청산 전부 이 가격 기준(거래소 무관 공유).
 latest_prices_upbit = {}  # 업비트 KRW 현재가(코인탭 표시/차트 기준가용, 거래체결가로는 안 씀)
 _latest_upbit_ticker_info = {}  # market("KRW-BTC") -> 업비트 ticker API 원본(24h거래대금 등, price_updater_upbit가 갱신)
@@ -2214,17 +2215,20 @@ def price_updater(tickers_ref):
         try:
             price_data = Bithumb.get_current_price("ALL")
             updates = {}
+            chg24h_updates = {}
             for ticker, info in price_data.items():
                 if ticker == "date": continue
                 try:
                     if isinstance(info, dict):
                         updates[ticker] = float(info.get('closing_price') or info.get('trade_price') or 0)
+                        chg24h_updates[ticker] = float(info.get('fluctate_rate_24H', 0) or 0)
                     else:
                         updates[ticker] = float(info)
                 except:
                     updates[ticker] = 0.0
             with data_lock:
                 latest_prices.update(updates)
+                latest_chg24h.update(chg24h_updates)
             # 바이낸스 USD 체결가 갱신 (거래는 전부 USD 기준)
             try:
                 cache = get_all_funding_rates()
@@ -2382,7 +2386,7 @@ def _atomic_write_csv(path, rows):
             w.writerow(r)
     os.replace(tmp, path)
 
-MARKET_COLS = ['ticker', 'price', 'price_usd', 'long_score', 'short_score',
+MARKET_COLS = ['ticker', 'price', 'price_usd', 'chg_24h', 'long_score', 'short_score',
                'prepump_score', 'preshort_score',
                'rsi', 'rsi_delta', 'vol_z', 'bb_percent', 'cvd', 'cvd_diff', 'funding',
                'vol_24h_m', 'atr_pct', 'oi_change_pct', 'chg_30m', 'ls_ratio',
@@ -2406,12 +2410,22 @@ def write_market_snapshot(exchange='bithumb'):
         return
     with data_lock:
         prices = dict(prices)
+        if exchange == 'bithumb':
+            chg24_map = dict(latest_chg24h)
+        else:
+            chg24_map = {}
+            for market, info in _latest_upbit_ticker_info.items():
+                try:
+                    chg24_map[market.replace("KRW-", "")] = float(info.get('signed_change_rate', 0) or 0) * 100
+                except Exception:
+                    pass
     pt = datetime.now().strftime('%H:%M:%S')
     rows = [MARKET_COLS]
     for t, r in snap.items():
         rows.append([
             t, prices.get(t, r.get('price', 0)),
             r.get('price_usd', '') if r.get('price_usd') is not None else '',
+            chg24_map.get(t, 0),
             r.get('long_score', 0), r.get('short_score', 0),
             r.get('prepump_score', 0), r.get('preshort_score', 0),
             r.get('rsi', 0), r.get('rsi_delta', 0), r.get('vol_z', 0),
