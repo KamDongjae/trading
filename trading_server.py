@@ -843,7 +843,8 @@ def calculate_oi_synergy(price_chg, oi_change_pct):
 #   - ATR/거래대금 필터: "최소 유동성 하한선" 구체 수치가 없어 ATR≥0.3% & 24h거래대금
 #     ≥1천만원을 기준으로 임의 설정 (통과 5점 / 미통과 0점, 등급 없는 필터형)
 # ============================================================
-TOTAL_SCORE_WEIGHT = 105  # 위 7개 항목 배점의 합. 항목을 추가/변경하면 같이 맞춰야 함.
+TOTAL_SCORE_WEIGHT = 89  # [2026-07-19 재조정] 가격위치(RSI중심) 40 + EMA 10 + CVD 8 + OI 10(숏전용)
+                          # + VolZ 8 + 모멘텀 8 + 유동성 5 = 89(숏 기준, 롱은 OI 없어 79가 실질상한)
                            # 롱 점수는 이 중 OI(15점)를 안 받지만, 분모는 그대로 105를 쓴다 —
                            # 분모를 90으로 줄이면 남은 점수들이 상대적으로 부풀어서 진입컷을
                            # 넘는 코인이 오히려 127개->345개로 늘어나는 부작용이 실측으로
@@ -887,37 +888,49 @@ def score_ema_trend(price, ema20, ema60, ema120, direction, ema20_slope_pct=0.0)
 
 def score_price_position_long(rsi, bb_percent, rsi_delta=0.0):
     """
-    가격위치 결합조건 점수(최대 20점). bb_percent는 0~100 스케일(%B*100)이라
-    문서의 %B(0~1) 기준값에 100을 곱해 맞췄다.
-      20점: %B≥80 & 55≤RSI≤70 (과열 초입 강한 분출)
-      10점: %B≥70 & RSI>80 (단기 과열권 진입 부담)
-       5점: %B<50 또는 RSI<45 (추세 상실)
-       0점: 위 어느 조건에도 안 맞음
-    [2026-07-19 추가] RSI가 이미 꺾여 내려가는 중(rsi_delta<-1)이면 상단권이어도
-    "막 돌아서는 고점"일 수 있어 만점 구간에서 제외한다(숏 쪽 실측 문제의 반대 케이스 방어).
+    가격위치 점수(최대 40점, [2026-07-19 전면개편] "돌파추격형"→"저가매수형"으로 철학 교체).
+    44,051행 실측 검증: RSI 원값 단독 상관계수가 -0.072로 v3 어느 합성점수보다 강했다
+    (RSI 높을수록 이후 수익률 낮음 = 평균회귀 우세 장세). 기존엔 RSI 55~70(모멘텀 구간)을
+    최고점으로 줬는데 이게 오히려 실측과 반대 방향이었다 — 그래서 과매도+반등시작을
+    최고점으로 뒤집었다. 비중도 20→40으로 크게 키움(가장 강력한 단일신호이므로).
+      40점: RSI≤30 & %B≤30 & 이미 반등 시작(rsi_delta>0) — 과매도 바닥+반등 확인
+      30점: RSI≤35 & 반등 시작
+      20점: RSI≤40
+      10점: RSI 40~55 (중립)
+       5점: RSI 55~80
+       0점: RSI≥80 (과매수 — 롱 진입으로 최악 구간, 실측으로 확인됨)
     """
     try:
-        if bb_percent >= 80 and 55 <= rsi <= 70 and rsi_delta >= -1:
+        if rsi <= 30 and bb_percent <= 30 and rsi_delta > 0:
+            return 40
+        elif rsi <= 35 and rsi_delta > 0:
+            return 30
+        elif rsi <= 40:
             return 20
-        elif bb_percent >= 70 and rsi > 80 and rsi_delta >= -1:
+        elif rsi <= 55:
             return 10
-        elif bb_percent < 50 or rsi < 45:
+        elif rsi < 80:
             return 5
         return 0
     except Exception:
         return 0
 
 def score_price_position_short(rsi, bb_percent, rsi_delta=0.0):
-    """가격위치 결합조건 숏 점수(최대 20점, 롱과 대칭).
-    [2026-07-19 추가] 디스코드 실측(THETA/ZIL)에서 이미 많이 하락한 뒤 RSI가 반등
-    중인 시점에 숏 신호가 뜨는 문제 확인 — RSI가 이미 오르는 중(rsi_delta>1)이면
-    "하락 초입"도 "깊은 과매도"도 아니라 반등 신호일 가능성이 커서 0점 처리한다."""
+    """가격위치 숏 점수(최대 40점, 롱과 대칭 — 과매수+반락시작을 최고점으로).
+    [2026-07-19 전면개편] 이전엔 RSI 30~45(약한 과매도, "하락 초입") 구간을 최고점으로
+    줬는데, 이것도 실측과 반대 방향이었다(short_score 기존 corr +0.067로 부호 자체가
+    반대 — "하락 초입으로 본 구간"이 실제로는 상승 신호였음). 명확한 과매수(RSI≥70)
+    + 반락 시작을 최고점으로 교체."""
     try:
-        if bb_percent <= 20 and 30 <= rsi <= 45 and rsi_delta <= 1:
+        if rsi >= 70 and bb_percent >= 70 and rsi_delta < 0:
+            return 40
+        elif rsi >= 65 and rsi_delta < 0:
+            return 30
+        elif rsi >= 60:
             return 20
-        elif bb_percent <= 30 and rsi < 20 and rsi_delta <= 1:
+        elif rsi >= 45:
             return 10
-        elif bb_percent > 50 or rsi > 55:
+        elif rsi > 20:
             return 5
         return 0
     except Exception:
@@ -986,20 +999,6 @@ def score_chg30m_short(chg_30m):
     elif -4.0 <= chg_30m < -2.5: return 10
     return 0
 
-def score_rsi_extreme_penalty(rsi, direction):
-    """[2026-07-19 추가] RSI 극단값 추가 페널티. 가격위치(score_price_position_*) 세부점수와는
-    별개로, RSI가 완전히 극단(롱 80이상/숏 20이하)이면 소폭 추가 감점한다. 가격위치 점수
-    자체도 RSI>80/<20 구간을 이미 낮게 주지만(RSI반전가드와도 별개), 여기서 한 번 더
-    걸러서 극단 과열/과매도 초입이 아니라 이미 지나간 상태일 위험을 줄인다."""
-    try:
-        if direction == 'long' and rsi >= 80:
-            return -5
-        elif direction == 'short' and rsi <= 20:
-            return -5
-        return 0
-    except Exception:
-        return 0
-
 def score_liquidity_filter(atr_pct, vol_24h_m):
     """
     ATR/거래대금 '최소 유동성 하한선' 필터(최대 5점, 등급 없이 통과/미통과만).
@@ -1014,27 +1013,74 @@ def score_liquidity_filter(atr_pct, vol_24h_m):
     except Exception:
         return 0
 
+def score_combo_adjustment(direction, pp_score, cvd_score, oi_change_pct, volz_score, ema_score_opposite=0):
+    """
+    [2026-07-19 추가] 조합(콤보) 보정. 44,051+7,496행(총 36,843건 유효) 실측: 가격위치가
+    강세(20점 이상, 새 RSI중심 로직 기준)일 때 다른 지표와 "같이" 확인되는지/"충돌"하는지
+    별도로 체크하면, 단순 합산으로는 못 잡는 승률 차이가 뚜렷했다.
+
+    보너스(실측 승률, pp단독 대비):
+      롱 pp강세+OI감소(-1%이하): 48.0%→67.1%(n=243) — 반등신호+숏커버(매도압력 완화) 확인
+      롱 pp강세+CVD동조: 48.0%→48.9%(n=2940) — 약하지만 일관되게 소폭 개선
+      롱 pp강세+VolZ강세: 평균수익 0.08→0.155(n=559) — 승률보다 수익폭 개선
+      숏 pp강세+OI증가(3%이상): 52.9%→81.7%(n=60) — 과매수+신규숏유입/롱청산압박
+      숏 pp강세+CVD동조+OI증가(3중): 52.9%→88.9%(n=27, 표본 적음 주의) — 최강 조합
+
+    페널티(실측 승률, pp단독 대비):
+      숏 pp강세+EMA가 여전히 롱강세(EMA_l≥15): 52.9%→45.3%(n=1186), 평균수익도 -0.05→+0.04로
+      역전 — "과매수인데 추세는 여전히 위"인 경우 숏 신호가 실제로는 잘 안 맞았다.
+      (롱 쪽은 대칭되는 뚜렷한 충돌 페널티가 실측에서 확인되지 않아 넣지 않음 — 데이터
+      없는 곳에 억지로 대칭 만들지 않는다는 원칙 유지.)
+
+    pp_score/cvd_score/volz_score는 레짐·학습 배수 적용 "전" 원점수를 넣어야 임계값이 맞는다.
+    """
+    adj = 0
+    try:
+        strong_pp = pp_score >= 20
+        if not strong_pp:
+            return 0
+        if direction == 'long':
+            if oi_change_pct is not None and oi_change_pct <= -1:
+                adj += 15
+            if cvd_score >= 15:
+                adj += 5
+            if volz_score >= 10:
+                adj += 5
+        else:
+            oi_up = oi_change_pct is not None and oi_change_pct >= 3
+            if oi_up:
+                adj += 15
+                if cvd_score >= 15:
+                    adj += 10  # 3중 조합 추가 보너스(위 doctring 88.9% 근거)
+            if ema_score_opposite >= 15:
+                adj -= 15
+        return adj
+    except Exception:
+        return 0
+
 def score_extension_penalty(extension_pct, direction):
     """
-    [2026-07-19 추가] 이미 추세가 상당부분 끝난 뒤 뒤늦게 쫓아가며 진입컷을 넘기는
-    문제를 막는 페널티. extension_pct(calculate_extension_pct — 직전 10개 캔들 동안
-    가격이 이미 얼마나 움직였는지)는 원래 이 목적으로 만들어졌던 지표인데, 실제
+    [2026-07-19 추가, 강도 상향] 이미 추세가 상당부분 끝난 뒤 뒤늦게 쫓아가며 진입컷을
+    넘기는 문제를 막는 페널티. extension_pct(calculate_extension_pct — 직전 10개 캔들
+    동안 가격이 이미 얼마나 움직였는지)는 원래 이 목적으로 만들어졌던 지표인데, 실제
     calculate_long/short_score 계산식에는 한 번도 반영이 안 돼있던 걸 발견해서 추가함
     (디스코드 실측: QTUM이 직전 1시간에만 +9% 오른 직후에 롱 진입컷을 넘긴 사례로 확인).
-    롱은 이미 많이 오른 경우, 숏은 이미 많이 내린 경우 감점한다. 레짐/학습 배수와
-    무관하게 항상 고정폭으로 깎는 페널티(신호 강도가 아니라 리스크 방어이므로).
+    44,051행 실측에서 recent_pct(유사 지표) 단독 상관계수가 -0.046로, v3 어느 합성점수
+    보다 강한 2번째 신호였다(1위는 RSI, 위의 score_price_position_* 참고) — 그래서
+    페널티 강도를 대폭 올렸다(-15/-8/-3 → -25/-15/-5). 롱은 이미 많이 오른 경우, 숏은
+    이미 많이 내린 경우 감점한다. 레짐/학습 배수와 무관하게 항상 고정폭으로 깎는다.
     """
     try:
         e = extension_pct if extension_pct is not None else 0.0
         if direction == 'long':
-            if e >= 10: return -15
-            elif e >= 6: return -8
-            elif e >= 4: return -3
+            if e >= 10: return -25
+            elif e >= 6: return -15
+            elif e >= 4: return -5
             return 0
         else:
-            if e <= -10: return -15
-            elif e <= -6: return -8
-            elif e <= -4: return -3
+            if e <= -10: return -25
+            elif e <= -6: return -15
+            elif e <= -4: return -5
             return 0
     except Exception:
         return 0
@@ -1051,8 +1097,8 @@ def score_overextension_penalty_cap(final_score, ema_pts, pp_pts, cvd_pts, oi_pt
     넘는 경우가 많아서 실효성이 없었다(실측으로 확인함) — 그래서 감점이 아니라 진입컷보다
     확실히 낮은 값으로 상한을 씌우는 방식으로 바꿨다.
     """
-    maxes = [(ema_pts, 20), (pp_pts, 20), (cvd_pts, 15), (oi_pts, 15),
-             (m30_pts, 15), (volz_pts, 15), (liq_pts, 5)]
+    maxes = [(ema_pts, 10), (pp_pts, 40), (cvd_pts, 8), (oi_pts, 10),
+             (m30_pts, 8), (volz_pts, 8), (liq_pts, 5)]
     n_maxed = sum(1 for v, mx in maxes if v >= mx * 0.9)
     if n_maxed >= 5:
         return min(final_score, 45)
@@ -1065,12 +1111,14 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
                           price=None, ema120=None, vol_24h_m=0, regime='normal', exchange='bithumb',
                           ema20_slope_pct=0.0):
     """
-    실질 최대 90점(105점 만점 배점 중 EMA삼중20+가격위치20+CVD15+VolZ15+30분모멘텀15+유동성5)
-    롱 점수. OI(oi_sc, 15점)는 일부러 뺐다 — 59시간 실측으로 OI 급증이 롱보다 오히려 하락과
-    상관관계가 있는 걸 확인해서(숏 점수엔 그대로 유지, calculate_short_score 참고).
-    분모는 그대로 TOTAL_SCORE_WEIGHT(105)를 써서 /105×100 환산한다 — 분모를 90으로 줄이면
-    남은 항목들 점수가 상대적으로 부풀어서 진입컷을 넘는 코인이 오히려 늘어나는 부작용이
-    있었다(실측으로 확인, 127개→345개). 그래서 롱 점수 실질 상한은 자연히 ~86점이 된다.
+    [2026-07-19 전면재조정] 실질 최대 79점(89점 만점 배점 중 EMA10+가격위치(RSI중심)40+
+    CVD8+VolZ8+모멘텀8+유동성5) 롱 점수. OI(oi_sc)는 일부러 뺐다 — 59시간 실측으로 OI
+    급증이 롱보다 오히려 하락과 상관관계가 있는 걸 확인해서(숏 점수엔 그대로 유지,
+    calculate_short_score 참고). 44,051행 검증으로 EMA/CVD/VolZ/모멘텀은 신호가 약하고
+    (|corr|<0.03) RSI가 압도적으로 강한 신호(corr -0.072, v3 어느 합성점수보다 강함)임을
+    확인해서 배점을 가격위치(RSI중심)로 집중시켰다(20→40, 나머지는 대폭 축소).
+    분모는 TOTAL_SCORE_WEIGHT(89)를 써서 /89×100 환산한다. 롱 점수 실질 상한은 자연히
+    ~89점(79/89)이 된다.
     regime: detect_market_regime()이 매긴 현재 시장 상태('상승장'/'하락장'/'횡보장'/'고변동성'/'normal').
     exchange: 'bithumb'/'upbit' — learned_component_weights는 거래소별로 따로 학습되므로
     반드시 그 값이 계산된 원본 거래소를 넘겨야 한다(안 넘기면 기본값 'bithumb' 사용).
@@ -1083,14 +1131,21 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
     try:
         # 배수 2개(레짐 x 학습)가 곱해지면 최대 1.3*1.6=2.08배까지 커질 수 있어, 원래
         # 배점 상한을 넘지 않게 min()으로 잘라준다(과도한 인플레이션 방지).
-        p_ema = min(score_ema_trend(price, ema20, ema60, ema120, 'long', ema20_slope_pct) * mult['ema'] * lw['ema'], 20)
-        p_pp = min(score_price_position_long(rsi, bb_percent, rsi_delta) * mult['pp'] * lw['pp'], 20)
-        p_cvd = min(score_cvd_trend(cvd_diff, vol_window_sum, 'long') * mult['cvd'] * lw['cvd'], 15)
-        p_volz = min(score_volz_v3(vol_z) * mult['volz'] * lw['volz'], 15)
-        p_m30 = min(score_chg30m_long(chg_30m) * mult['m30'] * lw['m30'], 15)
+        # [2026-07-19 재배점] EMA/CVD/VolZ/모멘텀은 실측 신호가 약해(|corr|<0.03) 배점을
+        # 축소(원래 함수의 배점 스케일에 비례배분: 20→10, 15→8, 15→8, 15→8). 가격위치는
+        # 함수 자체가 이미 40점 만점으로 재설계됨(score_price_position_long 참고).
+        raw_pp = score_price_position_long(rsi, bb_percent, rsi_delta)  # 조합보정 임계값은 이 원점수 기준
+        raw_cvd = score_cvd_trend(cvd_diff, vol_window_sum, 'long')
+        raw_volz = score_volz_v3(vol_z)
+        p_ema = min(score_ema_trend(price, ema20, ema60, ema120, 'long', ema20_slope_pct) * 0.5 * mult['ema'] * lw['ema'], 10)
+        p_pp = min(raw_pp * mult['pp'] * lw['pp'], 40)
+        p_cvd = min(raw_cvd * (8 / 15) * mult['cvd'] * lw['cvd'], 8)
+        p_volz = min(raw_volz * (8 / 15) * mult['volz'] * lw['volz'], 8)
+        p_m30 = min(score_chg30m_long(chg_30m) * (8 / 15) * mult['m30'] * lw['m30'], 8)
         p_liq = min(score_liquidity_filter(atr_pct, vol_24h_m) * mult['liq'] * lw['liq'], 5)
-        penalty = score_extension_penalty(extension_pct, 'long') + score_rsi_extreme_penalty(rsi, 'long')
-        raw = p_ema + p_pp + p_cvd + p_volz + p_m30 + p_liq + penalty
+        penalty = score_extension_penalty(extension_pct, 'long')
+        combo = score_combo_adjustment('long', raw_pp, raw_cvd, oi_change_pct, raw_volz)
+        raw = p_ema + p_pp + p_cvd + p_volz + p_m30 + p_liq + penalty + combo
         raw = max(raw, 0)
     except Exception:
         final = round(raw / TOTAL_SCORE_WEIGHT * 100)
@@ -1107,28 +1162,34 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
                            funding_rate=0.0, trade_value_usd=None,
                            price=None, ema120=None, vol_24h_m=0, regime='normal', exchange='bithumb',
                            ema20_slope_pct=0.0):
-    """105점 만점 숏 점수 (롱과 대칭, 과열 상한 캡도 동일 적용). 최종 /105×100 환산.
-    ema_s(EMA 완전 역배열, 20점)는 59시간 실측으로 120~240분 후 오히려 가격이 반등하는
-    경향이 확인돼서(완전히 다 떨어진 뒤라는 뜻으로 해석) 10점으로 다운그레이드한다 —
-    "부분 역배열"과 "완전 역배열"을 더 이상 구분해서 보너스 주지 않는다.
+    """89점 만점 숏 점수([2026-07-19 전면재조정] 롱과 대칭, 과열 상한 캡도 동일 적용). 최종 /89×100 환산.
+    ema_s(EMA 완전 역배열)는 59시간 실측으로 120~240분 후 오히려 가격이 반등하는 경향이
+    확인돼서(완전히 다 떨어진 뒤라는 뜻으로 해석) 다운그레이드한다 — "부분 역배열"과
+    "완전 역배열"을 더 이상 구분해서 보너스 주지 않는다.
     regime: calculate_long_score와 동일한 시장상태별(REGIME_WEIGHT_MULTIPLIERS) +
     실측 자동학습(learned_component_weights, exchange별로 따로 학습) 가중치를 적용한다."""
     raw = 0
     mult = REGIME_WEIGHT_MULTIPLIERS.get(regime, REGIME_WEIGHT_MULTIPLIERS['normal'])
     lw = learned_component_weights.get(exchange, learned_component_weights['bithumb'])['short']
     try:
+        # [2026-07-19 재배점] EMA/CVD/OI/VolZ/모멘텀은 실측 신호가 약해(|corr|<0.03) 배점을
+        # 축소. 가격위치(RSI중심, score_price_position_short)가 이제 40점으로 핵심 항목.
+        raw_pp = score_price_position_short(rsi, bb_percent, rsi_delta)  # 조합보정 임계값은 이 원점수 기준
+        raw_cvd = score_cvd_trend(cvd_diff, vol_window_sum, 'short')
+        raw_ema_l = score_ema_trend(price, ema20, ema60, ema120, 'long', ema20_slope_pct)  # 반대방향 EMA — 충돌 페널티 체크용
         p_ema = score_ema_trend(price, ema20, ema60, ema120, 'short', ema20_slope_pct)
         if p_ema >= 20:
             p_ema = 10
-        p_ema = min(p_ema * mult['ema'] * lw['ema'], 20)
-        p_pp = min(score_price_position_short(rsi, bb_percent, rsi_delta) * mult['pp'] * lw['pp'], 20)
-        p_cvd = min(score_cvd_trend(cvd_diff, vol_window_sum, 'short') * mult['cvd'] * lw['cvd'], 15)
-        p_oi = min(score_oi_v3(oi_change_pct) * mult['oi'] * lw['oi'], 15)
-        p_volz = min(score_volz_v3(vol_z) * mult['volz'] * lw['volz'], 15)
-        p_m30 = min(score_chg30m_short(chg_30m) * mult['m30'] * lw['m30'], 15)
+        p_ema = min(p_ema * 0.5 * mult['ema'] * lw['ema'], 10)
+        p_pp = min(raw_pp * mult['pp'] * lw['pp'], 40)
+        p_cvd = min(raw_cvd * (8 / 15) * mult['cvd'] * lw['cvd'], 8)
+        p_oi = min(score_oi_v3(oi_change_pct) * (10 / 15) * mult['oi'] * lw['oi'], 10)
+        p_volz = min(score_volz_v3(vol_z) * (8 / 15) * mult['volz'] * lw['volz'], 8)
+        p_m30 = min(score_chg30m_short(chg_30m) * (8 / 15) * mult['m30'] * lw['m30'], 8)
         p_liq = min(score_liquidity_filter(atr_pct, vol_24h_m) * mult['liq'] * lw['liq'], 5)
-        penalty = score_extension_penalty(extension_pct, 'short') + score_rsi_extreme_penalty(rsi, 'short')
-        raw = p_ema + p_pp + p_cvd + p_oi + p_volz + p_m30 + p_liq + penalty
+        penalty = score_extension_penalty(extension_pct, 'short')
+        combo = score_combo_adjustment('short', raw_pp, raw_cvd, oi_change_pct, None, ema_score_opposite=raw_ema_l)
+        raw = p_ema + p_pp + p_cvd + p_oi + p_volz + p_m30 + p_liq + penalty + combo
         raw = max(raw, 0)
     except Exception:
         final = round(raw / TOTAL_SCORE_WEIGHT * 100)
@@ -2125,10 +2186,10 @@ def process_ticker(ticker):
                                                    rsi_val, recent_pct, chg_30m)
         # 항목별 세부점수 (로그 분석/배점 튜닝용 — 총점과 동일한 함수로 계산, 105점 원점수 기준)
         components = {
-            "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long'),
-            "ema_s": score_ema_trend(current_price, ema20, ema60, ema120, 'short'),
-            "pp_l": score_price_position_long(rsi_val, bb_percent),
-            "pp_s": score_price_position_short(rsi_val, bb_percent),
+            "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long', ema20_slope_pct),
+            "ema_s": score_ema_trend(current_price, ema20, ema60, ema120, 'short', ema20_slope_pct),
+            "pp_l": score_price_position_long(rsi_val, bb_percent, rsi_delta),
+            "pp_s": score_price_position_short(rsi_val, bb_percent, rsi_delta),
             "cvd_l": score_cvd_trend(cvd_diff, vol_window_sum, 'long'),
             "cvd_s": score_cvd_trend(cvd_diff, vol_window_sum, 'short'),
             "oi_sc": score_oi_v3(oi_change_pct),
@@ -2295,10 +2356,10 @@ def process_ticker_upbit(ticker):
                                                    atr_pct, vz, current_price, box_high, box_low,
                                                    rsi_val, recent_pct, chg_30m)
         components = {
-            "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long'),
-            "ema_s": score_ema_trend(current_price, ema20, ema60, ema120, 'short'),
-            "pp_l": score_price_position_long(rsi_val, bb_percent),
-            "pp_s": score_price_position_short(rsi_val, bb_percent),
+            "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long', ema20_slope_pct),
+            "ema_s": score_ema_trend(current_price, ema20, ema60, ema120, 'short', ema20_slope_pct),
+            "pp_l": score_price_position_long(rsi_val, bb_percent, rsi_delta),
+            "pp_s": score_price_position_short(rsi_val, bb_percent, rsi_delta),
             "cvd_l": score_cvd_trend(cvd_diff, vol_window_sum, 'long'),
             "cvd_s": score_cvd_trend(cvd_diff, vol_window_sum, 'short'),
             "oi_sc": score_oi_v3(oi_change_pct),
