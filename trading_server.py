@@ -989,6 +989,31 @@ def score_liquidity_filter(atr_pct, vol_24h_m):
     except Exception:
         return 0
 
+def score_extension_penalty(extension_pct, direction):
+    """
+    [2026-07-19 추가] 이미 추세가 상당부분 끝난 뒤 뒤늦게 쫓아가며 진입컷을 넘기는
+    문제를 막는 페널티. extension_pct(calculate_extension_pct — 직전 10개 캔들 동안
+    가격이 이미 얼마나 움직였는지)는 원래 이 목적으로 만들어졌던 지표인데, 실제
+    calculate_long/short_score 계산식에는 한 번도 반영이 안 돼있던 걸 발견해서 추가함
+    (디스코드 실측: QTUM이 직전 1시간에만 +9% 오른 직후에 롱 진입컷을 넘긴 사례로 확인).
+    롱은 이미 많이 오른 경우, 숏은 이미 많이 내린 경우 감점한다. 레짐/학습 배수와
+    무관하게 항상 고정폭으로 깎는 페널티(신호 강도가 아니라 리스크 방어이므로).
+    """
+    try:
+        e = extension_pct if extension_pct is not None else 0.0
+        if direction == 'long':
+            if e >= 10: return -15
+            elif e >= 6: return -8
+            elif e >= 4: return -3
+            return 0
+        else:
+            if e <= -10: return -15
+            elif e <= -6: return -8
+            elif e <= -4: return -3
+            return 0
+    except Exception:
+        return 0
+
 def score_overextension_penalty_cap(final_score, ema_pts, pp_pts, cvd_pts, oi_pts, m30_pts, volz_pts, liq_pts):
     """
     과열 상한 캡. v3 롱/숏 세부 7개 항목은 개별로 보면 forward-return과의 상관관계가
@@ -1038,7 +1063,8 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
         p_volz = min(score_volz_v3(vol_z) * mult['volz'] * lw['volz'], 15)
         p_m30 = min(score_chg30m_long(chg_30m) * mult['m30'] * lw['m30'], 15)
         p_liq = min(score_liquidity_filter(atr_pct, vol_24h_m) * mult['liq'] * lw['liq'], 5)
-        raw = p_ema + p_pp + p_cvd + p_volz + p_m30 + p_liq
+        raw = p_ema + p_pp + p_cvd + p_volz + p_m30 + p_liq + score_extension_penalty(extension_pct, 'long')
+        raw = max(raw, 0)
     except Exception:
         final = round(raw / TOTAL_SCORE_WEIGHT * 100)
         return max(0, min(final, 100))
@@ -1073,7 +1099,8 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
         p_volz = min(score_volz_v3(vol_z) * mult['volz'] * lw['volz'], 15)
         p_m30 = min(score_chg30m_short(chg_30m) * mult['m30'] * lw['m30'], 15)
         p_liq = min(score_liquidity_filter(atr_pct, vol_24h_m) * mult['liq'] * lw['liq'], 5)
-        raw = p_ema + p_pp + p_cvd + p_oi + p_volz + p_m30 + p_liq
+        raw = p_ema + p_pp + p_cvd + p_oi + p_volz + p_m30 + p_liq + score_extension_penalty(extension_pct, 'short')
+        raw = max(raw, 0)
     except Exception:
         final = round(raw / TOTAL_SCORE_WEIGHT * 100)
         return max(0, min(final, 100))
