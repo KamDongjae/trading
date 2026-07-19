@@ -1688,14 +1688,24 @@ def analyze_and_update_weights():
 def weight_learning_loop():
     """RESOLVE_INTERVAL_SEC(기본 15분)마다 미해결 신호를 해소하고, 새로 해결된 신호가
     50건 이상 늘었으면 재학습한다(=매번 하지 않음, 불필요한 재계산/급변 방지).
-    빗썸/업비트 신호가 signal_outcomes.csv 한 파일에 같이 쌓이므로 이 루프도 하나면 된다."""
+    빗썸/업비트 신호가 signal_outcomes.csv 한 파일에 같이 쌓이므로 이 루프도 하나면 된다.
+    [2026-07-19 버그수정] 진행상황 로그가 analyze_and_update_weights() 안에만 있었는데,
+    그 함수 자체가 '이미 300건 넘었을 때만' 호출되는 구조라 300건 채우기 전에는 아무 로그도
+    안 찍히는 문제가 있었다 — 그래서 사용자가 진행상황을 전혀 볼 수 없었다. 이제 매 주기마다
+    무조건 진행상황을 찍는다."""
     last_retrain_count = 0
     while running:
         try:
-            resolve_signal_outcomes()
-            if os.path.exists(SIGNAL_LOG_FILE):
+            newly_resolved = resolve_signal_outcomes()
+            if not os.path.exists(SIGNAL_LOG_FILE):
+                print(f"[자동학습] signal_outcomes.csv 아직 없음 — 진입컷을 넘은 신호가 한 번도 안 났다는 뜻")
+            else:
                 df = _load_signal_log()
+                total_count = len(df)
                 resolved_count = int(df['resolved'].sum()) if 'resolved' in df.columns else 0
+                pending_count = total_count - resolved_count
+                print(f"[자동학습] 전체신호 {total_count}건 (해결 {resolved_count} / 대기 {pending_count}, "
+                      f"이번 주기 신규해결 {newly_resolved}) — 재학습 최소기준 {SIGNAL_MIN_TOTAL}건")
                 if resolved_count >= SIGNAL_MIN_TOTAL and resolved_count - last_retrain_count >= 50:
                     if analyze_and_update_weights() is not None:
                         last_retrain_count = resolved_count
