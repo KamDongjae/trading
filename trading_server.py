@@ -1485,6 +1485,52 @@ def _load_signal_log():
         df['exchange'] = df['exchange'].fillna('bithumb')
     return df
 
+def migrate_signal_log_schema():
+    """
+    [2026-07-19 추가] signal_outcomes.csv의 실제 헤더가 지금 코드의 SIGNAL_LOG_COLS와
+    다르면(예: exchange 컬럼이 나중에 추가됐는데 기존 파일 헤더는 옛날 그대로인 경우)
+    자동으로 재정렬해서 다시 쓴다.
+
+    이게 왜 필요하냐면: log_signal_open()은 파일이 "존재하기만 하면" 헤더를 다시 안 쓴다
+    (file_exists면 writeheader() 생략). 그래서 컬럼 구성이 바뀐 뒤에도 옛날 헤더가 계속
+    남아있는 채로 새 스키마의 값이 추가되면, 헤더는 20개인데 값은 21개인 식으로 밀려서
+    쌓이는 문제가 실제로 발생했다(exchange 컬럼 없던 신호 2건 + 있는 신호 6건이 섞여있었음).
+    서버 시작 시 한 번 호출해서 기존 파일을 항상 지금 스키마로 맞춰둔다.
+    """
+    if not os.path.exists(SIGNAL_LOG_FILE):
+        return
+    try:
+        with open(SIGNAL_LOG_FILE, newline='', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+        if not rows:
+            return
+        header = rows[0]
+        if header == SIGNAL_LOG_COLS:
+            return  # 이미 최신 스키마 — 손댈 필요 없음
+        print(f"⚠️ signal_outcomes.csv 스키마가 예전 버전입니다 — 자동 정렬합니다 "
+              f"(기존 헤더 {len(header)}컬럼 → 현재 {len(SIGNAL_LOG_COLS)}컬럼)")
+        n = len(SIGNAL_LOG_COLS)
+        fixed = []
+        for row in rows[1:]:
+            if len(row) == n:
+                fixed.append(row)  # 이미 새 스키마 순서 — 헤더만 예전 것이었을 뿐
+            elif len(row) == n - 1:
+                # exchange 컬럼이 통째로 없던 구버전 — signal_id/opened_ts 바로 뒤(인덱스 2)에
+                # 'bithumb'을 끼워넣는다(그 시절엔 빗썸밖에 없었으므로).
+                fixed.append(row[:2] + ['bithumb'] + row[2:])
+            else:
+                print(f"  스키마 자동 정렬 실패(알 수 없는 컬럼 수 {len(row)}), 원본 유지: {row[:2]}")
+                fixed.append(row)
+        with _signal_log_lock:
+            with open(SIGNAL_LOG_FILE, 'w', newline='', encoding='utf-8') as f:
+                w = csv.writer(f)
+                w.writerow(SIGNAL_LOG_COLS)
+                w.writerows(fixed)
+        print(f"✅ signal_outcomes.csv 스키마 정렬 완료 ({len(fixed)}행)")
+    except Exception as e:
+        print(f"signal_outcomes.csv 스키마 정렬 실패: {e}")
+
 def log_signal_open(ticker, direction, r, regime, exchange='bithumb'):
     """진입컷을 새로 넘은 신호를 기록한다(결과는 나중에 resolve_signal_outcomes가 채움)."""
     try:
@@ -1688,14 +1734,24 @@ def analyze_and_update_weights():
 def weight_learning_loop():
     """RESOLVE_INTERVAL_SEC(기본 15분)마다 미해결 신호를 해소하고, 새로 해결된 신호가
     50건 이상 늘었으면 재학습한다(=매번 하지 않음, 불필요한 재계산/급변 방지).
-    빗썸/업비트 신호가 signal_outcomes.csv 한 파일에 같이 쌓이므로 이 루프도 하나면 된다."""
+    빗썸/업비트 신호가 signal_outcomes.csv 한 파일에 같이 쌓이므로 이 루프도 하나면 된다.
+    [2026-07-19 버그수정] 진행상황 로그가 analyze_and_update_weights() 안에만 있었는데,
+    그 함수 자체가 '이미 300건 넘었을 때만' 호출되는 구조라 300건 채우기 전에는 아무 로그도
+    안 찍히는 문제가 있었다 — 그래서 사용자가 진행상황을 전혀 볼 수 없었다. 이제 매 주기마다
+    무조건 진행상황을 찍는다."""
     last_retrain_count = 0
     while running:
         try:
-            resolve_signal_outcomes()
-            if os.path.exists(SIGNAL_LOG_FILE):
+            newly_resolved = resolve_signal_outcomes()
+            if not os.path.exists(SIGNAL_LOG_FILE):
+                print(f"[자동학습] signal_outcomes.csv 아직 없음 — 진입컷을 넘은 신호가 한 번도 안 났다는 뜻")
+            else:
                 df = _load_signal_log()
+                total_count = len(df)
                 resolved_count = int(df['resolved'].sum()) if 'resolved' in df.columns else 0
+                pending_count = total_count - resolved_count
+                print(f"[자동학습] 전체신호 {total_count}건 (해결 {resolved_count} / 대기 {pending_count}, "
+                      f"이번 주기 신규해결 {newly_resolved}) — 재학습 최소기준 {SIGNAL_MIN_TOTAL}건")
                 if resolved_count >= SIGNAL_MIN_TOTAL and resolved_count - last_retrain_count >= 50:
                     if analyze_and_update_weights() is not None:
                         last_retrain_count = resolved_count
@@ -3301,6 +3357,7 @@ if __name__ == "__main__":
 
     load_from_csv()
     load_history_csv()
+    migrate_signal_log_schema()
 
     tickers_ref = [[]]
     try:
