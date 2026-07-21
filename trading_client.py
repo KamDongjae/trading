@@ -1757,8 +1757,8 @@ class TradingClient:
                 notional = amount * lev
                 liq = entry_price * (1 - 0.9 / lev) if dir_var.get() == "long" else entry_price * (1 + 0.9 / lev)
                 preview_lbl.config(text=(f"명목가치: ${notional:,.2f}   예상 수수료: ${fee:,.2f}\n"
-                                          f"청산가(격리기준 참고값): ${liq:,.4f}\n"
-                                          f"※ 실제 계좌가 크로스마진이면 다른 포지션 손익에 따라 달라질 수 있음"))
+                                          f"청산가: ${liq:,.4f}\n"
+                                          f"※ 격리마진 기준(포지션별 개별 청산) — 서버 CROSS_MARGIN_MODE 설정에 따름"))
             except Exception:
                 preview_lbl.config(text="값을 정확히 입력하면 미리보기가 표시됩니다.")
 
@@ -1931,7 +1931,8 @@ class TradingClient:
                         "고정 코인은 [코인명]으로 표시되고 항상 맨 위."),
             ("포지션 패널", "화면 하단 검은 패널. 한 번에 최대 2개 표시, 나머지는 위아래 드래그로 스크롤. "
                           "카드 탭 → 티커 자동 입력, Close 버튼 → 즉시 청산, "
-                          "청산가는 증거금 소진 지점(진입가 ∓ 진입가/배율)."),
+                          "청산가는 증거금 90% 소진 지점(진입가 × (1∓0.9/배율)) — [2026-07-21] 기본이 "
+                          "격리마진(CROSS_MARGIN_MODE=False)으로 바뀌어서 포지션별로 이 지점에서 개별 청산됨."),
         ]
         for title, desc in helps:
             t = tk.Label(inner, text=f"■ {title}", font=("Arial", fs, "bold"), anchor="w", fg="#1a5fb4")
