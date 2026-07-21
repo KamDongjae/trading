@@ -164,13 +164,13 @@ def read_account_snapshot():
     except Exception:
         return None
 
-def send_command(action, ticker='', amount=0, leverage=0, position_type='', exchange='bithumb'):
+def send_command(action, ticker='', amount=0, leverage=0, position_type='', exchange='bithumb', entry_price=0):
     cmd_id = f"{int(time.time()*1000)}_{random.randint(1000, 9999)}"
     fname = f"cmd_{cmd_id}.csv"
     tmp = os.path.join(CMD_DIR, "." + fname)
     final = os.path.join(CMD_DIR, fname)
     with open(tmp, 'w', newline='', encoding='utf-8') as f:
-        csv.writer(f).writerow([cmd_id, action, ticker, amount, leverage, position_type, exchange])
+        csv.writer(f).writerow([cmd_id, action, ticker, amount, leverage, position_type, exchange, entry_price])
     os.replace(tmp, final)
     return cmd_id
 
@@ -326,6 +326,7 @@ class TradingClient:
             ("숏 진입", "#dd3333", lambda e: self.open_position("short")),
             ("청산", "#555555", lambda e: self.close_position()),
             ("차트", "#3a6ea5", lambda e: self.open_chart_for_entry()),
+            ("빠른입력", "#7a4aa0", lambda e: self.open_quick_entry_dialog()),
             ("기록 보기", "#eeeeee", lambda e: self.show_history()),
         ]:
             btn = tk.Label(btn_frame, text=text, bg=color, fg="white" if color != "#eeeeee" else "black",
@@ -1284,10 +1285,10 @@ class TradingClient:
         if self._last_render_data:
             self._render_table(self._last_render_data)
 
-    def _send_and_wait(self, action, ticker='', amount=0, leverage=0, position_type='', label='', exchange=None):
+    def _send_and_wait(self, action, ticker='', amount=0, leverage=0, position_type='', label='', exchange=None, entry_price=0):
         try:
             cmd_id = send_command(action, ticker, amount, leverage, position_type,
-                                   exchange=exchange or self.current_exchange)
+                                   exchange=exchange or self.current_exchange, entry_price=entry_price)
         except Exception as e:
             messagebox.showerror("오류", f"명령 전송 실패: {e}")
             return
@@ -1308,12 +1309,12 @@ class TradingClient:
         self.root.after(500, lambda: self._wait_result(cmd_id, label, tries - 1))
 
     def _send_and_wait_callback(self, action, on_success, ticker='', amount=0, leverage=0,
-                                 position_type='', label='', tries=16, exchange=None):
+                                 position_type='', label='', tries=16, exchange=None, entry_price=0):
         """_send_and_wait과 달리 성공 시 팝업 대신 on_success(msg) 콜백을 호출한다
         (차트 팝업처럼, 응답 메시지 안의 데이터를 더 써먹어야 할 때 씀)."""
         try:
             cmd_id = send_command(action, ticker, amount, leverage, position_type,
-                                   exchange=exchange or self.current_exchange)
+                                   exchange=exchange or self.current_exchange, entry_price=entry_price)
         except Exception as e:
             messagebox.showerror("오류", f"명령 전송 실패: {e}")
             return
@@ -1703,6 +1704,97 @@ class TradingClient:
             messagebox.showwarning("경고", "티커를 입력하세요.")
             return
         self.show_chart_popup(ticker)
+
+    def open_quick_entry_dialog(self):
+        """[2026-07-21 추가] 빠른 입력 — 실제 거래소(바이낸스 등)에서 이미 체결한 포지션을
+        페이퍼 계좌에 그대로 옮겨 등록한다. 코인/방향/레버리지/진입가/투입금액을 입력하면
+        수수료·청산가를 미리 계산해서 보여주고, 등록을 누르면 그 진입가 그대로(라이브
+        시세 무관) 서버에 포지션이 생성된다(서버 srv_open_manual 참고)."""
+        win = tk.Toplevel(self.root)
+        win.title("빠른 입력 — 포지션 직접 등록")
+        win.geometry("420x460")
+
+        tk.Label(win, text="실제로 체결된 포지션을 그대로 옮겨 등록합니다\n(진입가를 직접 지정 — 라이브 시세와 무관)",
+                 font=("Arial", 10), fg="#555555", justify="left").pack(pady=(10, 6), padx=14, anchor="w")
+
+        form = tk.Frame(win)
+        form.pack(fill="x", padx=14, pady=4)
+
+        def add_row(label_text, default=""):
+            row = tk.Frame(form)
+            row.pack(fill="x", pady=4)
+            tk.Label(row, text=label_text, width=9, anchor="w", font=("Arial", 11)).pack(side="left")
+            ent = tk.Entry(row, font=("Arial", 12))
+            ent.insert(0, default)
+            ent.pack(side="left", fill="x", expand=True)
+            return ent
+
+        ticker_entry = add_row("코인", self.ticker_entry.get().strip().upper())
+
+        dir_var = tk.StringVar(value="long")
+        dir_row = tk.Frame(form)
+        dir_row.pack(fill="x", pady=4)
+        tk.Label(dir_row, text="방향", width=9, anchor="w", font=("Arial", 11)).pack(side="left")
+        tk.Radiobutton(dir_row, text="롱", variable=dir_var, value="long", font=("Arial", 11)).pack(side="left")
+        tk.Radiobutton(dir_row, text="숏", variable=dir_var, value="short", font=("Arial", 11)).pack(side="left")
+
+        lev_entry = add_row("레버리지", "10")
+        entry_price_entry = add_row("진입가")
+        amount_entry = add_row("투입금액($)")
+
+        preview_lbl = tk.Label(win, text="값을 입력하면 수수료·청산가 미리보기가 표시됩니다.",
+                                font=("Arial", 10), fg="#1a4a7a", justify="left", anchor="w")
+        preview_lbl.pack(fill="x", padx=14, pady=(10, 4))
+
+        def update_preview(*_):
+            try:
+                entry_price = float(entry_price_entry.get())
+                amount = float(amount_entry.get())
+                lev = float(lev_entry.get() or 10)
+                if entry_price <= 0 or amount <= 0 or lev <= 0:
+                    raise ValueError
+                fee = amount * lev * 0.0004  # FEE_RATE — 서버 상수와 동일 값
+                notional = amount * lev
+                liq = entry_price * (1 - 0.9 / lev) if dir_var.get() == "long" else entry_price * (1 + 0.9 / lev)
+                preview_lbl.config(text=(f"명목가치: ${notional:,.2f}   예상 수수료: ${fee:,.2f}\n"
+                                          f"청산가(격리기준 참고값): ${liq:,.4f}\n"
+                                          f"※ 실제 계좌가 크로스마진이면 다른 포지션 손익에 따라 달라질 수 있음"))
+            except Exception:
+                preview_lbl.config(text="값을 정확히 입력하면 미리보기가 표시됩니다.")
+
+        for e in (lev_entry, entry_price_entry, amount_entry):
+            e.bind("<KeyRelease>", update_preview)
+        dir_var.trace_add("write", lambda *a: update_preview())
+
+        def submit():
+            ticker = ticker_entry.get().strip().upper()
+            if not ticker:
+                messagebox.showwarning("경고", "코인을 입력하세요.", parent=win)
+                return
+            try:
+                entry_price = float(entry_price_entry.get())
+                amount = float(amount_entry.get())
+                lev = int(float(lev_entry.get() or 10))
+                if entry_price <= 0 or amount <= 0 or lev <= 0:
+                    raise ValueError
+            except Exception:
+                messagebox.showwarning("경고", "레버리지/진입가/투입금액을 정확히 입력하세요.", parent=win)
+                return
+
+            def on_success(msg):
+                messagebox.showinfo("등록 완료", msg)
+                if win.winfo_exists():
+                    win.destroy()
+
+            self._send_and_wait_callback('open_manual', on_success, ticker=ticker, amount=amount,
+                                          leverage=lev, position_type=dir_var.get(), entry_price=entry_price,
+                                          label="빠른입력 등록")
+
+        btn_row = tk.Frame(win)
+        btn_row.pack(fill="x", padx=14, pady=14)
+        tk.Button(btn_row, text="취소", command=win.destroy, font=("Arial", 11), padx=20, pady=8).pack(side="left", padx=6)
+        tk.Button(btn_row, text="등록", command=submit, bg="#7a4aa0", fg="white",
+                  font=("Arial", 11, "bold"), padx=20, pady=8).pack(side="left", padx=6)
 
     def close_ticker(self, ticker):
         if not messagebox.askyesno("청산 확인", f"{ticker} 포지션을 청산하시겠습니까?"):

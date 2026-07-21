@@ -3162,6 +3162,104 @@ def srv_open(ticker, position_type, amount_won, leverage, exchange='bithumb'):
     pfmt = f"{fill_price:,.2f}" if fill_price >= 1 else f"{fill_price:,.4f}"
     return True, f"{ticker} {direction} 진입 @ ${pfmt}"
 
+def _calc_liq_price_preview(entry_price, leverage, position_type):
+    """
+    [2026-07-21 추가] 격리마진 기준(배정 증거금의 90% 소진 시점) 청산가 미리보기.
+    _check_isolated_liquidation()의 실제 청산 조건(pnl <= -amt*0.9)을 역산한 것과 동일한
+    공식이라 화면에 보여주는 값과 실제 청산 로직이 항상 일치한다.
+    CROSS_MARGIN_MODE(기본 켜짐)에서는 실제 청산 시점이 계좌 전체 상황(다른 포지션 손익
+    포함)에 따라 달라지므로, 이 값은 "이 포지션 하나만 격리했을 때"의 참고용 근사치다.
+    """
+    try:
+        if entry_price <= 0 or leverage <= 0:
+            return 0.0
+        LIQ_RATIO = 0.9
+        if position_type == 'long':
+            return entry_price * (1 - LIQ_RATIO / leverage)
+        else:
+            return entry_price * (1 + LIQ_RATIO / leverage)
+    except Exception:
+        return 0.0
+
+def srv_open_manual(ticker, position_type, entry_price, amount_won, leverage, exchange='bithumb'):
+    """
+    [2026-07-21 추가] "빠른 입력" — 실제 거래소(바이낸스 등)에서 이미 체결한 포지션을
+    페이퍼 계좌에 똑같이 옮겨 등록하고 싶을 때 쓴다. srv_open과 로직은 거의 동일하지만
+    딱 하나 다르다: 진입가를 그 순간 라이브 시세에서 가져오는 게 아니라 사용자가 입력한
+    값을 그대로 쓴다(이미 실제로 체결된 가격이므로 슬리피지도 적용 안 함). 수수료 계산·
+    유지증거금 안전장치·물타기 시 가중평균 로직은 srv_open과 완전히 동일하게 적용해서
+    회계가 서로 안 어긋나게 한다.
+    """
+    global balance
+    if not ticker: return False, "티커 없음"
+    existing = positions.get(ticker)
+    if existing and existing.get('position_type') != position_type:
+        return False, "반대 방향 포지션이 이미 있습니다 (먼저 청산 후 진입하세요)"
+    if amount_won <= 0: return False, "투입금액이 올바르지 않습니다"
+    if entry_price <= 0: return False, "진입가가 올바르지 않습니다"
+    if leverage <= 0: leverage = DEFAULT_LEVERAGE
+    entry_fee = (amount_won * leverage) * FEE_RATE
+    total_cost = amount_won + entry_fee
+    if balance < total_cost:
+        return False, f"잔고 부족 (현재 ${balance:,.2f}, 필요 ${total_cost:,.2f} — 증거금 ${amount_won:,.2f}+수수료 ${entry_fee:,.2f})"
+    if CROSS_MARGIN_MODE:
+        existing_notional = sum(p.get('amount', 0) * p.get('leverage', 1) for p in positions.values())
+        new_notional = amount_won * leverage
+        required = (existing_notional + new_notional) * CROSS_MARGIN_MAINTENANCE_RATIO
+        free_after = balance - total_cost
+        if free_after < required:
+            return False, (f"진입 직후 청산 위험 — 여유현금 ${free_after:,.2f}이 유지증거금 ${required:,.2f}보다 적습니다 "
+                            f"(명목가치 ${new_notional:,.2f}, 유지증거금 {CROSS_MARGIN_MAINTENANCE_RATIO*100:.1f}%). "
+                            f"증거금을 늘리거나 레버리지를 낮추세요.")
+    fill_price = entry_price  # 라이브 시세 대신 사용자가 준 실제 체결가 그대로 사용
+    balance -= total_cost
+    if balance < 0: balance = 0
+    snap = score_cache.get(ticker, {}) if exchange != 'upbit' else score_cache_upbit.get(ticker, {})
+    if position_type == "long":
+        entry_score = max(snap.get('long_score', 0), snap.get('prepump_score', 0))
+    else:
+        entry_score = max(snap.get('short_score', 0), snap.get('preshort_score', 0))
+    direction = "롱" if position_type == "long" else "숏"
+
+    if existing:
+        old_notional = existing['amount'] * existing['leverage']
+        add_notional = amount_won * leverage
+        combined_notional = old_notional + add_notional
+        combined_amount = existing['amount'] + amount_won
+        weighted_entry = (existing['entry_price'] * old_notional + fill_price * add_notional) / combined_notional
+        combined_leverage = max(1, round(combined_notional / combined_amount))
+        positions[ticker] = {
+            "entry_price": weighted_entry, "amount": combined_amount, "leverage": combined_leverage,
+            "position_type": position_type, "entry_time": existing.get('entry_time', datetime.now()),
+            "entry_fee": existing.get('entry_fee', 0) + entry_fee,
+            "entry_score": existing.get('entry_score', entry_score),
+        }
+        liq = _calc_liq_price_preview(weighted_entry, combined_leverage, position_type)
+        trade_history.append({'type': '추가진입(수동)', 'ticker': ticker, 'direction': direction,
+                              'amount': amount_won, 'leverage': leverage, 'entry_price': fill_price,
+                              'exit_price': 0, 'pnl': 0, 'pnl_rate_pct': 0,
+                              'entry_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'exit_time': ''})
+        save_to_csv()
+        pfmt = f"{weighted_entry:,.4f}"
+        return True, (f"{ticker} {direction} 추가진입(수동) @ ${fill_price:,.4f} "
+                      f"(평균단가 ${pfmt}, 합계 ${combined_amount:,.2f}/{combined_leverage}x, "
+                      f"수수료 ${entry_fee:,.2f}, 청산가(격리기준) ${liq:,.4f})")
+
+    positions[ticker] = {
+        "entry_price": fill_price, "amount": amount_won, "leverage": leverage,
+        "position_type": position_type, "entry_time": datetime.now(), "entry_fee": entry_fee,
+        "entry_score": entry_score,
+    }
+    liq = _calc_liq_price_preview(fill_price, leverage, position_type)
+    trade_history.append({'type': '진입(수동)', 'ticker': ticker, 'direction': direction,
+                          'amount': amount_won, 'leverage': leverage, 'entry_price': fill_price,
+                          'exit_price': 0, 'pnl': 0, 'pnl_rate_pct': 0,
+                          'entry_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'exit_time': ''})
+    save_to_csv()
+    pfmt = f"{fill_price:,.4f}"
+    return True, (f"{ticker} {direction} 진입(수동) @ ${pfmt} "
+                  f"(증거금 ${amount_won:,.2f}, 수수료 ${entry_fee:,.2f}, 청산가(격리기준) ${liq:,.4f})")
+
 def srv_close(ticker):
     global balance
     if ticker not in positions:
@@ -3375,8 +3473,9 @@ def _check_isolated_liquidation():
 
 def process_commands():
     """server_cmds/ 폴더의 명령 파일을 처리하고 삭제한다.
-    명령 형식(1행): cmd_id,action,ticker,amount_won,leverage,position_type,exchange
-    (exchange는 [2026-07-19 추가] — 없는(구버전) 명령 파일은 'bithumb'으로 취급해 하위호환.)"""
+    명령 형식(1행): cmd_id,action,ticker,amount_won,leverage,position_type,exchange,entry_price
+    (exchange는 [2026-07-19 추가], entry_price는 [2026-07-21 추가, open_manual 전용] —
+    둘 다 없는(구버전) 명령 파일은 각각 'bithumb'/0으로 취급해 하위호환.)"""
     try:
         files = sorted(os.listdir(CMD_DIR))
     except Exception:
@@ -3399,6 +3498,7 @@ def process_commands():
             exchange = (row[6].strip().lower() if len(row) > 6 and row[6] else 'bithumb')
             if exchange not in ('bithumb', 'upbit'):
                 exchange = 'bithumb'
+            entry_price = float(row[7]) if len(row) > 7 and row[7] else 0.0
             if action == 'charge':
                 ok, msg = srv_charge(amount)
             elif action == 'withdraw':
@@ -3409,6 +3509,8 @@ def process_commands():
                 ok, msg = srv_bank_withdraw(amount)
             elif action == 'open':
                 ok, msg = srv_open(ticker, ptype, amount, lev, exchange=exchange)
+            elif action == 'open_manual':
+                ok, msg = srv_open_manual(ticker, ptype, entry_price, amount, lev, exchange=exchange)
             elif action == 'close':
                 ok, msg = srv_close(ticker)
             elif action == 'close_all':

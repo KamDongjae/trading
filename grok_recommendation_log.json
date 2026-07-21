@@ -6,6 +6,42 @@
     "entry_price": 323300.0,
     "confidence": 0.458,
     "regime": "STRONG_DOWNTREND",
+    "status": "won",
+    "exit_price": 314200.0,
+    "pnl_pct": 2.815,
+    "evaluated_at": "2026-07-20T10:28:46.312040"
+  },
+  {
+    "timestamp": "2026-07-20T10:32:10.614007",
+    "ticker": "LINK",
+    "side": "long",
+    "entry_price": 12460.0,
+    "confidence": 0.523,
+    "regime": "STRONG_UPTREND",
+    "status": "won",
+    "exit_price": 12620.0,
+    "pnl_pct": 1.284,
+    "evaluated_at": "2026-07-21T03:14:45.944118"
+  },
+  {
+    "timestamp": "2026-07-20T10:32:10.614007",
+    "ticker": "ETH",
+    "side": "long",
+    "entry_price": 2765000.0,
+    "confidence": 0.423,
+    "regime": "STRONG_UPTREND",
+    "status": "won",
+    "exit_price": 2795000.0,
+    "pnl_pct": 1.085,
+    "evaluated_at": "2026-07-21T03:14:45.944118"
+  },
+  {
+    "timestamp": "2026-07-21T03:23:43.502624",
+    "ticker": "BTC",
+    "side": "long",
+    "entry_price": 95916000.0,
+    "confidence": 0.423,
+    "regime": "UPTREND",
     "status": "pending"
   }
 ]
