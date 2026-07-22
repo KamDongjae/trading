@@ -4,11 +4,15 @@
 - 포지션 개수 많아도 짤리지 않도록 높이 크게 조정
 """
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox, simpledialog, colorchooser
 import os
 import csv
+import json
+import re
 import time
 import random
+import requests
+import threading
 from collections import deque
 
 # ============================================================
@@ -42,6 +46,103 @@ ACCOUNT_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_account.csv")
 CMD_DIR = os.path.join(SCRIPT_DIR, "server_cmds")
 RESULTS_FILE = os.path.join(SCRIPT_DIR, "server_results.csv")
 HISTORY_FILE = os.path.join(SCRIPT_DIR, "trade_history_usd.csv")  # 서버가 실제로 쓰는 파일명과 일치시킴(기존엔 이름이 달라서 청산기록이 항상 비어 보였음)
+CUSTOM_CONDITIONS_FILE = os.path.join(SCRIPT_DIR, "custom_conditions.json")  # [2026-07-21 추가] 사용자 정의 조건식 저장
+
+
+def _load_discord_webhook_client():
+    """서버/data_collector.py와 동일한 규약 — 같은 폴더의 DISCORD_WEBHOOK.txt를 읽는다.
+    커스텀 조건식 알림 전송용(클라이언트가 직접 보냄, 서버를 거치지 않음)."""
+    path = os.path.join(SCRIPT_DIR, "DISCORD_WEBHOOK.txt")
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                url = f.read().strip()
+            if url:
+                return url
+    except Exception:
+        pass
+    return None
+
+
+DISCORD_WEBHOOK_URL_CLIENT = _load_discord_webhook_client()
+
+# ============================================================
+# [2026-07-21 추가] 사용자 정의 조건식(커스텀 알림) — C언어 스타일(&&, ||, !, ==, !=, <, >)
+# 조건식을 등록하면 매 폴링마다 전 코인에 대해 평가해서, 맞는 코인은 지정한 색으로
+# 카드가 칠해지고(선택 시) 디스코드 알림도 별도로 뜬다. 서버는 전혀 안 건드리고 클라이언트가
+# 이미 갖고 있는 지표값(server_market.csv에서 읽은 값)만으로 전부 처리한다.
+# ============================================================
+CONDITION_INDICATORS = [
+    ("rsi", "RSI"), ("rsi_delta", "RSI델타"), ("vol_z", "VolZ"), ("bb_percent", "BB%"),
+    ("price", "가격(원)"), ("price_usd", "가격(USD)"), ("chg_24h", "24h변동%"),
+    ("cvd", "CVD"), ("cvd_diff", "CVD변화"), ("funding", "펀딩"), ("vol_24h_m", "24h거래대금"),
+    ("atr_pct", "ATR%"), ("oi_change_pct", "OI변화%"), ("chg_30m", "30분변동%"),
+    ("ls_ratio", "L/S비율"), ("ema20", "EMA20"), ("ema60", "EMA60"),
+    ("long_score", "롱점수"), ("short_score", "숏점수"),
+    ("prepump_score", "매집점수"), ("preshort_score", "분산점수"),
+]
+_CONDITION_ALLOWED_NAMES = {name for name, _ in CONDITION_INDICATORS} | {"and", "or", "not", "True", "False"}
+_CONDITION_CHAR_PATTERN = re.compile(r'^[a-zA-Z0-9_\s\.\+\-\*/()<>=!&|,]*$')
+_CONDITION_TOKEN_PATTERN = re.compile(r'[a-zA-Z_][a-zA-Z0-9_]*')
+
+
+def translate_condition_expr(expr):
+    """C스타일(&&, ||, !) 연산자를 파이썬 eval이 이해하는 형태(and, or, not)로 바꾼다.
+    비교연산자(==, !=, <, >, <=, >=)는 파이썬과 동일해서 그대로 둔다."""
+    out = expr.replace('&&', ' and ').replace('||', ' or ')
+    out = re.sub(r'!(?!=)', ' not ', out)
+    return out.strip()  # 맨 앞이 "!"였으면 앞에 공백이 붙어서 compile()이 들여쓰기 에러를 냄 — strip으로 방지
+
+
+def validate_condition_expr(expr):
+    """eval하기 전에 위험하거나 알 수 없는 문자/식별자가 없는지 검사한다.
+    허용 문자 화이트리스트 + 식별자는 CONDITION_INDICATORS에 있는 것만 통과.
+    반환: (통과여부, 에러메시지)"""
+    if not expr or not expr.strip():
+        return False, "조건식이 비어있습니다"
+    if not _CONDITION_CHAR_PATTERN.match(expr):
+        return False, "허용되지 않는 문자가 포함되어 있습니다"
+    for tok in _CONDITION_TOKEN_PATTERN.findall(expr):
+        if tok not in _CONDITION_ALLOWED_NAMES:
+            return False, f"알 수 없는 지표명: {tok}"
+    try:
+        translated = translate_condition_expr(expr)
+        compile(translated, "<condition>", "eval")
+    except SyntaxError as e:
+        return False, f"문법 오류: {e}"
+    return True, ""
+
+
+def evaluate_condition(expr, row):
+    """row(티커별 지표 dict)를 넣고 조건식을 평가한다. 값이 없거나(None) 계산 중
+    에러가 나면 안전하게 False로 처리한다(알림/색칠 안 됨 — 매칭 안 된 것으로 취급)."""
+    try:
+        translated = translate_condition_expr(expr)
+        env = {name: row.get(name) for name, _ in CONDITION_INDICATORS}
+        env = {k: (v if v is not None else 0) for k, v in env.items()}
+        return bool(eval(translated, {"__builtins__": {}}, env))
+    except Exception:
+        return False
+
+
+def load_custom_conditions():
+    try:
+        if os.path.exists(CUSTOM_CONDITIONS_FILE):
+            with open(CUSTOM_CONDITIONS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"커스텀 조건식 로드 실패: {e}")
+    return []
+
+
+def save_custom_conditions(conditions):
+    try:
+        with open(CUSTOM_CONDITIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(conditions, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"커스텀 조건식 저장 실패: {e}")
+
+
 os.makedirs(CMD_DIR, exist_ok=True)
 
 current_min_score = FALLBACK_MIN_SCORE
@@ -224,6 +325,8 @@ class TradingClient:
         self.history_win = None
         self.pinned_tickers = set()
         self.current_exchange = 'bithumb'  # 코인탭 빗썸/업비트 토글 — open/close/차트 명령에도 그대로 씀
+        self.custom_conditions = load_custom_conditions()  # [2026-07-21] 사용자 정의 조건식 목록
+        self._custom_alert_cooldown = {}  # (조건id, 티커) -> 마지막 알림 보낸 시각(초)
         self._last_render_data = []
         self._tap_state = {"last_time": 0.0, "last_ticker": None}
         self.DOUBLE_TAP_MS = 450
@@ -406,6 +509,10 @@ class TradingClient:
             b.bind("<ButtonRelease-1>", lambda e, ex_=ex: self.set_exchange(ex_))
             self._exchange_btn_widgets[ex] = b
         self._highlight_exchange_buttons()
+        tk.Label(exchange_bar, text="  ").pack(side="left")
+        tk.Button(exchange_bar, text="조건식", font=("Arial", self.FONT_SMALL, "bold"),
+                  bg="#3a7a5a", fg="white", padx=8, pady=2,
+                  command=self.open_custom_condition_dialog).pack(side="left", padx=2)
 
         # 타임프레임(계산 기준 캔들) 전환 버튼 — 테이블 바로 위
         tf_bar = tk.Frame(self.root)
@@ -1124,6 +1231,31 @@ class TradingClient:
             widget.config(**changed)
             cache.update(changed)
 
+    def _maybe_send_custom_condition_alert(self, cond, ticker, row):
+        """조건식 알림 — 같은 조건+티커는 300초 쿨다운(서버 알림 스팸방지 로직과 동일 관례).
+        클라이언트가 직접 디스코드로 보낸다(서버 안 거침, DISCORD_WEBHOOK.txt 재사용)."""
+        if not DISCORD_WEBHOOK_URL_CLIENT:
+            return
+        key = (cond["id"], ticker)
+        now = time.time()
+        last = self._custom_alert_cooldown.get(key, 0)
+        if now - last < 300:
+            return
+        self._custom_alert_cooldown[key] = now
+
+        def _fire():
+            try:
+                sent_at = time.strftime('%Y-%m-%d %H:%M:%S')
+                content = (f"🔔 **커스텀 조건식** [{self.current_exchange}] **{ticker}**\n"
+                           f"`{cond['expr']}`\n"
+                           f"RSI {row.get('rsi')} BB% {row.get('bb_percent')} VolZ {row.get('vol_z')} "
+                           f"롱{row.get('long_score')} 숏{row.get('short_score')}\n🕐 {sent_at}")
+                requests.post(DISCORD_WEBHOOK_URL_CLIENT, json={"content": content}, timeout=8)
+            except Exception as e:
+                print(f"커스텀 조건식 알림 전송 실패: {e}")
+
+        threading.Thread(target=_fire, daemon=True).start()
+
     def _render_table(self, data_list):
         try:
             self._last_render_data = data_list
@@ -1167,6 +1299,16 @@ class TradingClient:
                     bg = "#f2e070"   # 진노랑: 진입 컷엔 못 미치지만 "관심" 구간(65점대)
                 else:
                     bg = "white"
+                # [2026-07-21 추가] 커스텀 조건식 평가 — 매칭되면 그 조건의 색으로 덮어씀
+                # (등록 순서상 먼저 매칭된 조건이 우선), 알림 체크돼있으면 쿨다운 걸고 디스코드 전송.
+                for cond in self.custom_conditions:
+                    if not cond.get("enabled", True):
+                        continue
+                    if evaluate_condition(cond["expr"], row):
+                        bg = cond["color"]
+                        if cond.get("alert"):
+                            self._maybe_send_custom_condition_alert(cond, ticker, row)
+                        break
                 display_ticker = f"[{ticker}]" if ticker in self.pinned_tickers else ticker
                 line1 = f"{display_ticker}  {chg24h_str} ({krw_str})  {usd_str}  롱{ls} 숏{ss}  매집{pp} 분산{ps}"
                 lsr = row.get('ls_ratio')
@@ -1697,6 +1839,121 @@ class TradingClient:
             return
         self._send_and_wait('close', ticker=ticker, label="청산")
 
+    def open_custom_condition_dialog(self):
+        """[2026-07-21 추가] 사용자 정의 조건식(커스텀 알림) 관리 창. C스타일(&&, ||, !)
+        조건식을 등록하면 매 폴링마다 전 코인에 대해 평가해서, 맞는 코인은 지정한 색으로
+        카드가 칠해지고(항상) 디스코드 알림도 뜬다(알림여부 체크 시). 서버는 안 건드리고
+        클라이언트가 이미 읽고 있는 지표값만으로 전부 처리한다(_render_table에서 평가)."""
+        win = tk.Toplevel(self.root)
+        win.title("커스텀 조건식")
+        win.geometry("480x620")
+
+        self._cond_color = "#ffcc00"
+
+        top = tk.Frame(win)
+        top.pack(fill="x", padx=10, pady=(10, 4))
+
+        color_btn = tk.Button(top, width=3, bg=self._cond_color)
+        def pick_color():
+            c = colorchooser.askcolor(color=self._cond_color, parent=win, title="조건 색상 선택")
+            if c and c[1]:
+                self._cond_color = c[1]
+                color_btn.config(bg=self._cond_color)
+        color_btn.config(command=pick_color)
+        color_btn.pack(side="left", padx=(0, 6))
+
+        expr_entry = tk.Entry(top, font=("Consolas", 11))
+        expr_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        def register():
+            expr = expr_entry.get().strip()
+            ok, err = validate_condition_expr(expr)
+            if not ok:
+                messagebox.showwarning("조건식 오류", err, parent=win)
+                return
+            cond = {"id": f"c{int(time.time()*1000)}", "expr": expr, "color": self._cond_color,
+                     "enabled": True, "alert": False}
+            self.custom_conditions.append(cond)
+            save_custom_conditions(self.custom_conditions)
+            expr_entry.delete(0, tk.END)
+            refresh_list()
+
+        tk.Button(top, text="등록", command=register, bg="#3a7a5a", fg="white",
+                  font=("Arial", 10, "bold"), padx=10).pack(side="left")
+
+        tk.Label(win, text="지표 버튼을 누르면 조건식 입력칸에 삽입됩니다. "
+                            "연산자는 직접 타이핑: && || ! == != < > <= >= ( )",
+                 font=("Arial", 9), fg="#666666", justify="left", wraplength=450, anchor="w").pack(
+            fill="x", padx=10, pady=(0, 6))
+
+        grid = tk.Frame(win)
+        grid.pack(fill="x", padx=10)
+        cols = 3
+        for i, (name, label) in enumerate(CONDITION_INDICATORS):
+            r, c = divmod(i, cols)
+            b = tk.Button(grid, text=label, font=("Arial", 9), padx=4, pady=2,
+                          command=lambda n=name: expr_entry.insert(tk.INSERT, n))
+            b.grid(row=r, column=c, sticky="ew", padx=2, pady=2)
+        for c in range(cols):
+            grid.grid_columnconfigure(c, weight=1)
+
+        tk.Label(win, text="등록된 조건식", font=("Arial", 11, "bold")).pack(
+            anchor="w", padx=10, pady=(12, 2))
+
+        list_canvas = tk.Canvas(win, highlightthickness=0)
+        list_vsb = ttk.Scrollbar(win, orient="vertical", command=list_canvas.yview)
+        list_canvas.configure(yscrollcommand=list_vsb.set)
+        list_vsb.pack(side="right", fill="y")
+        list_canvas.pack(side="top", fill="both", expand=True, padx=(10, 0), pady=(0, 10))
+        list_inner = tk.Frame(list_canvas)
+        win_id = list_canvas.create_window((0, 0), window=list_inner, anchor="nw")
+        list_inner.bind("<Configure>", lambda e: list_canvas.configure(scrollregion=list_canvas.bbox("all")))
+        list_canvas.bind("<Configure>", lambda e: list_canvas.itemconfig(win_id, width=e.width))
+
+        def refresh_list():
+            for w in list_inner.winfo_children():
+                w.destroy()
+            if not self.custom_conditions:
+                tk.Label(list_inner, text="등록된 조건식이 없습니다.", fg="#888888",
+                         font=("Arial", 10)).pack(pady=10)
+                return
+            for idx, cond in enumerate(self.custom_conditions):
+                row = tk.Frame(list_inner, bd=1, relief="solid", bg="#f7f7f7")
+                row.pack(fill="x", pady=3, padx=2)
+                swatch = tk.Label(row, text="  ", bg=cond["color"], width=2)
+                swatch.pack(side="left", padx=4, pady=4)
+                tk.Label(row, text=f"#{idx+1} {cond['expr']}", font=("Consolas", 9),
+                         bg="#f7f7f7", anchor="w", wraplength=250, justify="left").pack(
+                    side="left", fill="x", expand=True, padx=4)
+
+                en_var = tk.BooleanVar(value=cond.get("enabled", True))
+                al_var = tk.BooleanVar(value=cond.get("alert", False))
+
+                def on_toggle_enabled(c=cond, v=en_var):
+                    c["enabled"] = v.get()
+                    save_custom_conditions(self.custom_conditions)
+
+                def on_toggle_alert(c=cond, v=al_var):
+                    c["alert"] = v.get()
+                    save_custom_conditions(self.custom_conditions)
+
+                tk.Checkbutton(row, text="사용", variable=en_var, bg="#f7f7f7",
+                               command=on_toggle_enabled, font=("Arial", 9)).pack(side="left")
+                tk.Checkbutton(row, text="알림", variable=al_var, bg="#f7f7f7",
+                               command=on_toggle_alert, font=("Arial", 9)).pack(side="left")
+
+                def on_delete(c=cond):
+                    if not messagebox.askyesno("삭제 확인", f"조건식을 삭제할까요?\n{c['expr']}", parent=win):
+                        return
+                    self.custom_conditions.remove(c)
+                    save_custom_conditions(self.custom_conditions)
+                    refresh_list()
+
+                tk.Button(row, text="삭제", command=on_delete, fg="white", bg="#cc4444",
+                          font=("Arial", 9), padx=6).pack(side="left", padx=4)
+
+        refresh_list()
+
     def open_chart_for_entry(self):
         """티커 입력칸에 있는 코인의 차트를 띄운다 — 포지션 카드 클릭 시 뜨는 것과 동일한 팝업."""
         ticker = self.ticker_entry.get().strip().upper()
@@ -1884,25 +2141,25 @@ class TradingClient:
             ("L/S", "바이낸스 전체 계정 롱/숏 비율. 표시용이며 현재 어떤 점수 계산에도 반영되지 않습니다 "
                     "(롱/숏 Score, 매집/분산 점수 모두 미사용 — 참고 지표로만 보세요)."),
             ("Fund", "펀딩레이트(%). +면 롱 과열, -면 숏 과열. 표시용이며 어떤 점수에도 미반영."),
-            ("롱/숏 Score", f"105점 만점(v3, 추세추종형): EMA삼중(20/60/120) 20 + 가격위치(RSI+BB% 결합) 20 "
-                          f"+ CVD 15 + OI 15(롱은 0 고정) + VolZ 15 + 멀티TF모멘텀 15 + ATR/거래대금 유동성필터 5 "
-                          f"→ /105×100 환산. L/S·Funding은 노이즈 유발로 계속 제외. "
-                          f"EMA 기울기 반영(2026-07-19): 정배열이어도 EMA20 기울기가 뚜렷해야 만점(20), "
-                          f"기울기 미미하면 16, 부분정배열 12, 그 외 낮게(단순 '정배열=거의 만점' 문제 완화). "
-                          f"RSI 반전가드(2026-07-19): 가격위치 만점 구간이라도 RSI가 이미 반대로 "
-                          f"꺾이는 중이면 그 구간 점수를 깎습니다(THETA/ZIL 실사례로 발견). "
-                          f"RSI 극단값 페널티(2026-07-19): RSI 80↑(롱)/20↓(숏)이면 추가로 -5점. "
-                          f"추세소진 페널티(2026-07-19): 직전 10개 캔들 동안 가격이 이미 크게 움직였으면 "
-                          f"(롱 +10%↑, 숏 -10%↓ 등) 최대 -15점 감점 — 이미 추세가 끝나가는 뒤늦은 진입을 막기 "
-                          f"위한 장치인데 계산식에 안 들어가 있던 걸 발견해서 추가함(QTUM이 직전 1시간 "
-                          f"+9% 급등 직후 진입컷을 넘긴 실사례로 발견). "
-                          f"과열 상한 캡: 7개 항목 중 5개 이상이 90%+ 만점이면 최종점수를 45점으로 "
-                          f"강제 제한(전 항목 동시과열=반전 직전 패턴 확인됨). "
-                          f"레짐/학습 배수: 시장 상태(상승·하락·횡보·고변동성)에 따른 자동 배수와, "
-                          f"거래소별 실측 신호 결과로 자동 재학습되는 배수(v8, 초기값 1.0)가 곱해져 최종 반영됩니다. "
+            ("롱/숏 Score", f"89점 만점 → /89×100 환산. [2026-07-21] 실측 검증(총 88,343건, 그중 26,496건은 "
+                          f"설계에 전혀 안 쓰인 순수 홀드아웃 기간)에서 롱과 숏의 유효 신호가 서로 달라서 "
+                          f"이제 두 방향의 배점 구조 자체가 다릅니다.\n"
+                          f"롱: EMA 10 + 가격위치(RSI중심) 40 + CVD 8 + VolZ 8 + 모멘텀 8 + 유동성 5 (OI 0 고정 — "
+                          f"실측상 롱은 OI 급증이 오히려 하락과 상관관계).\n"
+                          f"숏: 가격위치(RSI중심) 55 + EMA 3 + CVD 2 + VolZ 2 + 모멘텀 2 + 유동성 5 (OI 0 고정) — "
+                          f"[2026-07-21] EMA·CVD·OI·VolZ·모멘텀이 숏 방향에서 전부 역신호(높을수록 오히려 상승)로 "
+                          f"확인돼서 사실상 타이브레이커 수준까지 축소하고 가격위치로 몰았습니다(\"다 떨어진 뒤에 "
+                          f"뒤늦게 진입컷 넘는\" 문제의 원인이 이거였음).\n"
+                          f"가격위치(양쪽 공통 철학, RSI중심 저가매수/과매수반락형): 과매도(롱)·과매수(숏) + 반전 "
+                          f"시작(rsi_delta)일 때 만점. L/S·Funding은 계속 노이즈 유발로 제외.\n"
+                          f"추세소진 페널티: 직전 10캔들 동안 이미 크게 움직였으면(롱+10%↑/숏-10%↓ 등) 최대 -25점.\n"
+                          f"조합보정(콤보): 롱만 유지(가격위치강세+OI감소/CVD동조/VolZ강세 시 가점) — 숏 콤보는 "
+                          f"홀드아웃 재검증에서 재현 안 돼 비활성화.\n"
+                          f"과열 상한 캡: 7개 항목 중 5개 이상이 90%+ 만점이면 최종점수 45점 강제 제한.\n"
+                          f"레짐/학습 배수: 시장상태별 자동 배수(상승·하락·횡보·고변동성) + 거래소별 실측 자동학습 "
+                          f"배수(v8)가 곱해져 최종 반영됩니다.\n"
                           f"진입 컷은 시장 상태에 따라 70(추세장)~80(횡보장) 자동 조정(현재 {current_min_score}점, "
-                          f"참고용 관심선 {watch_current_min_score}점), 컷 이상이면 카드 색칠 (초록=롱, 빨강=숏). "
-                          f"빗썸/업비트는 컷·레짐·학습배수가 각각 독립적으로 계산됩니다."),
+                          f"참고용 관심선 {watch_current_min_score}점). 빗썸/업비트는 컷·레짐·학습배수가 각각 독립 계산됩니다."),
             ("매집(Pre-pump)", "prepump_score, 100점 만점, 장기 매집사이클 탐지형(추세추종인 롱/숏Score와 "
                     "완전히 다른 로직). 실측(37,608행) 재조정판: OI지속 8 + CVD누적 10 + EMA압축도 12 "
                     "+ ATR 8 + VolZ 8 + 박스위치(바닥권일수록 고득점) 17 + RSI(45~60구간) 12 "

@@ -1020,45 +1020,51 @@ def score_liquidity_filter(atr_pct, vol_24h_m):
 
 def score_combo_adjustment(direction, pp_score, cvd_score, oi_change_pct, volz_score, ema_score_opposite=0):
     """
-    [2026-07-19 추가] 조합(콤보) 보정. 44,051+7,496행(총 36,843건 유효) 실측: 가격위치가
-    강세(20점 이상, 새 RSI중심 로직 기준)일 때 다른 지표와 "같이" 확인되는지/"충돌"하는지
-    별도로 체크하면, 단순 합산으로는 못 잡는 승률 차이가 뚜렷했다.
+    [2026-07-19 추가, 2026-07-21 숏 비활성화] 조합(콤보) 보정.
 
-    보너스(실측 승률, pp단독 대비):
-      롱 pp강세+OI감소(-1%이하): 48.0%→67.1%(n=243) — 반등신호+숏커버(매도압력 완화) 확인
-      롱 pp강세+CVD동조: 48.0%→48.9%(n=2940) — 약하지만 일관되게 소폭 개선
-      롱 pp강세+VolZ강세: 평균수익 0.08→0.155(n=559) — 승률보다 수익폭 개선
-      숏 pp강세+OI증가(3%이상): 52.9%→81.7%(n=60) — 과매수+신규숏유입/롱청산압박
-      숏 pp강세+CVD동조+OI증가(3중): 52.9%→88.9%(n=27, 표본 적음 주의) — 최강 조합
+    최초 44,051+7,496행(총 36,843건) 실측 기준으로 롱/숏 둘 다 보너스·페널티를 넣었었는데,
+    이후 완전히 새로운 홀드아웃 기간(7/20~7/23, 26,496건 — 설계에 전혀 안 쓰인 데이터)으로
+    재검증하니 롱 쪽 조합은 방향이 유지됐지만, 숏 쪽 조합(OI증가 보너스, EMA충돌 페널티)은
+    둘 다 재현이 안 됐다 — 원래 표본이 각각 27~60건으로 너무 적어서 노이즈였을 가능성이 높다.
+    그래서 숏 방향은 조합 보정 자체를 비활성화(0 고정)하고, 롱 방향만 유지한다. 데이터가
+    더 쌓이면 숏 조합도 다시 검증해서 재도입할 수 있다.
 
-    페널티(실측 승률, pp단독 대비):
-      숏 pp강세+EMA가 여전히 롱강세(EMA_l≥15): 52.9%→45.3%(n=1186), 평균수익도 -0.05→+0.04로
-      역전 — "과매수인데 추세는 여전히 위"인 경우 숏 신호가 실제로는 잘 안 맞았다.
-      (롱 쪽은 대칭되는 뚜렷한 충돌 페널티가 실측에서 확인되지 않아 넣지 않음 — 데이터
-      없는 곳에 억지로 대칭 만들지 않는다는 원칙 유지.)
+    남아있는 롱 보너스(pp단독 대비 실측 승률, 최초 표본 기준):
+      pp강세+OI감소(-1%이하): 48.0%→67.1%(n=243) — 반등신호+숏커버(매도압력 완화) 확인
+      pp강세+CVD동조: 48.0%→48.9%(n=2940) — 약하지만 일관되게 소폭 개선
+      pp강세+VolZ강세: 평균수익 0.08→0.155(n=559) — 승률보다 수익폭 개선
 
     pp_score/cvd_score/volz_score는 레짐·학습 배수 적용 "전" 원점수를 넣어야 임계값이 맞는다.
     """
     adj = 0
     try:
+        if direction == 'short':
+            return 0  # 2026-07-21: 홀드아웃 재검증에서 재현 안 돼 비활성화
         strong_pp = pp_score >= 20
         if not strong_pp:
             return 0
-        if direction == 'long':
-            if oi_change_pct is not None and oi_change_pct <= -1:
-                adj += 15
+        if oi_change_pct is not None and oi_change_pct <= -1:
+            adj += 15
+        if cvd_score >= 15:
+            adj += 5
+        if volz_score >= 10:
+            adj += 5
+        return adj
+    except Exception:
+        return 0
+
+
+def _score_combo_adjustment_legacy_short(direction, pp_score, cvd_score, oi_change_pct, volz_score, ema_score_opposite=0):
+    """참고용으로 남겨둔 예전 숏 콤보 로직(현재 미사용) — 나중에 재검증할 때 참고."""
+    adj = 0
+    try:
+        oi_up = oi_change_pct is not None and oi_change_pct >= 3
+        if oi_up:
+            adj += 15
             if cvd_score >= 15:
-                adj += 5
-            if volz_score >= 10:
-                adj += 5
-        else:
-            oi_up = oi_change_pct is not None and oi_change_pct >= 3
-            if oi_up:
-                adj += 15
-                if cvd_score >= 15:
-                    adj += 10  # 3중 조합 추가 보너스(위 doctring 88.9% 근거)
-            if ema_score_opposite >= 15:
-                adj -= 15
+                adj += 10  # 3중 조합 추가 보너스(예전 표본 기준 88.9% 근거, 재현 안 돼 미사용)
+        if ema_score_opposite >= 15:
+            adj -= 15
         return adj
     except Exception:
         return 0
@@ -1090,7 +1096,8 @@ def score_extension_penalty(extension_pct, direction):
     except Exception:
         return 0
 
-def score_overextension_penalty_cap(final_score, ema_pts, pp_pts, cvd_pts, oi_pts, m30_pts, volz_pts, liq_pts):
+def score_overextension_penalty_cap(final_score, ema_pts, pp_pts, cvd_pts, oi_pts, m30_pts, volz_pts, liq_pts,
+                                     maxes_override=None):
     """
     과열 상한 캡. v3 롱/숏 세부 7개 항목은 개별로 보면 forward-return과의 상관관계가
     거의 0(실측: -0.08~+0.05)이라 무해해 보이는데, 59시간치 실측 데이터로 확인해보니
@@ -1101,10 +1108,14 @@ def score_overextension_penalty_cap(final_score, ema_pts, pp_pts, cvd_pts, oi_pt
     처음엔 고정 감점(-15)으로 시도했는데, 85점짜리가 71점이 되는 식으로 여전히 진입컷을
     넘는 경우가 많아서 실효성이 없었다(실측으로 확인함) — 그래서 감점이 아니라 진입컷보다
     확실히 낮은 값으로 상한을 씌우는 방식으로 바꿨다.
+    maxes_override: [2026-07-21 추가] 숏 점수가 재조정(가격위치 위주, 3/55/2/0/2/2/5)되면서
+    항목별 만점 기준이 롱과 달라져서, 호출하는 쪽에서 실제 배점 상한 리스트를 넘겨줄 수 있게 했다.
+    안 넘기면 기존 롱 기준(10/40/8/10/8/8/5)을 그대로 쓴다.
     """
-    maxes = [(ema_pts, 10), (pp_pts, 40), (cvd_pts, 8), (oi_pts, 10),
-             (m30_pts, 8), (volz_pts, 8), (liq_pts, 5)]
-    n_maxed = sum(1 for v, mx in maxes if v >= mx * 0.9)
+    default_maxes = [10, 40, 8, 10, 8, 8, 5]
+    mx_list = maxes_override or default_maxes
+    maxes = list(zip([ema_pts, pp_pts, cvd_pts, oi_pts, m30_pts, volz_pts, liq_pts], mx_list))
+    n_maxed = sum(1 for v, mx in maxes if mx > 0 and v >= mx * 0.9)
     if n_maxed >= 5:
         return min(final_score, 45)
     return final_score
@@ -1167,30 +1178,35 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
                            funding_rate=0.0, trade_value_usd=None,
                            price=None, ema120=None, vol_24h_m=0, regime='normal', exchange='bithumb',
                            ema20_slope_pct=0.0):
-    """89점 만점 숏 점수([2026-07-19 전면재조정] 롱과 대칭, 과열 상한 캡도 동일 적용). 최종 /89×100 환산.
-    ema_s(EMA 완전 역배열)는 59시간 실측으로 120~240분 후 오히려 가격이 반등하는 경향이
-    확인돼서(완전히 다 떨어진 뒤라는 뜻으로 해석) 다운그레이드한다 — "부분 역배열"과
-    "완전 역배열"을 더 이상 구분해서 보너스 주지 않는다.
+    """69점 만점 숏 점수([2026-07-21 재조정] — 89점 만점이던 걸 가격위치 위주로 재구성).
+    최종 /89×100 환산(롱과 분모 통일 유지, 실질 상한은 69/89≈77.5%).
+
+    [2026-07-21] 완전히 새로운 홀드아웃(7/20~7/23, 26,496건, 설계에 전혀 안 쓰인 기간)으로
+    재검증한 결과, EMA·CVD·OI·VolZ·모멘텀이 숏 방향에서 전부 역방향(+corr, 높을수록 오히려
+    상승)으로 나왔다 — "이미 다 떨어진 뒤에 뒤늦게 진입컷 넘는" 문제의 원인이 이거였다.
+    가격위치(RSI중심)와 추세소진페널티만 방향이 계속 맞았다(-corr 유지). 그래서 이번엔:
+      - OI는 숏 점수에서 완전히 제외(원래 15→10점이었던 걸 0으로) — 원신호 자체가 노이즈
+      - EMA/CVD/VolZ/모멘텀은 각 2~3점으로 사실상 타이브레이커 수준까지 축소
+      - 가격위치는 원점수(최대 40) × 1.375 = 최대 55점까지 확대해 압도적 비중으로
+      - 콤보 보정(OI증가 보너스/EMA충돌 페널티)은 재현 안 돼서 비활성화(score_combo_adjustment 참고)
     regime: calculate_long_score와 동일한 시장상태별(REGIME_WEIGHT_MULTIPLIERS) +
     실측 자동학습(learned_component_weights, exchange별로 따로 학습) 가중치를 적용한다."""
     raw = 0
     mult = REGIME_WEIGHT_MULTIPLIERS.get(regime, REGIME_WEIGHT_MULTIPLIERS['normal'])
     lw = learned_component_weights.get(exchange, learned_component_weights['bithumb'])['short']
     try:
-        # [2026-07-19 재배점] EMA/CVD/OI/VolZ/모멘텀은 실측 신호가 약해(|corr|<0.03) 배점을
-        # 축소. 가격위치(RSI중심, score_price_position_short)가 이제 40점으로 핵심 항목.
         raw_pp = score_price_position_short(rsi, bb_percent, rsi_delta)  # 조합보정 임계값은 이 원점수 기준
         raw_cvd = score_cvd_trend(cvd_diff, vol_window_sum, 'short')
-        raw_ema_l = score_ema_trend(price, ema20, ema60, ema120, 'long', ema20_slope_pct)  # 반대방향 EMA — 충돌 페널티 체크용
+        raw_ema_l = score_ema_trend(price, ema20, ema60, ema120, 'long', ema20_slope_pct)  # 콤보(현재 비활성) 참고용
         p_ema = score_ema_trend(price, ema20, ema60, ema120, 'short', ema20_slope_pct)
         if p_ema >= 20:
             p_ema = 10
-        p_ema = min(p_ema * 0.5 * mult['ema'] * lw['ema'], 10)
-        p_pp = min(raw_pp * mult['pp'] * lw['pp'], 40)
-        p_cvd = min(raw_cvd * (8 / 15) * mult['cvd'] * lw['cvd'], 8)
-        p_oi = min(score_oi_v3(oi_change_pct) * (10 / 15) * mult['oi'] * lw['oi'], 10)
-        p_volz = min(score_volz_v3(vol_z) * (8 / 15) * mult['volz'] * lw['volz'], 8)
-        p_m30 = min(score_chg30m_short(chg_30m) * (8 / 15) * mult['m30'] * lw['m30'], 8)
+        p_ema = min(p_ema * 0.15 * mult['ema'] * lw['ema'], 3)
+        p_pp = min(raw_pp * 1.375 * mult['pp'] * lw['pp'], 55)
+        p_cvd = min(raw_cvd * (2 / 15) * mult['cvd'] * lw['cvd'], 2)
+        p_oi = 0  # 2026-07-21: 홀드아웃 재검증에서 역방향 확인돼 제외(원래 최대 10점이었음)
+        p_volz = min(score_volz_v3(vol_z) * (2 / 15) * mult['volz'] * lw['volz'], 2)
+        p_m30 = min(score_chg30m_short(chg_30m) * (2 / 15) * mult['m30'] * lw['m30'], 2)
         p_liq = min(score_liquidity_filter(atr_pct, vol_24h_m) * mult['liq'] * lw['liq'], 5)
         penalty = score_extension_penalty(extension_pct, 'short')
         combo = score_combo_adjustment('short', raw_pp, raw_cvd, oi_change_pct, None, ema_score_opposite=raw_ema_l)
@@ -1200,7 +1216,8 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
         final = round(raw / TOTAL_SCORE_WEIGHT * 100)
         return max(0, min(final, 100))
     final = round(raw / TOTAL_SCORE_WEIGHT * 100)
-    final = score_overextension_penalty_cap(final, p_ema, p_pp, p_cvd, p_oi, p_m30, p_volz, p_liq)
+    final = score_overextension_penalty_cap(final, p_ema, p_pp, p_cvd, p_oi, p_m30, p_volz, p_liq,
+                                             maxes_override=[3, 55, 2, 0, 2, 2, 5])
     return max(0, min(final, 100))
 
 
