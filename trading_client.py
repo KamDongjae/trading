@@ -73,6 +73,7 @@ DISCORD_WEBHOOK_URL_CLIENT = _load_discord_webhook_client()
 # 이미 갖고 있는 지표값(server_market.csv에서 읽은 값)만으로 전부 처리한다.
 # ============================================================
 CONDITION_INDICATORS = [
+    ("ticker", "코인명"),
     ("rsi", "RSI"), ("rsi_delta", "RSI델타"), ("vol_z", "VolZ"), ("bb_percent", "BB%"),
     ("price", "가격(원)"), ("price_usd", "가격(USD)"), ("chg_24h", "24h변동%"),
     ("cvd", "CVD"), ("cvd_diff", "CVD변화"), ("funding", "펀딩"), ("vol_24h_m", "24h거래대금"),
@@ -82,27 +83,36 @@ CONDITION_INDICATORS = [
     ("prepump_score", "매집점수"), ("preshort_score", "분산점수"),
 ]
 _CONDITION_ALLOWED_NAMES = {name for name, _ in CONDITION_INDICATORS} | {"and", "or", "not", "True", "False"}
-_CONDITION_CHAR_PATTERN = re.compile(r'^[a-zA-Z0-9_\s\.\+\-\*/()<>=!&|,]*$')
+_CONDITION_CHAR_PATTERN = re.compile(r'''^[a-zA-Z0-9_\s\.\+\-\*/()<>=!&|,'"]*$''')  # 따옴표 추가 — 코인명 문자열 비교용
 _CONDITION_TOKEN_PATTERN = re.compile(r'[a-zA-Z_][a-zA-Z0-9_]*')
+_QUOTED_STRING_PATTERN = re.compile(r"""(['"])(?:(?!\1).)*\1""")
 
 
 def translate_condition_expr(expr):
     """C스타일(&&, ||, !) 연산자를 파이썬 eval이 이해하는 형태(and, or, not)로 바꾼다.
-    비교연산자(==, !=, <, >, <=, >=)는 파이썬과 동일해서 그대로 둔다."""
+    비교연산자(==, !=, <, >, <=, >=)는 파이썬과 동일해서 그대로 둔다.
+    [2026-07-21 추가] 따옴표 안 문자열(코인명 비교용, 예: ticker=='xrp')은 소문자로
+    통일한다 — evaluate_condition()에서 ticker 값도 소문자로 넣어줘서 대소문자
+    상관없이 비교되게(XRP/Xrp/xrp 다 같이 매칭)."""
     out = expr.replace('&&', ' and ').replace('||', ' or ')
     out = re.sub(r'!(?!=)', ' not ', out)
+    out = re.sub(r"'([^']*)'", lambda m: "'" + m.group(1).lower() + "'", out)
+    out = re.sub(r'"([^"]*)"', lambda m: '"' + m.group(1).lower() + '"', out)
     return out.strip()  # 맨 앞이 "!"였으면 앞에 공백이 붙어서 compile()이 들여쓰기 에러를 냄 — strip으로 방지
 
 
 def validate_condition_expr(expr):
     """eval하기 전에 위험하거나 알 수 없는 문자/식별자가 없는지 검사한다.
     허용 문자 화이트리스트 + 식별자는 CONDITION_INDICATORS에 있는 것만 통과.
+    따옴표 안 문자열(코인명 등) 내용은 식별자 검사에서 제외한다(예: 'xrp'의 xrp가
+    "알 수 없는 지표명"으로 오탐되지 않게).
     반환: (통과여부, 에러메시지)"""
     if not expr or not expr.strip():
         return False, "조건식이 비어있습니다"
     if not _CONDITION_CHAR_PATTERN.match(expr):
         return False, "허용되지 않는 문자가 포함되어 있습니다"
-    for tok in _CONDITION_TOKEN_PATTERN.findall(expr):
+    stripped = _QUOTED_STRING_PATTERN.sub('""', expr)  # 문자열 리터럴 내용은 지표명 검사 대상에서 제외
+    for tok in _CONDITION_TOKEN_PATTERN.findall(stripped):
         if tok not in _CONDITION_ALLOWED_NAMES:
             return False, f"알 수 없는 지표명: {tok}"
     try:
@@ -115,11 +125,14 @@ def validate_condition_expr(expr):
 
 def evaluate_condition(expr, row):
     """row(티커별 지표 dict)를 넣고 조건식을 평가한다. 값이 없거나(None) 계산 중
-    에러가 나면 안전하게 False로 처리한다(알림/색칠 안 됨 — 매칭 안 된 것으로 취급)."""
+    에러가 나면 안전하게 False로 처리한다(알림/색칠 안 됨 — 매칭 안 된 것으로 취급).
+    ticker는 소문자로 넣어서 translate_condition_expr가 소문자로 바꿔둔 문자열
+    리터럴과 대소문자 무관하게 비교되게 한다."""
     try:
         translated = translate_condition_expr(expr)
         env = {name: row.get(name) for name, _ in CONDITION_INDICATORS}
         env = {k: (v if v is not None else 0) for k, v in env.items()}
+        env['ticker'] = str(row.get('ticker', '')).lower()
         return bool(eval(translated, {"__builtins__": {}}, env))
     except Exception:
         return False
@@ -1882,7 +1895,8 @@ class TradingClient:
                   font=("Arial", 10, "bold"), padx=10).pack(side="left")
 
         tk.Label(win, text="지표 버튼을 누르면 조건식 입력칸에 삽입됩니다. "
-                            "연산자는 직접 타이핑: && || ! == != < > <= >= ( )",
+                            "연산자는 직접 타이핑: && || ! == != < > <= >= ( )\n"
+                            "코인명 비교는 따옴표로: ticker=='xrp' (대소문자 구분 안 함)",
                  font=("Arial", 9), fg="#666666", justify="left", wraplength=450, anchor="w").pack(
             fill="x", padx=10, pady=(0, 6))
 
