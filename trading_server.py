@@ -12,6 +12,7 @@ import socket
 import dns.resolver
 import ssl
 import requests
+import re
 import json
 import io
 import matplotlib
@@ -116,6 +117,99 @@ CHART_INTERVALS = ["10m", "30m", "1h", "2h", "6h", "12h"]  # 포지션/티커 �
 CANDLE_INTERVAL = "1h"   # 점수 계산에 쓰는 기준 캔들. srv_set_interval()로 실행 중에도 전환 가능
                           # (빗썸이 2h를 직접 지원하지 않아 2h는 1h 캔들 2개를 합쳐 재구성한다)
 CVD_WINDOW_CANDLES = 2   # CANDLE_INTERVAL 기준 캔들 개수(예: 1h면 최근 2시간, 6h면 최근 12시간)
+
+# ============================================================
+# [2026-07-21 추가] 사용자 정의 조건식(커스텀 알림) — 서버 쪽.
+# 클라이언트(trading_client.py)의 "조건식" 창이 저장하는 것과 정확히 같은 파일을 읽는다
+# (같은 폴더의 custom_conditions.json). 클라이언트는 화면 색칠(하이라이트)만 자기가
+# 하고, 실제 디스코드 전송은 여기 서버가 담당한다 — 클라이언트 앱을 꺼도(서버만 켜져
+# 있으면) 알림이 계속 오게 하기 위함. 평가 로직(연산자 변환, 안전 검증)은 클라이언트와
+# 동일하게 맞췄다 — 둘이 서로 다르게 해석하면 안 되므로.
+# ============================================================
+CUSTOM_CONDITIONS_FILE = os.path.join(SCRIPT_DIR, "custom_conditions.json")
+CONDITION_INDICATORS_SERVER = [
+    "ticker", "rsi", "rsi_delta", "vol_z", "bb_percent", "price", "price_usd", "chg_24h",
+    "cvd", "cvd_diff", "funding", "vol_24h_m", "atr_pct", "oi_change_pct", "chg_30m",
+    "ls_ratio", "ema20", "ema60", "long_score", "short_score", "prepump_score", "preshort_score",
+]
+_CONDITION_ALLOWED_NAMES_SERVER = set(CONDITION_INDICATORS_SERVER) | {"and", "or", "not", "True", "False"}
+_CONDITION_CHAR_PATTERN_SERVER = re.compile(r'''^[a-zA-Z0-9_\s\.\+\-\*/()<>=!&|,'"]*$''')
+_CONDITION_TOKEN_PATTERN_SERVER = re.compile(r'[a-zA-Z_][a-zA-Z0-9_]*')
+_QUOTED_STRING_PATTERN_SERVER = re.compile(r"""(['"])(?:(?!\1).)*\1""")
+_custom_condition_alert_cooldown = {}  # (cond_id, exchange, ticker) -> 마지막 알림 시각(초)
+
+def _translate_condition_expr_server(expr):
+    out = expr.replace('&&', ' and ').replace('||', ' or ')
+    out = re.sub(r'!(?!=)', ' not ', out)
+    out = re.sub(r"'([^']*)'", lambda m: "'" + m.group(1).lower() + "'", out)
+    out = re.sub(r'"([^"]*)"', lambda m: '"' + m.group(1).lower() + '"', out)
+    return out.strip()
+
+def _validate_condition_expr_server(expr):
+    """저장된 파일을 신뢰하지 않고 서버에서도 한 번 더 검증한다(클라이언트가 아닌
+    다른 경로로 파일이 수정됐을 가능성 방어)."""
+    if not expr or not expr.strip():
+        return False
+    if not _CONDITION_CHAR_PATTERN_SERVER.match(expr):
+        return False
+    stripped = _QUOTED_STRING_PATTERN_SERVER.sub('""', expr)
+    for tok in _CONDITION_TOKEN_PATTERN_SERVER.findall(stripped):
+        if tok not in _CONDITION_ALLOWED_NAMES_SERVER:
+            return False
+    try:
+        compile(_translate_condition_expr_server(expr), "<condition>", "eval")
+    except SyntaxError:
+        return False
+    return True
+
+def _evaluate_condition_server(expr, row):
+    try:
+        translated = _translate_condition_expr_server(expr)
+        env = {name: row.get(name) for name in CONDITION_INDICATORS_SERVER}
+        env = {k: (v if v is not None else 0) for k, v in env.items()}
+        env['ticker'] = str(row.get('ticker', '')).lower()
+        return bool(eval(translated, {"__builtins__": {}}, env))
+    except Exception:
+        return False
+
+def load_custom_conditions_server():
+    try:
+        if os.path.exists(CUSTOM_CONDITIONS_FILE):
+            with open(CUSTOM_CONDITIONS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"커스텀 조건식 로드 실패: {e}")
+    return []
+
+def check_custom_condition_alerts(row, exchange):
+    """write_market_snapshot()이 CSV에 쓰는 것과 똑같은 row 하나를 받아서, 활성화+알림
+    체크된 조건식과 매칭되는지 확인하고 매칭되면(300초 쿨다운 적용) 디스코드로 보낸다."""
+    if not DISCORD_WEBHOOK_URL:
+        return
+    conditions = load_custom_conditions_server()
+    if not conditions:
+        return
+    ticker = row.get('ticker', '')
+    now = time.time()
+    for cond in conditions:
+        if not cond.get('enabled', True) or not cond.get('alert', False):
+            continue
+        expr = cond.get('expr', '')
+        if not _validate_condition_expr_server(expr):
+            continue
+        if not _evaluate_condition_server(expr, row):
+            continue
+        key = (cond.get('id'), exchange, ticker)
+        if now - _custom_condition_alert_cooldown.get(key, 0) < 300:
+            continue
+        _custom_condition_alert_cooldown[key] = now
+        ex_label = "빗썸" if exchange == 'bithumb' else "업비트"
+        sent_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        msg = (f"🔔 **커스텀 조건식** [{ex_label}] **{ticker}**\n`{expr}`\n"
+               f"RSI {row.get('rsi')} BB% {row.get('bb_percent')} 롱{row.get('long_score')} 숏{row.get('short_score')}\n"
+               f"🕐 {sent_at}")
+        send_discord_alert(msg)
+
 ATR_PERIOD = 14          # ATR 계산에 쓸 캔들 개수 (CANDLE_INTERVAL 기준. 인터벌이 바뀌어도 캔들 개수는 고정)
 MIN_ATR_PCT = 0.0        # ATR%가 이 값 미만이면 "죽어있는 코인"으로 보고 목록에서 제외 (0이면 필터 끔)
 OI_CACHE_TTL = 60        # 미체결약정(OI) 히스토리 캐시 유지시간(초). 심볼별 개별 API 호출이라 너무 짧게 두지 않는다.
@@ -2644,10 +2738,12 @@ def write_market_snapshot(exchange='bithumb'):
     pt = datetime.now().strftime('%H:%M:%S')
     rows = [MARKET_COLS]
     for t, r in snap.items():
+        price_val = prices.get(t, r.get('price', 0))
+        chg24_val = chg24_map.get(t, 0)
         rows.append([
-            t, prices.get(t, r.get('price', 0)),
+            t, price_val,
             r.get('price_usd', '') if r.get('price_usd') is not None else '',
-            chg24_map.get(t, 0),
+            chg24_val,
             r.get('long_score', 0), r.get('short_score', 0),
             r.get('prepump_score', 0), r.get('preshort_score', 0),
             r.get('rsi', 0), r.get('rsi_delta', 0), r.get('vol_z', 0),
@@ -2659,6 +2755,22 @@ def write_market_snapshot(exchange='bithumb'):
             r.get('ema60', '') if r.get('ema60') is not None else '',
             min_score, WATCH_MIN_SCORE, PREPUMP_MIN_SCORE, CANDLE_INTERVAL, score_time, pt,
         ])
+        # [2026-07-21 추가] 커스텀 조건식 — CSV에 쓰는 것과 동일한 값으로 평가
+        try:
+            cond_row = {
+                "ticker": t, "rsi": r.get('rsi', 0), "rsi_delta": r.get('rsi_delta', 0),
+                "vol_z": r.get('vol_z', 0), "bb_percent": r.get('bb_percent', 0),
+                "price": price_val, "price_usd": r.get('price_usd', 0), "chg_24h": chg24_val,
+                "cvd": r.get('cvd', 0), "cvd_diff": r.get('cvd_diff', 0), "funding": r.get('funding', 0),
+                "vol_24h_m": r.get('vol_24h_m', 0), "atr_pct": r.get('atr_pct', 0),
+                "oi_change_pct": r.get('oi_change_pct', 0), "chg_30m": r.get('chg_30m', 0),
+                "ls_ratio": r.get('ls_ratio', 0), "ema20": r.get('ema20', 0), "ema60": r.get('ema60', 0),
+                "long_score": r.get('long_score', 0), "short_score": r.get('short_score', 0),
+                "prepump_score": r.get('prepump_score', 0), "preshort_score": r.get('preshort_score', 0),
+            }
+            check_custom_condition_alerts(cond_row, exchange)
+        except Exception as e:
+            print(f"커스텀 조건식 평가 실패({t}): {e}")
     try:
         _atomic_write_csv(path, rows)
     except Exception as e:

@@ -1312,15 +1312,15 @@ class TradingClient:
                     bg = "#f2e070"   # 진노랑: 진입 컷엔 못 미치지만 "관심" 구간(65점대)
                 else:
                     bg = "white"
-                # [2026-07-21 추가] 커스텀 조건식 평가 — 매칭되면 그 조건의 색으로 덮어씀
-                # (등록 순서상 먼저 매칭된 조건이 우선), 알림 체크돼있으면 쿨다운 걸고 디스코드 전송.
+                # [2026-07-21] 커스텀 조건식 평가 — 매칭되면 그 조건의 색으로 카드를 칠함
+                # (등록 순서상 먼저 매칭된 조건이 우선). 디스코드 알림 전송은 서버가 담당
+                # (check_custom_condition_alerts, write_market_snapshot 안에서 호출) —
+                # 클라이언트를 꺼도 알림이 계속 오게 하려고 서버로 옮겼다. 여기선 색칠만.
                 for cond in self.custom_conditions:
                     if not cond.get("enabled", True):
                         continue
                     if evaluate_condition(cond["expr"], row):
                         bg = cond["color"]
-                        if cond.get("alert"):
-                            self._maybe_send_custom_condition_alert(cond, ticker, row)
                         break
                 display_ticker = f"[{ticker}]" if ticker in self.pinned_tickers else ticker
                 line1 = f"{display_ticker}  {chg24h_str} ({krw_str})  {usd_str}  롱{ls} 숏{ss}  매집{pp} 분산{ps}"
