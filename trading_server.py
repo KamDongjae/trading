@@ -1799,7 +1799,12 @@ def log_signal_open(ticker, direction, r, regime, exchange='bithumb'):
 def resolve_signal_outcomes():
     """opened_ts로부터 RESOLVE_AFTER_MIN분 이상 지난 미해결 신호에 1시간봉을 다시
     조회해서 60분/120분 후 수익률 + MFE/MAE(방향 기준으로 부호 정리)를 채운다.
-    거래소별로 캔들 조회 함수를 다르게 써야 해서 (exchange, ticker) 쌍으로 묶는다."""
+    거래소별로 캔들 조회 함수를 다르게 써야 해서 (exchange, ticker) 쌍으로 묶는다.
+    [2026-07-23 수정] 원래 (거래소,티커) 쌍을 하나씩 순차적으로 조회했는데, 티커가
+    많으면(실측 44개) 최악의 경우 8초×44=350초 넘게 걸릴 수 있고, 그 사이 네트워크가
+    일시적으로 안 좋으면 전부 실패해도 예외 없이 조용히 넘어가서 "왜 0건 해결됐는지"
+    확인할 방법이 없었다(실제로 이 문제로 오래 헤맴). 그래서 ① 캔들 조회를 병렬로
+    바꿔서 전체 소요시간을 줄이고 ② 성공/실패 개수를 매번 로그로 남긴다."""
     if not os.path.exists(SIGNAL_LOG_FILE):
         return 0
     try:
@@ -1812,13 +1817,32 @@ def resolve_signal_outcomes():
         pending_mask = (~df['resolved']) & ((now - df['opened_ts']).dt.total_seconds() >= RESOLVE_AFTER_MIN * 60)
         if not pending_mask.any():
             return 0
-        newly_resolved = 0
         pairs = df.loc[pending_mask, ['exchange', 'ticker']].drop_duplicates()
-        for exch, ticker in pairs.itertuples(index=False):
+
+        def _fetch_one(pair):
+            exch, ticker = pair
             fetch_fn = fetch_candlestick_upbit if exch == 'upbit' else fetch_candlestick
             candle = fetch_fn(ticker, chart_intervals="1h", timeout=8, retries=1)
-            if candle is None or len(candle) < 3:
-                continue
+            return (exch, ticker, candle)
+
+        candle_results = {}
+        fetch_fail = 0
+        with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, max(len(pairs), 1))) as pool:
+            futures = [pool.submit(_fetch_one, (r.exchange, r.ticker)) for r in pairs.itertuples(index=False)]
+            for fut in as_completed(futures):
+                try:
+                    exch, ticker, candle = fut.result()
+                except Exception:
+                    fetch_fail += 1
+                    continue
+                if candle is None or len(candle) < 3:
+                    fetch_fail += 1
+                    continue
+                candle_results[(exch, ticker)] = candle
+
+        newly_resolved = 0
+        row_skip = 0
+        for (exch, ticker), candle in candle_results.items():
             idxs = df.index[pending_mask & (df['ticker'] == ticker) & (df['exchange'] == exch)]
             for idx in idxs:
                 try:
@@ -1826,16 +1850,19 @@ def resolve_signal_outcomes():
                     entry_time = row['opened_ts']
                     entry_price = float(row['entry_price'])
                     if entry_price <= 0:
+                        row_skip += 1
                         continue
                     window = candle[(candle.index >= entry_time - pd.Timedelta(minutes=30)) &
                                      (candle.index <= entry_time + pd.Timedelta(minutes=150))]
                     if len(window) < 2:
+                        row_skip += 1
                         continue
                     t60 = window[window.index >= entry_time + pd.Timedelta(minutes=45)]
                     t120 = window[window.index >= entry_time + pd.Timedelta(minutes=105)]
                     ret60 = (t60.iloc[0]['close'] - entry_price) / entry_price * 100 if len(t60) else None
                     ret120 = (t120.iloc[0]['close'] - entry_price) / entry_price * 100 if len(t120) else None
                     if ret60 is None and ret120 is None:
+                        row_skip += 1
                         continue  # 아직 그 시점 캔들이 안 나옴 — 다음 주기에 재시도
                     post = window[window.index >= entry_time]
                     mfe = (post['high'].max() - entry_price) / entry_price * 100 if len(post) else None
@@ -1850,10 +1877,13 @@ def resolve_signal_outcomes():
                     df.loc[idx, 'resolve_ts'] = now.strftime('%Y-%m-%d %H:%M:%S')
                     newly_resolved += 1
                 except Exception:
+                    row_skip += 1
                     continue
         if newly_resolved:
             with _signal_log_lock:
                 df.to_csv(SIGNAL_LOG_FILE, index=False)
+        print(f"[신호해소] 대상쌍 {len(pairs)}개(캔들실패 {fetch_fail}) | 대상행 {pending_mask.sum()}개 "
+              f"| 해결 {newly_resolved} / 보류 {row_skip}")
         return newly_resolved
     except Exception as e:
         print(f"신호 결과 해소 실패: {e}")
