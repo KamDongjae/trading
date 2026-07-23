@@ -4,7 +4,7 @@
 - 포지션 개수 많아도 짤리지 않도록 높이 크게 조정
 """
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog, colorchooser
+from tkinter import ttk, messagebox, simpledialog, colorchooser, filedialog
 import os
 import csv
 import json
@@ -83,7 +83,9 @@ CONDITION_INDICATORS = [
     ("prepump_score", "매집점수"), ("preshort_score", "분산점수"),
 ]
 _CONDITION_ALLOWED_NAMES = {name for name, _ in CONDITION_INDICATORS} | {"and", "or", "not", "True", "False"}
-_CONDITION_CHAR_PATTERN = re.compile(r'''^[a-zA-Z0-9_\s\.\+\-\*/()<>=!&|,'"]*$''')  # 따옴표 추가 — 코인명 문자열 비교용
+_CONDITION_CHAR_PATTERN = re.compile(r'''^[a-zA-Z0-9_\s\.\+\-\*/()<>=!&|'"]*$''')  # 따옴표 추가(코인명 비교용) — 쉼표는 일부러 제외
+                                      # (괄호 안에 쉼표가 남으면 "(조건,)"이 파이썬 튜플이 돼서 내용과
+                                      # 무관하게 항상 참으로 평가되는 사고가 실제로 있었음 — 아예 차단)
 _CONDITION_TOKEN_PATTERN = re.compile(r'[a-zA-Z_][a-zA-Z0-9_]*')
 _QUOTED_STRING_PATTERN = re.compile(r"""(['"])(?:(?!\1).)*\1""")
 
@@ -1940,7 +1942,10 @@ class TradingClient:
 
         def register_bulk():
             raw = bulk_text.get("1.0", tk.END)
-            lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+            # 끝에 쉼표 붙은 줄(리스트/CSV에서 복붙할 때 흔함)은 자동으로 떼어낸다 —
+            # 안 떼면 "(조건,)"이 파이썬 튜플이 돼서 내용과 무관하게 항상 참으로 취급돼
+            # "모든 코인이 다 걸리는" 버그가 생긴다(실제로 겪은 사례).
+            lines = [ln.strip().rstrip(',').strip() for ln in raw.splitlines() if ln.strip()]
             if not lines:
                 messagebox.showwarning("경고", "붙여넣은 조건식이 없습니다.", parent=win)
                 return
@@ -1970,6 +1975,77 @@ class TradingClient:
 
         tk.Button(win, text=f"일괄등록 (OR로 묶기)", command=register_bulk, bg="#7a4aa0", fg="white",
                   font=("Arial", 10, "bold"), padx=10).pack(anchor="w", padx=10, pady=(0, 8))
+
+        # ============================================================
+        # [2026-07-23 추가] txt로 전체 내보내기/가져오기 — 조건식+색상+사용여부+알림여부까지
+        # 전부 보존해서 한 파일로 백업하거나 다른 기기로 옮길 수 있게 한다.
+        # 형식: 한 줄에 조건 하나, 탭으로 구분 — 색상\t사용여부\t알림여부\t조건식
+        # ============================================================
+        def export_conditions():
+            if not self.custom_conditions:
+                messagebox.showinfo("내보내기", "등록된 조건식이 없습니다.", parent=win)
+                return
+            path = filedialog.asksaveasfilename(
+                parent=win, defaultextension=".txt",
+                initialfile=f"custom_conditions_{time.strftime('%Y%m%d_%H%M%S')}.txt",
+                filetypes=[("Text files", "*.txt")])
+            if not path:
+                return
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("# 커스텀 조건식 내보내기\n")
+                    f.write("# 형식: 색상\\t사용여부(1/0)\\t알림여부(1/0)\\t조건식\n")
+                    for cond in self.custom_conditions:
+                        f.write(f"{cond['color']}\t{1 if cond.get('enabled', True) else 0}\t"
+                                f"{1 if cond.get('alert', False) else 0}\t{cond['expr']}\n")
+                messagebox.showinfo("내보내기 완료", f"{len(self.custom_conditions)}개 조건식을 저장했습니다.\n{path}", parent=win)
+            except Exception as e:
+                messagebox.showerror("오류", f"저장 실패: {e}", parent=win)
+
+        def import_conditions():
+            path = filedialog.askopenfilename(parent=win, filetypes=[("Text files", "*.txt")])
+            if not path:
+                return
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+            except Exception as e:
+                messagebox.showerror("오류", f"파일 읽기 실패: {e}", parent=win)
+                return
+            added, bad = 0, []
+            for i, raw in enumerate(lines, 1):
+                line = raw.rstrip("\n")
+                if not line.strip() or line.strip().startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) != 4:
+                    bad.append(f"{i}번째 줄: 형식 오류(탭 4개 구간이 아님)")
+                    continue
+                color, enabled_s, alert_s, expr = parts
+                expr = expr.strip()
+                ok, err = validate_condition_expr(expr)
+                if not ok:
+                    bad.append(f"{i}번째 줄: {err}")
+                    continue
+                self.custom_conditions.append({
+                    "id": f"c{int(time.time()*1000)}_{added}", "expr": expr, "color": color.strip() or "#ffcc00",
+                    "enabled": enabled_s.strip() == "1", "alert": alert_s.strip() == "1",
+                })
+                added += 1
+            if added:
+                save_custom_conditions(self.custom_conditions)
+                refresh_list()
+            msg = f"{added}개 조건식을 불러왔습니다."
+            if bad:
+                msg += f"\n\n실패 {len(bad)}개:\n" + "\n".join(bad[:8]) + (f"\n...외 {len(bad)-8}개" if len(bad) > 8 else "")
+            messagebox.showinfo("가져오기 완료", msg, parent=win)
+
+        io_row = tk.Frame(win)
+        io_row.pack(fill="x", padx=10, pady=(0, 4))
+        tk.Button(io_row, text="📤 전체 내보내기(txt)", command=export_conditions,
+                  font=("Arial", 9), padx=8).pack(side="left", padx=(0, 6))
+        tk.Button(io_row, text="📥 가져오기(txt)", command=import_conditions,
+                  font=("Arial", 9), padx=8).pack(side="left")
 
         tk.Label(win, text="등록된 조건식", font=("Arial", 11, "bold")).pack(
             anchor="w", padx=10, pady=(4, 2))

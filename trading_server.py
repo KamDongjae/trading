@@ -134,7 +134,8 @@ CONDITION_INDICATORS_SERVER = [
     "long_score", "short_score", "prepump_score", "preshort_score",
 ]
 _CONDITION_ALLOWED_NAMES_SERVER = set(CONDITION_INDICATORS_SERVER) | {"and", "or", "not", "True", "False"}
-_CONDITION_CHAR_PATTERN_SERVER = re.compile(r'''^[a-zA-Z0-9_\s\.\+\-\*/()<>=!&|,'"]*$''')
+_CONDITION_CHAR_PATTERN_SERVER = re.compile(r'''^[a-zA-Z0-9_\s\.\+\-\*/()<>=!&|'"]*$''')  # 쉼표 제외(이유는 클라이언트 쪽 주석 참고 —
+                                             # "(조건,)"이 튜플이 돼서 내용과 무관하게 항상 참이 되는 사고 방지)
 _CONDITION_TOKEN_PATTERN_SERVER = re.compile(r'[a-zA-Z_][a-zA-Z0-9_]*')
 _QUOTED_STRING_PATTERN_SERVER = re.compile(r"""(['"])(?:(?!\1).)*\1""")
 _custom_condition_alert_cooldown = {}  # (cond_id, exchange, ticker) -> 마지막 알림 시각(초)
