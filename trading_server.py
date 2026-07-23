@@ -1708,7 +1708,12 @@ _signal_log_lock = threading.Lock()
 
 def _load_signal_log():
     """resolved 컬럼이 CSV 왕복하면서 문자열("True"/"False")이 되는 문제를 정규화해서 읽는다.
-    exchange 컬럼이 없는 구버전 로그(업비트 추가 전에 쌓인 것)는 전부 'bithumb'으로 채운다."""
+    exchange 컬럼이 없는 구버전 로그(업비트 추가 전에 쌓인 것)는 전부 'bithumb'으로 채운다.
+    [2026-07-23 버그수정] resolve_ts 컬럼이 여태 한 번도 안 채워져서 전부 빈칸(NaN)이면
+    pandas가 이 컬럼을 float64로 추론해버린다 — 그 상태에서 시각 문자열을 넣으려고 하면
+    "Invalid value '...' for dtype 'float64'"로 매번 예외가 나서 resolve_signal_outcomes()가
+    단 한 건도 해결 못 시키는 문제가 실제로 있었다(전부 예외로 튕겨나감). object(문자열 가능)
+    dtype으로 미리 강제해서 방지한다."""
     df = pd.read_csv(SIGNAL_LOG_FILE)
     if 'resolved' in df.columns:
         df['resolved'] = df['resolved'].astype(str).str.strip().eq('True')
@@ -1716,6 +1721,8 @@ def _load_signal_log():
         df['exchange'] = 'bithumb'
     else:
         df['exchange'] = df['exchange'].fillna('bithumb')
+    if 'resolve_ts' in df.columns:
+        df['resolve_ts'] = df['resolve_ts'].astype('object')
     return df
 
 def migrate_signal_log_schema():
@@ -1822,11 +1829,12 @@ def resolve_signal_outcomes():
         def _fetch_one(pair):
             exch, ticker = pair
             fetch_fn = fetch_candlestick_upbit if exch == 'upbit' else fetch_candlestick
-            candle = fetch_fn(ticker, chart_intervals="1h", timeout=8, retries=1)
+            candle = fetch_fn(ticker, chart_intervals="1h", timeout=15, retries=2)
             return (exch, ticker, candle)
 
         candle_results = {}
         fetch_fail = 0
+        fetch_fail_names = []
         with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, max(len(pairs), 1))) as pool:
             futures = [pool.submit(_fetch_one, (r.exchange, r.ticker)) for r in pairs.itertuples(index=False)]
             for fut in as_completed(futures):
@@ -1837,11 +1845,16 @@ def resolve_signal_outcomes():
                     continue
                 if candle is None or len(candle) < 3:
                     fetch_fail += 1
+                    fetch_fail_names.append(f"{exch}/{ticker}")
                     continue
                 candle_results[(exch, ticker)] = candle
 
         newly_resolved = 0
-        row_skip = 0
+        skip_price = 0     # entry_price<=0
+        skip_window = 0    # window<2 (캔들 시간대가 entry_time이랑 안 겹침)
+        skip_noret = 0     # ret60/ret120 둘다 None(아직 그 시점 캔들이 안 나옴)
+        skip_exc = 0        # 처리 중 예외 발생
+        exc_samples = []
         for (exch, ticker), candle in candle_results.items():
             idxs = df.index[pending_mask & (df['ticker'] == ticker) & (df['exchange'] == exch)]
             for idx in idxs:
@@ -1850,19 +1863,19 @@ def resolve_signal_outcomes():
                     entry_time = row['opened_ts']
                     entry_price = float(row['entry_price'])
                     if entry_price <= 0:
-                        row_skip += 1
+                        skip_price += 1
                         continue
                     window = candle[(candle.index >= entry_time - pd.Timedelta(minutes=30)) &
                                      (candle.index <= entry_time + pd.Timedelta(minutes=150))]
                     if len(window) < 2:
-                        row_skip += 1
+                        skip_window += 1
                         continue
                     t60 = window[window.index >= entry_time + pd.Timedelta(minutes=45)]
                     t120 = window[window.index >= entry_time + pd.Timedelta(minutes=105)]
                     ret60 = (t60.iloc[0]['close'] - entry_price) / entry_price * 100 if len(t60) else None
                     ret120 = (t120.iloc[0]['close'] - entry_price) / entry_price * 100 if len(t120) else None
                     if ret60 is None and ret120 is None:
-                        row_skip += 1
+                        skip_noret += 1
                         continue  # 아직 그 시점 캔들이 안 나옴 — 다음 주기에 재시도
                     post = window[window.index >= entry_time]
                     mfe = (post['high'].max() - entry_price) / entry_price * 100 if len(post) else None
@@ -1876,14 +1889,22 @@ def resolve_signal_outcomes():
                     df.loc[idx, 'resolved'] = True
                     df.loc[idx, 'resolve_ts'] = now.strftime('%Y-%m-%d %H:%M:%S')
                     newly_resolved += 1
-                except Exception:
-                    row_skip += 1
+                except Exception as e:
+                    skip_exc += 1
+                    if len(exc_samples) < 5:
+                        exc_samples.append(f"{exch}/{ticker}/idx={idx}: {e!r}")
                     continue
         if newly_resolved:
             with _signal_log_lock:
                 df.to_csv(SIGNAL_LOG_FILE, index=False)
+        row_skip = skip_price + skip_window + skip_noret + skip_exc
         print(f"[신호해소] 대상쌍 {len(pairs)}개(캔들실패 {fetch_fail}) | 대상행 {pending_mask.sum()}개 "
-              f"| 해결 {newly_resolved} / 보류 {row_skip}")
+              f"| 해결 {newly_resolved} / 보류 {row_skip} "
+              f"(가격오류 {skip_price} / 시간대안겹침 {skip_window} / 아직결과없음 {skip_noret} / 예외 {skip_exc})")
+        if fetch_fail_names:
+            print(f"[신호해소] 캔들실패 목록(최대20개): {fetch_fail_names[:20]}")
+        if exc_samples:
+            print(f"[신호해소] 예외 샘플: {exc_samples}")
         return newly_resolved
     except Exception as e:
         print(f"신호 결과 해소 실패: {e}")
@@ -2724,13 +2745,37 @@ REPORT_SAVE_DIR = SCRIPT_DIR  # PDF 리포트 저장 경로. 기본값은 SCRIPT
 os.makedirs(CMD_DIR, exist_ok=True)
 
 def _atomic_write_csv(path, rows):
-    """쓰다 만 파일을 클라이언트가 읽는 사고를 막기 위해 tmp에 쓰고 교체한다."""
+    """쓰다 만 파일을 클라이언트가 읽는 사고를 막기 위해 tmp에 쓰고 교체한다.
+    [2026-07-23 버그수정] 안드로이드 공용저장소(scoped storage, FUSE)에서 os.replace()가
+    "tmp 파일이 방금 썼는데도 없다"는 식으로 간헐적으로 실패하는 현상이 실측으로 확인됐다
+    (설정 초기화 이후 저장 권한/파일시스템 동작이 불안정해진 것으로 추정). 그래서 rename을
+    몇 번 재시도하고, 그래도 안 되면 최후 수단으로 tmp 없이 원본 경로에 직접 덮어쓴다
+    (원자적 교체 보장은 깨지지만, 클라이언트가 데이터를 아예 못 받는 것보다는 낫다)."""
     tmp = path + ".tmp"
     with open(tmp, 'w', newline='', encoding='utf-8') as f:
         w = csv.writer(f)
         for r in rows:
             w.writerow(r)
-    os.replace(tmp, path)
+    for attempt in range(3):
+        try:
+            os.replace(tmp, path)
+            return
+        except OSError:
+            if attempt < 2:
+                time.sleep(0.15)
+            continue
+    # 재시도 3번 다 실패 — tmp 없이 직접 쓰기로 폴백(atomic은 아니지만 데이터는 갱신됨)
+    try:
+        with open(path, 'w', newline='', encoding='utf-8') as f:
+            w = csv.writer(f)
+            for r in rows:
+                w.writerow(r)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    except Exception as e:
+        print(f"직접 저장도 실패({path}): {e}")
 
 MARKET_COLS = ['ticker', 'price', 'price_usd', 'chg_24h', 'long_score', 'short_score',
                'prepump_score', 'preshort_score',

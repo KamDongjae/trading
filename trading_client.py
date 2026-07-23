@@ -1859,7 +1859,7 @@ class TradingClient:
         클라이언트가 이미 읽고 있는 지표값만으로 전부 처리한다(_render_table에서 평가)."""
         win = tk.Toplevel(self.root)
         win.title("커스텀 조건식")
-        win.geometry("480x620")
+        win.geometry("480x760")
 
         self._cond_color = "#ffcc00"
 
@@ -1911,8 +1911,67 @@ class TradingClient:
         for c in range(cols):
             grid.grid_columnconfigure(c, weight=1)
 
+        # ============================================================
+        # [2026-07-23 추가] 일괄 등록 — 조건식 미리 여러 개(예: 조건 마이닝 결과) 갖고
+        # 있을 때, 한 줄에 하나씩 붙여넣으면 전부 OR(||)로 묶어서 "조건 하나"로 등록한다.
+        # 색상도 하나만 고르면 그 묶음 전체가 같은 색으로 카드에 표시된다.
+        # ============================================================
+        tk.Label(win, text="여러 줄 붙여넣기 — 줄바꿈된 조건들을 OR로 묶어 한 번에 등록",
+                 font=("Arial", 10, "bold"), fg="#1a4a7a").pack(anchor="w", padx=10, pady=(10, 2))
+
+        bulk_top = tk.Frame(win)
+        bulk_top.pack(fill="x", padx=10)
+        self._bulk_color = "#3a7a5a"
+        bulk_color_btn = tk.Button(bulk_top, width=3, bg=self._bulk_color)
+        def pick_bulk_color():
+            c = colorchooser.askcolor(color=self._bulk_color, parent=win, title="묶음 색상 선택")
+            if c and c[1]:
+                self._bulk_color = c[1]
+                bulk_color_btn.config(bg=self._bulk_color)
+        bulk_color_btn.config(command=pick_bulk_color)
+        bulk_color_btn.pack(side="left", padx=(0, 6))
+        tk.Label(bulk_top, text="이 묶음 전체에 적용할 색상", font=("Arial", 9),
+                 fg="#666666").pack(side="left")
+
+        bulk_text = tk.Text(win, height=6, font=("Consolas", 9), wrap="none")
+        bulk_text.pack(fill="x", padx=10, pady=(4, 4))
+        bulk_text.insert("1.0", "rsi < 30 && bb_percent < 20\nrsi > 70 && bb_percent > 80")
+
+        def register_bulk():
+            raw = bulk_text.get("1.0", tk.END)
+            lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+            if not lines:
+                messagebox.showwarning("경고", "붙여넣은 조건식이 없습니다.", parent=win)
+                return
+            bad = []
+            for i, ln in enumerate(lines, 1):
+                ok, err = validate_condition_expr(ln)
+                if not ok:
+                    bad.append(f"{i}번째 줄: {err}\n  → {ln}")
+            if bad:
+                messagebox.showwarning("조건식 오류",
+                                        f"{len(bad)}개 줄에 문제가 있습니다. 고친 뒤 다시 시도하세요:\n\n" +
+                                        "\n\n".join(bad[:5]) +
+                                        (f"\n\n...외 {len(bad)-5}개 더" if len(bad) > 5 else ""),
+                                        parent=win)
+                return
+            combined = " || ".join(f"({ln})" for ln in lines)
+            ok, err = validate_condition_expr(combined)
+            if not ok:
+                messagebox.showwarning("조건식 오류", f"묶은 결과가 유효하지 않습니다: {err}", parent=win)
+                return
+            cond = {"id": f"c{int(time.time()*1000)}", "expr": combined, "color": self._bulk_color,
+                     "enabled": True, "alert": False}
+            self.custom_conditions.append(cond)
+            save_custom_conditions(self.custom_conditions)
+            messagebox.showinfo("등록 완료", f"{len(lines)}개 조건을 OR로 묶어 한 개로 등록했습니다.", parent=win)
+            refresh_list()
+
+        tk.Button(win, text=f"일괄등록 (OR로 묶기)", command=register_bulk, bg="#7a4aa0", fg="white",
+                  font=("Arial", 10, "bold"), padx=10).pack(anchor="w", padx=10, pady=(0, 8))
+
         tk.Label(win, text="등록된 조건식", font=("Arial", 11, "bold")).pack(
-            anchor="w", padx=10, pady=(12, 2))
+            anchor="w", padx=10, pady=(4, 2))
 
         list_canvas = tk.Canvas(win, highlightthickness=0)
         list_vsb = ttk.Scrollbar(win, orient="vertical", command=list_canvas.yview)
