@@ -130,7 +130,8 @@ CUSTOM_CONDITIONS_FILE = os.path.join(SCRIPT_DIR, "custom_conditions.json")
 CONDITION_INDICATORS_SERVER = [
     "ticker", "rsi", "rsi_delta", "vol_z", "bb_percent", "price", "price_usd", "chg_24h",
     "cvd", "cvd_diff", "funding", "vol_24h_m", "atr_pct", "oi_change_pct", "chg_30m",
-    "ls_ratio", "ema20", "ema60", "long_score", "short_score", "prepump_score", "preshort_score",
+    "ls_ratio", "ema20", "ema60", "recent_pct",
+    "long_score", "short_score", "prepump_score", "preshort_score",
 ]
 _CONDITION_ALLOWED_NAMES_SERVER = set(CONDITION_INDICATORS_SERVER) | {"and", "or", "not", "True", "False"}
 _CONDITION_CHAR_PATTERN_SERVER = re.compile(r'''^[a-zA-Z0-9_\s\.\+\-\*/()<>=!&|,'"]*$''')
@@ -2781,7 +2782,7 @@ MARKET_COLS = ['ticker', 'price', 'price_usd', 'chg_24h', 'long_score', 'short_s
                'prepump_score', 'preshort_score',
                'rsi', 'rsi_delta', 'vol_z', 'bb_percent', 'cvd', 'cvd_diff', 'funding',
                'vol_24h_m', 'atr_pct', 'oi_change_pct', 'chg_30m', 'ls_ratio',
-               'ema20', 'ema60',
+               'ema20', 'ema60', 'recent_pct',
                'min_cut', 'watch_cut', 'pp_min_cut', 'interval', 'score_time', 'price_time']
 
 _last_score_time = [""]
@@ -2828,6 +2829,7 @@ def write_market_snapshot(exchange='bithumb'):
             r.get('ls_ratio', '') if r.get('ls_ratio') is not None else '',
             r.get('ema20', '') if r.get('ema20') is not None else '',
             r.get('ema60', '') if r.get('ema60') is not None else '',
+            r.get('recent_pct', '') if r.get('recent_pct') is not None else '',
             min_score, WATCH_MIN_SCORE, PREPUMP_MIN_SCORE, CANDLE_INTERVAL, score_time, pt,
         ])
         # [2026-07-21 추가] 커스텀 조건식 — CSV에 쓰는 것과 동일한 값으로 평가
@@ -2840,6 +2842,7 @@ def write_market_snapshot(exchange='bithumb'):
                 "vol_24h_m": r.get('vol_24h_m', 0), "atr_pct": r.get('atr_pct', 0),
                 "oi_change_pct": r.get('oi_change_pct', 0), "chg_30m": r.get('chg_30m', 0),
                 "ls_ratio": r.get('ls_ratio', 0), "ema20": r.get('ema20', 0), "ema60": r.get('ema60', 0),
+                "recent_pct": r.get('recent_pct', 0),
                 "long_score": r.get('long_score', 0), "short_score": r.get('short_score', 0),
                 "prepump_score": r.get('prepump_score', 0), "preshort_score": r.get('preshort_score', 0),
             }

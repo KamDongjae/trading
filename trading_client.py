@@ -78,7 +78,7 @@ CONDITION_INDICATORS = [
     ("price", "가격(원)"), ("price_usd", "가격(USD)"), ("chg_24h", "24h변동%"),
     ("cvd", "CVD"), ("cvd_diff", "CVD변화"), ("funding", "펀딩"), ("vol_24h_m", "24h거래대금"),
     ("atr_pct", "ATR%"), ("oi_change_pct", "OI변화%"), ("chg_30m", "30분변동%"),
-    ("ls_ratio", "L/S비율"), ("ema20", "EMA20"), ("ema60", "EMA60"),
+    ("ls_ratio", "L/S비율"), ("ema20", "EMA20"), ("ema60", "EMA60"), ("recent_pct", "최근등락%"),
     ("long_score", "롱점수"), ("short_score", "숏점수"),
     ("prepump_score", "매집점수"), ("preshort_score", "분산점수"),
 ]
@@ -210,6 +210,7 @@ def read_market_snapshot(path=None):
                     'ls_ratio': _f(r.get('ls_ratio')) if r.get('ls_ratio') not in (None, '',) else None,
                     'ema20': _f(r.get('ema20')) if r.get('ema20') not in (None, '',) else None,
                     'ema60': _f(r.get('ema60')) if r.get('ema60') not in (None, '',) else None,
+                    'recent_pct': _f(r.get('recent_pct')) if r.get('recent_pct') not in (None, '',) else None,
                 })
                 cut = r.get('min_cut')
                 if cut:
