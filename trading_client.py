@@ -473,6 +473,21 @@ class TradingClient:
         self.leverage_entry.insert(0, str(DEFAULT_LEVERAGE))
         self.leverage_entry.grid(row=0, column=5, padx=(0, 2))
 
+        # [2026-07-25 추가] 포지션 탭 정렬 바 — 이름순/수익률순. 코인탭 정렬바(sortbar)랑
+        # 똑같은 클릭 패턴(같은 버튼 다시 누르면 방향 반전)만 훨씬 단순화한 버전.
+        self.pos_sort_mode = None   # None=서버가 준 순서 그대로, 'name'|'pnl'
+        self.pos_sort_reverse = False
+        self.pos_sort_bar = tk.Frame(self.root)
+        pos_sort_buttons = [("기본", None), ("이름순", "name"), ("수익률순", "pnl")]
+        self._pos_sort_btn_widgets = {}
+        for label, key in pos_sort_buttons:
+            b = tk.Label(self.pos_sort_bar, text=label, font=("Arial", self.FONT_SMALL), bg="#eeeeee",
+                         fg="black", relief="raised", bd=1, cursor="hand2", padx=8, pady=2)
+            b.pack(side="left", padx=2)
+            b.bind("<ButtonRelease-1>", lambda e, k=key: self.set_pos_sort(k))
+            self._pos_sort_btn_widgets[key] = b
+        self._highlight_pos_sort_buttons()
+
         # 포지션 패널 (코인/포지션 뷰 전환 버튼이 pack 여부를 제어 — 여기선 만들기만 함)
         self.pos_panel = tk.Frame(self.root, bd=1, relief="groove", bg="#16181d")
         self.pos_canvas = tk.Canvas(self.pos_panel, bg="#16181d", highlightthickness=0)
@@ -741,6 +756,7 @@ class TradingClient:
         self.view_mode = mode
         if mode == 'coins':
             self._hide_pos_panel()
+            self.pos_sort_bar.pack_forget()
             self.exchange_bar.pack(side="top", fill="x", padx=4, pady=(4, 0))
             self.sortbar.pack(side="top", fill="x", padx=4, pady=(0, 2))
             self.tree_container.pack(fill="both", expand=True, padx=4, pady=2)
@@ -748,10 +764,42 @@ class TradingClient:
             self.tree_container.pack_forget()
             self.sortbar.pack_forget()
             self.exchange_bar.pack_forget()
+            self.pos_sort_bar.pack(side="top", fill="x", padx=4, pady=(4, 2))
             self._show_pos_panel()
             _, _, pos_list = self._account
             self._render_pos_panel(pos_list)
         self._highlight_view_buttons()
+
+    def set_pos_sort(self, key):
+        """포지션 탭 정렬 버튼 클릭 — 같은 버튼 다시 누르면 오름/내림차순 반전."""
+        if key == self.pos_sort_mode:
+            self.pos_sort_reverse = not self.pos_sort_reverse
+        else:
+            self.pos_sort_mode = key
+            self.pos_sort_reverse = False
+        self._highlight_pos_sort_buttons()
+        _, _, pos_list = self._account
+        self._render_pos_panel(pos_list)
+
+    def _highlight_pos_sort_buttons(self):
+        for key, b in self._pos_sort_btn_widgets.items():
+            if key == self.pos_sort_mode:
+                # pnl은 기본이 내림차순(수익 좋은 것 먼저)이라 표시 화살표를 이름순과 반대로 맞춘다
+                showing_desc = self.pos_sort_reverse if key == 'name' else (not self.pos_sort_reverse)
+                arrow = " ▼" if showing_desc else " ▲"
+                self._cfg(b, bg="#1a7abf", fg="white", text=self._pos_sort_label(key) + arrow)
+            else:
+                self._cfg(b, bg="#eeeeee", fg="black", text=self._pos_sort_label(key))
+
+    def _pos_sort_label(self, key):
+        return {"name": "이름순", "pnl": "수익률순", None: "기본"}.get(key, "기본")
+
+    def _apply_pos_sort(self, pos_list):
+        if self.pos_sort_mode == 'name':
+            return sorted(pos_list, key=lambda p: p['ticker'], reverse=self.pos_sort_reverse)
+        if self.pos_sort_mode == 'pnl':
+            return sorted(pos_list, key=lambda p: p['pnl_rate_pct'], reverse=not self.pos_sort_reverse)
+        return pos_list
 
     def _highlight_view_buttons(self):
         if self.view_mode == 'coins':
@@ -927,6 +975,7 @@ class TradingClient:
 
     def _render_pos_panel(self, pos_list):
         self._cfg(self.btn_view_positions, text=f"포지션 ({len(pos_list)})")
+        pos_list = self._apply_pos_sort(pos_list)
         if not pos_list:
             for t in list(self.pos_cards.keys()):
                 self.pos_cards[t].destroy()
