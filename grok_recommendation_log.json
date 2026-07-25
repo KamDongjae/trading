@@ -42,6 +42,42 @@
     "entry_price": 95916000.0,
     "confidence": 0.423,
     "regime": "UPTREND",
+    "status": "lost",
+    "exit_price": 93625000.0,
+    "pnl_pct": -2.389,
+    "evaluated_at": "2026-07-25T16:05:28.032538"
+  },
+  {
+    "timestamp": "2026-07-25T16:11:17.424921",
+    "ticker": "A",
+    "raw_ticker": "A",
+    "exchange": "bithumb",
+    "side": "short",
+    "entry_price": 91.46,
+    "confidence": 0.577,
+    "regime": "DOWNTREND",
+    "status": "pending"
+  },
+  {
+    "timestamp": "2026-07-25T16:11:17.424921",
+    "ticker": "ADA_BITHUMB",
+    "raw_ticker": "ADA",
+    "exchange": "bithumb",
+    "side": "short",
+    "entry_price": 238.0,
+    "confidence": 0.566,
+    "regime": "DOWNTREND",
+    "status": "pending"
+  },
+  {
+    "timestamp": "2026-07-25T16:11:17.424921",
+    "ticker": "BTC_BITHUMB",
+    "raw_ticker": "BTC",
+    "exchange": "bithumb",
+    "side": "short",
+    "entry_price": 93625000.0,
+    "confidence": 0.514,
+    "regime": "DOWNTREND",
     "status": "pending"
   }
 ]

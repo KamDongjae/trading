@@ -7,16 +7,24 @@ grok_recommender.py
 포지션/명령큐 같은 트레이딩 기능은 전혀 안 건드림 — "무거워도 되니 서버 없이 돌아가게"
 요청 반영. 대신 코인 수만큼 캔들 fetch를 직접 하니 예전보다 느리다).
 
+[2026-07-25] 빗썸뿐 아니라 업비트도 병행 지원(EXCHANGES 설정). 같은 심볼이 두 거래소에
+모두 있으면 "BTC_BITHUMB"/"BTC_UPBIT"처럼 구분한다. 또한 trading_client.py "조건식" 창과
+같은 파일(custom_conditions.json)을 읽어서, 실측 데이터로 개별 백테스트해둔 조건식에
+매칭되는 코인은 이미지 고화질 승급 + Grok 프롬프트에 별도 강조 신호로 전달한다.
+
 파이프라인:
-  ① 빗썸 전체 티커 조회 + 가격 히스토리 워밍업 후, 코인별로 process_ticker() 직접 호출해서
-     지표/점수를 자체 계산 (score_cache를 이 스크립트가 직접 채움)
+  ① 빗썸+업비트 전체 티커 조회 + 가격 히스토리 워밍업 후, 코인별로 process_ticker()/
+     process_ticker_upbit()를 직접 호출해서 지표/점수를 자체 계산
   ② 바이낸스 상장된 코인만 골라 후보군 확정 (사전 랭킹 없음, 전부 사용) + 시장 국면(상승/
      하락/횡보) 판단
-  ③ 그 점수 스냅샷으로 지표 리포트(PDF, 이름순 10개씩 페이지 분할) 생성
+  ③ 그 점수 스냅샷으로 지표 리포트(PDF, 이름순 10개씩 페이지 분할 — 빗썸 score_cache
+     기준이라 이 리포트 자체는 빗썸 위주. 업비트는 JSON 스냅샷/차트로 별도 전달됨) 생성
   ④ 후보 코인들의 캔들차트를 matplotlib으로 그려 한 PDF(여러 페이지)로 합치고,
-     OHLCV+지표 데이터를 한 CSV로 합침
-  ⑤ 지표 리포트(텍스트) + 차트(이미지) + 데이터(CSV 샘플) + 시장국면을 xAI Grok API에 보내서
-     롱 후보 최대3개 / 숏 후보 최대3개를 추천받아 "long:AAA,BBB / short:DDD,EEE" 형식으로 출력
+     OHLCV+지표 데이터를 한 CSV로 합침. 커스텀 조건식 매칭 코인 + 롱/숏 점수차 상하위는
+     고화질 이미지로 승급
+  ⑤ 지표 리포트(텍스트) + 차트(이미지) + 데이터(CSV 샘플) + 커스텀 조건식 매칭 여부 +
+     시장국면을 xAI Grok API에 보내서 롱 후보 최대3개 / 숏 후보 최대3개를 추천받아
+     "long:AAA,BBB / short:DDD,EEE" 형식으로 출력
 
 준비물:
   - trading_server.py가 같은 폴더에 있어야 함 (import만 함, 실행 중일 필요는 없음)
@@ -101,6 +109,15 @@ LIQUIDITY_BOTTOM_PCT = 0.20  # 거래대금(vol_24h_m) 하위 20%는 "허위 펌
 
 BITHUMB_INTERVAL = "minute60"   # 차트/CSV용 봉 간격 (python_bithumb 규격)
 INTERVAL_LABEL = "60min"
+
+# [2026-07-25 추가] 업비트 병행 지원 — trading_server.py가 이미 process_ticker_upbit /
+# get_upbit_tickers / fetch_candlestick_upbit(10m~12h)를 갖고 있어서 점수 계산·기본 캔들은
+# 그대로 재사용. 다만 HTF(4H/1D/1W) 캔들은 srv 쪽에 없어서 이 스크립트에서 업비트 공개
+# API를 직접 호출한다(UPBIT_HTF_URLS 아래).
+EXCHANGES = ["bithumb", "upbit"]  # 하나만 돌리고 싶으면 리스트에서 빼면 됨
+UPBIT_CANDLE_DAY_URL = "https://api.upbit.com/v1/candles/days"
+UPBIT_CANDLE_WEEK_URL = "https://api.upbit.com/v1/candles/weeks"
+UPBIT_CANDLE_MINUTE_URL_LOCAL = "https://api.upbit.com/v1/candles/minutes/{unit}"
 CHART_COUNT = 200               # 코인당 캔들 개수
 
 OUT_DIR = os.path.join(SCRIPT_DIR, "grok_run")
@@ -206,6 +223,60 @@ CONDENSED_JSON_MAX_CHARS = 25000
 # ===========================================
 
 
+def _fetch_upbit_ohlcv(coin, bithumb_style_interval, count=200, timeout=10, retries=3):
+    """
+    [2026-07-25 추가] 업비트 버전 get_ohlcv 대체품. python_bithumb.get_ohlcv와 반환 형태를
+    맞춘다(open/high/low/close/volume 컬럼, datetime index, 오름차순). trading_server.py의
+    fetch_candlestick_upbit()는 10m~12h까지만 지원해서(4H/1D/1W 없음), HTF 체크(day/week)와
+    4H 간격은 여기서 업비트 공개 API를 직접 호출해 별도로 처리한다.
+    """
+    market = f"KRW-{coin}"
+    try:
+        if bithumb_style_interval in ("day", "week"):
+            url = UPBIT_CANDLE_DAY_URL if bithumb_style_interval == "day" else UPBIT_CANDLE_WEEK_URL
+            resp = requests.get(url, params={"market": market, "count": count}, timeout=timeout)
+            data = resp.json()
+        elif bithumb_style_interval == "minute240":
+            # 업비트는 4시간봉을 직접 안 줘서 1시간봉을 넉넉히 받아 리샘플한다.
+            unit_resp = requests.get(UPBIT_CANDLE_MINUTE_URL_LOCAL.format(unit=60),
+                                      params={"market": market, "count": min(count * 4, 200)}, timeout=timeout)
+            data = unit_resp.json()
+        else:
+            unit_map = {"minute15": 15, "minute30": 30, "minute60": 60}
+            unit = unit_map.get(bithumb_style_interval, 60)
+            resp = requests.get(UPBIT_CANDLE_MINUTE_URL_LOCAL.format(unit=unit),
+                                 params={"market": market, "count": count}, timeout=timeout)
+            data = resp.json()
+        if not isinstance(data, list) or not data:
+            return None
+        df = pd.DataFrame(data)
+        df["ts"] = pd.to_datetime(df["candle_date_time_kst"])
+        df = df.rename(columns={"opening_price": "open", "high_price": "high",
+                                 "low_price": "low", "trade_price": "close",
+                                 "candle_acc_trade_volume": "volume"})
+        df = df[["ts", "open", "high", "low", "close", "volume"]].set_index("ts").sort_index()
+        if bithumb_style_interval == "minute240":
+            df = df.resample("4H").agg({"open": "first", "high": "max", "low": "min",
+                                          "close": "last", "volume": "sum"}).dropna(how="any")
+        return df
+    except Exception as e:
+        if retries > 0:
+            time.sleep(0.5)
+            return _fetch_upbit_ohlcv(coin, bithumb_style_interval, count, timeout, retries - 1)
+        print(f"     ⚠️ 업비트 캔들 조회 실패({coin}, {bithumb_style_interval}): {e}")
+        return None
+
+
+def fetch_ohlcv_any(coin, exchange, bithumb_style_interval, count=200):
+    """거래소 무관 캔들 조회 진입점 — load_data/get_htf_trend가 이걸로 통일해서 부른다."""
+    if exchange == "upbit":
+        return _fetch_upbit_ohlcv(coin, bithumb_style_interval, count=count)
+    ticker = f"KRW-{coin}"
+    return _fetch_with_backoff(
+        lambda: python_bithumb.get_ohlcv(ticker=ticker, interval=bithumb_style_interval, count=count)
+    )
+
+
 def _fetch_with_backoff(fetch_fn, max_retries=4, base_delay=0.6):
     """
     python_bithumb 호출을 감싸서 Rate Limit 등으로 None이 오거나 예외가 나면 지수 백오프로
@@ -301,42 +372,63 @@ def compute_scores_standalone(warmup_seconds=15):
     가격을 미리 폴링해서 최소한의 히스토리를 만들지만, 진짜 "30분 전" 데이터는 아니라서
     chg_30m 값이 서버를 오래 켜뒀을 때보다 부정확할 수 있다(무거워도 된다는 전제하에
     이 정도 오차는 감수하는 설계).
+    [2026-07-25] EXCHANGES(기본 ["bithumb","upbit"]) 전부 돌면서 각각 트레이딩서버의
+    거래소별 계산 함수(process_ticker / process_ticker_upbit)를 그대로 재사용한다.
+    결과 dict마다 'exchange' 키를 붙여서 이후 파이프라인이 어느 거래소 코인인지 구분한다.
     """
-    print(f"① 서버 없이 직접 시세 수집 중 (워밍업 {warmup_seconds}초)...")
-    try:
-        price_data = srv.Bithumb.get_current_price("ALL")
-        tickers = [k for k in price_data.keys() if k != "date"][:srv.TOP_COIN_COUNT]
-    except Exception as e:
-        raise RuntimeError(f"빗썸 티커 목록을 못 가져왔습니다: {e}")
-    print(f"   티커 {len(tickers)}개 로드")
+    all_results = []
+    for exchange in EXCHANGES:
+        print(f"① [{exchange}] 서버 없이 직접 시세 수집 중 (워밍업 {warmup_seconds}초)...")
+        try:
+            if exchange == "upbit":
+                tickers = srv.get_upbit_tickers(limit=srv.TOP_COIN_COUNT)
+            else:
+                price_data = srv.Bithumb.get_current_price("ALL")
+                tickers = [k for k in price_data.keys() if k != "date"][:srv.TOP_COIN_COUNT]
+        except Exception as e:
+            print(f"   ⚠️ [{exchange}] 티커 목록을 못 가져옴, 이 거래소는 건너뜀: {e}")
+            continue
+        print(f"   [{exchange}] 티커 {len(tickers)}개 로드")
 
-    srv.running = True
-    tickers_ref = [tickers]
-    threading.Thread(target=srv.price_updater, args=(tickers_ref,), daemon=True).start()
-    time.sleep(warmup_seconds)
+        srv.running = True
+        tickers_ref = [tickers]
+        if exchange == "upbit":
+            threading.Thread(target=srv.ticker_updater_upbit, args=(tickers_ref,), daemon=True).start()
+            threading.Thread(target=srv.price_updater_upbit, args=(tickers_ref,), daemon=True).start()
+            proc_fn = srv.process_ticker_upbit
+        else:
+            threading.Thread(target=srv.price_updater, args=(tickers_ref,), daemon=True).start()
+            proc_fn = srv.process_ticker
+        time.sleep(warmup_seconds)
 
-    print("   지표/점수 계산 중 (코인마다 캔들 fetch, 코인 수만큼 시간 걸림)...")
-    results = []
-    with ThreadPoolExecutor(max_workers=srv.MAX_WORKERS) as pool:
-        futures = {pool.submit(srv.process_ticker, t): t for t in tickers}
-        for future in as_completed(futures):
-            try:
-                res = future.result()
-            except Exception as e:
-                print(f"   ⚠️ {futures[future]} 계산 실패: {e}")
-                continue
-            if res:
-                results.append(res)
-    with srv.score_lock:
-        srv.score_cache.clear()
-        for r in results:
-            srv.score_cache[r['ticker']] = r
-    print(f"   {len(results)}/{len(tickers)}개 코인 점수 계산 완료")
-    return results
+        print(f"   [{exchange}] 지표/점수 계산 중 (코인마다 캔들 fetch, 코인 수만큼 시간 걸림)...")
+        results = []
+        with ThreadPoolExecutor(max_workers=srv.MAX_WORKERS) as pool:
+            futures = {pool.submit(proc_fn, t): t for t in tickers}
+            for future in as_completed(futures):
+                try:
+                    res = future.result()
+                except Exception as e:
+                    print(f"   ⚠️ [{exchange}] {futures[future]} 계산 실패: {e}")
+                    continue
+                if res:
+                    res['exchange'] = exchange
+                    results.append(res)
+        cache = srv.score_cache_upbit if exchange == "upbit" else srv.score_cache
+        with srv.score_lock:
+            cache.clear()
+            for r in results:
+                cache[r['ticker']] = r
+        print(f"   [{exchange}] {len(results)}/{len(tickers)}개 코인 점수 계산 완료")
+        all_results.extend(results)
+    return all_results
 
 
 def generate_indicator_report():
-    """srv_generate_report()를 명령 큐 없이 함수 직접 호출로 실행 (score_cache는 이미 채워둔 상태)."""
+    """srv_generate_report()를 명령 큐 없이 함수 직접 호출로 실행 (score_cache는 이미 채워둔 상태).
+    [2026-07-25 참고] srv_generate_report()는 빗썸 score_cache 기준으로 만들어진 리포트라
+    업비트 코인은 이 PDF에는 안 실린다 — 업비트 지표는 JSON 스냅샷(csv_text)과 차트 이미지로
+    Grok에게 그대로 전달되니 판단 정보 자체가 빠지는 건 아니고, 이 텍스트 리포트만 빗썸 위주."""
     print("③ 지표 리포트(PDF) 생성 중...")
     ok, msg = srv.srv_generate_report(save_dir=OUT_DIR)
     if not ok:
@@ -359,13 +451,23 @@ def get_all_tickers(all_rows):
     상위 롱10/숏10으로 미리 걸러내지 않고, 방금 계산한 결과 중 바이낸스 상장된 코인
     전부를 후보군으로 쓴다(사전 랭킹으로 후보를 좁히면 그 랭킹 자체(점수체계)가 이미
     걸러낸 영향이 결과에 섞여버려서, Grok이 원 데이터를 다 보고 스스로 판단하게 한다).
+    [2026-07-25] 이제 빗썸+업비트를 같이 돌려서 같은 심볼(예: BTC)이 두 거래소 모두에
+    있을 수 있다 — 그럴 때만 "BTC(upbit)"처럼 거래소를 붙인 라벨로 구분하고, 한쪽에만
+    있으면 그냥 원래 심볼을 그대로 쓴다(불필요하게 다 붙이면 지저분해지므로).
+    반환: (라벨 리스트, rows(각 dict에 'label' 필드 추가됨), {라벨: (ticker, exchange)} 매핑)
     """
     rows = [r for r in all_rows if r.get('price_usd')]
-    rows.sort(key=lambda r: r.get('ticker', ''))
+    rows.sort(key=lambda r: (r.get('ticker', ''), r.get('exchange', '')))
     if not rows:
         raise RuntimeError("바이낸스 상장 코인 중 점수 데이터가 없습니다")
-    all_tickers = [r['ticker'] for r in rows]
-    return all_tickers, rows
+    from collections import Counter
+    symbol_counts = Counter(r['ticker'] for r in rows)
+    for r in rows:
+        r.setdefault('exchange', 'bithumb')
+        r['label'] = r['ticker'] if symbol_counts[r['ticker']] == 1 else f"{r['ticker']}_{r['exchange'].upper()}"
+    all_labels = [r['label'] for r in rows]
+    label_map = {r['label']: (r['ticker'], r['exchange']) for r in rows}
+    return all_labels, rows, label_map
 
 
 def detect_market_regime(rows):
@@ -452,7 +554,7 @@ def detect_market_regime(rows):
 #    chart.py는 맨 아래서 바로 Tkinter GUI를 띄우는 구조라 import해서 재사용하기엔
 #    안전하지 않아서, 필요한 부분만 복제했다)
 # ============================================================
-def load_data(coin):
+def load_data(coin, exchange="bithumb"):
     """
     grok_recommender_improvement 가이드의 [개선 1~3] 반영:
       - chg_30m: 워밍업 방식 대신 minute30봉 2개를 직접 fetch해서 "현재 종가 vs 30분 전 종가"
@@ -460,11 +562,9 @@ def load_data(coin):
       - BB_Position: 볼린저 밴드(20,2) 및 밴드 내 현재가 위치 비율(0~1)
       - MACD/Signal/Hist: MACD(12,26,9) 오실레이터
     빗썸 API Rate Limit으로 인한 None 응답에 대비해 두 fetch 모두 지수 백오프 재시도 적용.
+    [2026-07-25] exchange="upbit"면 fetch_ohlcv_any가 업비트 공개 API로 라우팅한다.
     """
-    ticker = f"KRW-{coin}"
-    df = _fetch_with_backoff(
-        lambda: python_bithumb.get_ohlcv(ticker=ticker, interval=BITHUMB_INTERVAL, count=CHART_COUNT)
-    )
+    df = fetch_ohlcv_any(coin, exchange, BITHUMB_INTERVAL, count=CHART_COUNT)
     if df is None or len(df) == 0:
         return None
     df.index = pd.to_datetime(df.index)
@@ -479,9 +579,7 @@ def load_data(coin):
     df['RSI_Delta'] = df['RSI'].diff()
 
     # [개선 1] 워밍업 프리 30분 변동률 역산
-    df_30m = _fetch_with_backoff(
-        lambda: python_bithumb.get_ohlcv(ticker=ticker, interval="minute30", count=2)
-    )
+    df_30m = fetch_ohlcv_any(coin, exchange, "minute30", count=2)
     if df_30m is not None and len(df_30m) >= 2:
         p_ago = df_30m['close'].iloc[-2]
         df['chg_30m'] = ((df['close'] - p_ago) / p_ago) * 100
@@ -604,19 +702,18 @@ def build_figure(df, ticker):
     return fig
 
 
-def get_htf_trend(coin):
+def get_htf_trend(coin, exchange="bithumb"):
     """
     [정확도 개선 ①] 4H/1D 상위타임프레임 EMA20/60 정배열 여부를 확인한다.
     시간봉만 보고 픽하면 상위 프레임에서 역행하는 신호를 놓칠 수 있어서, 4H·1D 둘 다
     정배열(EMA20>EMA60=상승, 반대=하락)이면 강한 신호, 둘이 엇갈리면 "혼조"로 판단.
     반환: {"4H": 1/-1/0, "1D": 1/-1/0, "agree": bool, "score": -1~+1}
+    [2026-07-25] exchange="upbit"면 fetch_ohlcv_any가 업비트 공개 API(4H는 1h 리샘플,
+    1D/1W는 전용 엔드포인트)로 라우팅한다.
     """
-    ticker = f"KRW-{coin}"
     result = {}
     for interval, label in HTF_INTERVALS:
-        df = _fetch_with_backoff(
-            lambda i=interval: python_bithumb.get_ohlcv(ticker=ticker, interval=i, count=HTF_CANDLE_COUNT)
-        )
+        df = fetch_ohlcv_any(coin, exchange, interval, count=HTF_CANDLE_COUNT)
         if df is None or len(df) < 20:
             result[label] = 0
             continue
@@ -933,41 +1030,72 @@ def run_walk_forward_backtest(dfs_by_ticker, base_weights):
 def _pick_high_detail_tickers(rows, top_n=HIGH_DETAIL_TOP_N):
     """
     [개선] 이미지 토큰 비용 효율화: 전부 low로 보내면 해상도 저하로 RSI 다이버전스나 미세한
-    캔들 패턴 인식이 어려워지므로, 롱/숏 점수차(long_score - short_score) 기준 상위 N개
-    (가장 롱 우세) + 하위 N개(가장 숏 우세)만 골라 high 디테일로 승급시킨다. 나머지는 저비용
-    low 유지.
+    캔들 패턴 인식이 어려워지므로 일부만 high 디테일로 승급시킨다.
+
+    [2026-07-25 개편] 예전엔 long_score-short_score(원점수 차이) 상/하위 N개만 봤는데,
+    이 점수 자체가 한동안 신뢰도가 낮았던 이력이 있다(trading_server.py 쪽에서 v3→v6로
+    전면 재설계했을 정도). 그 사이 실측 데이터로 훨씬 더 검증된 게 커스텀 조건식
+    (custom_conditions.json — trading_client.py "조건식" 창과 같은 파일)이라, 이제:
+      1순위: 활성화된 커스텀 조건식에 매칭되는 코인 — 전부 무조건 high 승급
+      2순위: 그러고도 자리가 남으면(1순위가 top_n*2보다 적으면) 기존 점수차 상/하위로 채움
     """
+    condition_matched = set()
+    try:
+        conditions = srv.load_custom_conditions_server()
+        enabled = [c for c in conditions if c.get('enabled', True)]
+        if enabled:
+            for r in rows:
+                row_for_eval = {name: r.get(name) for name in srv.CONDITION_INDICATORS_SERVER}
+                row_for_eval['ticker'] = r.get('ticker', '')
+                for cond in enabled:
+                    if srv._evaluate_condition_server(cond.get('expr', ''), row_for_eval):
+                        condition_matched.add(r['label'])
+                        break
+    except Exception as e:
+        print(f"   ⚠️ 커스텀 조건식 평가 실패(무시하고 진행): {e}")
+
     scored = [r for r in rows if r.get('long_score') is not None and r.get('short_score') is not None]
-    if not scored:
-        return set()
-    scored.sort(key=lambda r: r['long_score'] - r['short_score'])
-    bottom = scored[:top_n]                       # 가장 숏 우세
-    top = scored[-top_n:] if top_n else []          # 가장 롱 우세
-    return {r['ticker'] for r in (top + bottom)}
+    score_based = set()
+    if scored:
+        scored.sort(key=lambda r: r['long_score'] - r['short_score'])
+        bottom = scored[:top_n]
+        top = scored[-top_n:] if top_n else []
+        score_based = {r['label'] for r in (top + bottom)}
+
+    result = condition_matched | score_based
+    if condition_matched:
+        print(f"   커스텀 조건식 매칭으로 high 승급: {len(condition_matched)}개 "
+              f"({', '.join(sorted(condition_matched)[:10])}{'...' if len(condition_matched) > 10 else ''})")
+    return result
 
 
-def _fetch_coin_raw(coin):
+def _fetch_coin_raw(label, ticker, exchange):
     """[2차 리뷰 #8] 코인 하나의 캔들/HTF/펀딩·OI를 한 번에 가져오는 단위 작업 —
     ThreadPoolExecutor로 코인별 병렬 실행한다 (matplotlib 차트 렌더링은 스레드 안전성
-    때문에 여기 포함 안 하고 fetch 다 끝난 뒤 메인 스레드에서 순차 처리)."""
-    df = load_data(coin)
+    때문에 여기 포함 안 하고 fetch 다 끝난 뒤 메인 스레드에서 순차 처리).
+    [2026-07-25] label(표시용, 거래소 중복시 "BTC(upbit)" 식)과 실제 fetch에 쓰는
+    ticker/exchange를 분리했다 — 반환도 label 기준으로 한다."""
+    df = load_data(ticker, exchange)
     if df is None:
-        return coin, None, None, None
-    htf = get_htf_trend(coin)
-    funding_oi = get_funding_oi(coin)
-    return coin, df, htf, funding_oi
+        return label, None, None, None
+    htf = get_htf_trend(ticker, exchange)
+    funding_oi = get_funding_oi(ticker)  # 바이낸스 선물 기준이라 거래소 무관, ticker(심볼)만 필요
+    return label, df, htf, funding_oi
 
 
-def build_combined_outputs(tickers, rows=None, weights=None, dominance=None, regime="NEUTRAL"):
+def build_combined_outputs(tickers, rows=None, weights=None, dominance=None, regime="NEUTRAL", label_map=None):
     """20개 코인 차트를 한 PDF(여러 페이지)로, 데이터를 한 CSV로 합친다.
 
-    rows가 주어지면(점수 데이터 포함) 롱/숏 점수차 상위·하위 HIGH_DETAIL_TOP_N개 코인만
-    high 디테일 이미지로 보내고 나머지는 저비용 low를 유지한다 (이미지 토큰 비용 효율화).
+    rows가 주어지면(점수 데이터 포함) 커스텀 조건식 매칭 + 롱/숏 점수차 상위·하위
+    HIGH_DETAIL_TOP_N개 코인만 high 디테일 이미지로 보내고 나머지는 저비용 low를 유지한다
+    (이미지 토큰 비용 효율화, _pick_high_detail_tickers 참고).
 
     [정확도 개선 ①②③④⑤⑥⑦] 코인마다 HTF(15m~1W) 추세, 펀딩비/OI, 도미넌스, RVOL/VWAP,
     BTC 영향력까지 반영해서 rule_score(정량 앙상블 신호)를 계산하고 CSV에 컬럼으로 얹어
     Grok한테도 넘긴다. [2차 리뷰 #2] regime에 따라 가중치를 배율 조정한 뒤 계산한다.
     [2차 리뷰 #8] 코인별 fetch(HTF/펀딩·OI/캔들)는 스레드풀로 병렬 실행해서 속도를 낸다.
+    [2026-07-25] tickers는 이제 "라벨"(예: BTC, BTC(upbit)) 리스트고, label_map으로
+    실제 fetch에 필요한 (ticker, exchange)를 알아낸다 — 빗썸/업비트 병행 지원.
     """
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     combined_pdf_path = os.path.join(OUT_DIR, f"charts_{ts}.pdf")
@@ -976,6 +1104,7 @@ def build_combined_outputs(tickers, rows=None, weights=None, dominance=None, reg
     adjusted_weights = _apply_regime_multiplier(base_weights, regime)
     print(f"   국면({regime})별 조정 가중치: " +
           ", ".join(f"{k}={v:.2f}" for k, v in adjusted_weights.items()))
+    label_map = label_map or {label: (label, "bithumb") for label in tickers}
 
     high_detail_set = _pick_high_detail_tickers(rows) if rows else set()
     if high_detail_set:
@@ -986,7 +1115,10 @@ def build_combined_outputs(tickers, rows=None, weights=None, dominance=None, reg
     print(f"   {len(tickers)}개 코인 데이터 병렬 fetch 중 (워커 {MAX_PARALLEL_FETCH_WORKERS}개)...")
     raw_by_ticker = {}
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FETCH_WORKERS) as pool:
-        futures = {pool.submit(_fetch_coin_raw, coin): coin for coin in tickers}
+        futures = {}
+        for label in tickers:
+            ticker, exchange = label_map.get(label, (label, "bithumb"))
+            futures[pool.submit(_fetch_coin_raw, label, ticker, exchange)] = label
         for future in as_completed(futures):
             coin = futures[future]
             try:
@@ -1001,9 +1133,12 @@ def build_combined_outputs(tickers, rows=None, weights=None, dominance=None, reg
     print(f"   병렬 fetch 완료: {len(raw_by_ticker)}/{len(tickers)}개 성공")
 
     # ---- 2단계: BTC 컨텍스트 계산 (알트코인 rule_score의 btc_influence 항목에 공통 사용) ----
+    # [2026-07-25] 빗썸+업비트 병행으로 BTC가 "BTC(bithumb)"/"BTC(upbit)"로 라벨링됐을 수 있어
+    # 여러 후보 이름을 순서대로 찾는다(맨 처음 매칭되는 것 사용, 통상 빗썸 우선).
+    btc_label = next((cand for cand in ('BTC', 'BTC_bithumb', 'BTC_upbit') if cand in raw_by_ticker), None)
     btc_context = None
-    if 'BTC' in raw_by_ticker:
-        btc_df, btc_htf, btc_funding_oi = raw_by_ticker['BTC']
+    if btc_label:
+        btc_df, btc_htf, btc_funding_oi = raw_by_ticker[btc_label]
         btc_context = compute_btc_context(btc_df, btc_htf, btc_funding_oi)
         print(f"   {btc_context.get('note', '')}")
 
@@ -1022,7 +1157,7 @@ def build_combined_outputs(tickers, rows=None, weights=None, dominance=None, reg
             df, htf, funding_oi = raw_by_ticker[coin]
 
             rule_score, conf_scale, detail = compute_rule_score(
-                df, htf, funding_oi, dominance, is_btc=(coin == 'BTC'),
+                df, htf, funding_oi, dominance, is_btc=(coin == btc_label),
                 weights=adjusted_weights, btc_context=btc_context
             )
             coin_context[coin] = {
@@ -1073,7 +1208,7 @@ def build_combined_outputs(tickers, rows=None, weights=None, dominance=None, reg
 # ============================================================
 def _low_liquidity_tickers(all_rows, bottom_pct=LIQUIDITY_BOTTOM_PCT):
     """거래대금(vol_24h_m) 하위 bottom_pct에 해당하는 티커 목록 (허위 펌핑/덤핑 필터용)."""
-    vols = sorted(((r.get('vol_24h_m') or 0), r['ticker']) for r in all_rows)
+    vols = sorted(((r.get('vol_24h_m') or 0), r.get('label', r['ticker'])) for r in all_rows)
     if not vols:
         return []
     cutoff = max(1, int(len(vols) * bottom_pct))
@@ -1116,6 +1251,45 @@ def ask_grok(indicator_pdf_path, combined_csv_path, chart_images_b64, all_ticker
         if pd.notna(ma5) and pd.notna(ma20) and pd.notna(ma60):
             row['MA_Align'] = 1 if ma5 > ma20 > ma60 else (-1 if ma5 < ma20 < ma60 else 0)
         snapshot[ticker] = row
+
+    # [2026-07-25 추가] 커스텀 조건식(custom_conditions.json) 매칭 여부를 스냅샷에 얹는다.
+    # 이건 이 프로젝트에서 실측 데이터(수만 건, 1h/2h/4h 전방수익률)로 개별 검증해둔 조건식
+    # 세트라서, rule_score(정량 앙상블)나 htf 신호보다 오히려 더 직접적인 실측 근거가 있다.
+    # 트레이딩클라이언트("조건식" 창)가 쓰는 것과 동일한 파일/평가 로직을 그대로 재사용한다.
+    condition_note = ""
+    try:
+        conditions = srv.load_custom_conditions_server()
+        enabled_conditions = [c for c in conditions if c.get('enabled', True)]
+        if enabled_conditions and all_rows:
+            n_matched = 0
+            for r in all_rows:
+                label = r.get('label', r.get('ticker'))
+                if label not in snapshot:
+                    continue
+                row_for_eval = {name: r.get(name) for name in srv.CONDITION_INDICATORS_SERVER}
+                row_for_eval['ticker'] = r.get('ticker', '')
+                matched_colors = []
+                for cond in enabled_conditions:
+                    if srv._evaluate_condition_server(cond.get('expr', ''), row_for_eval):
+                        matched_colors.append(cond.get('color', '#000000'))
+                if matched_colors:
+                    snapshot[label]['custom_condition_match'] = matched_colors
+                    n_matched += 1
+            if n_matched:
+                condition_note = (
+                    f" {n_matched} of these coins matched at least one of the user's own backtested "
+                    f"custom conditions (see custom_condition_match field per ticker in the JSON snapshot, "
+                    f"listing the hex color(s) of the matched condition(s) — by this user's convention, "
+                    f"green-ish colors were registered as LONG setups and red-ish colors as SHORT setups, "
+                    f"each independently backtested on this exchange's own historical data with real "
+                    f"win-rate/return numbers, not just theory. Treat a custom_condition_match as a strong "
+                    f"positive signal for that ticker in the corresponding direction — stronger than "
+                    f"rule_score alone, since it's grounded in this user's own historical backtests rather "
+                    f"than a generic ensemble formula."
+                )
+    except Exception as e:
+        print(f"   ⚠️ 커스텀 조건식 매칭 계산 실패(무시하고 진행): {e}")
+
     csv_text = json.dumps(snapshot, ensure_ascii=False, separators=(',', ':'))
     if len(csv_text) > CONDENSED_JSON_MAX_CHARS:
         csv_text = csv_text[:CONDENSED_JSON_MAX_CHARS] + "... (생략)"
@@ -1189,7 +1363,12 @@ def ask_grok(indicator_pdf_path, combined_csv_path, chart_images_b64, all_ticker
         f"MARKET REGIME (computed from breadth across all these coins): "
         f"{regime} — {regime_detail} {bias_instruction} MARKET DOMINANCE: {dominance_note} "
         f"The candidate pool (same pool for both LONG and SHORT — you decide each coin's direction, "
-        f"if any) is: {', '.join(all_tickers)}. "
+        f"if any) is: {', '.join(all_tickers)}. This pool spans two exchanges (Bithumb and Upbit); "
+        f"most symbols are unique, but where the SAME coin trades on both, its two entries are "
+        f"disambiguated as e.g. 'BTC_BITHUMB' and 'BTC_UPBIT' (treat these as two separate, "
+        f"independently-priced candidates — pick whichever one you prefer, or both, or neither; when "
+        f"you output a pick, echo the EXACT candidate-pool spelling including any _BITHUMB/_UPBIT "
+        f"suffix. "
         "\n\nADDITIONAL ANALYSIS REQUIREMENTS:\n"
         "1) Multi-Timeframe Check: use MA_Align together with htf_4h and htf_1d — treat a coin as a "
         "much stronger candidate when the short-term (MA_Align), 4H, and 1D signals all agree, and be "
@@ -1216,10 +1395,11 @@ def ask_grok(indicator_pdf_path, combined_csv_path, chart_images_b64, all_ticker
         "sign), that's a stronger case. "
         "When they clearly disagree, lower your confidence for that ticker rather than ignoring the "
         "disagreement.\n"
-        "7) Confidence Score: for every ticker you pick, output your own confidence from 0.00 to 1.00 "
+        f"7) User-Backtested Conditions:{condition_note if condition_note else ' No custom conditions matched any coin this run (or none are configured).'}\n"
+        "8) Confidence Score: for every ticker you pick, output your own confidence from 0.00 to 1.00 "
         "(how sure you are of that direction, not how big a mover you expect). Do not pick a ticker "
         "with confidence below 0.40 — leave it out instead.\n"
-        "8) Format Strictness: reason internally as much as you need, but the FINAL output must be "
+        "9) Format Strictness: reason internally as much as you need, but the FINAL output must be "
         "exactly one line in the exact format below — no markdown, no explanation, no extra "
         "whitespace or commentary before or after it.\n\n"
         "Pick UP TO 3 tickers for LONG and UP TO 3 for SHORT, only from the candidate pool "
@@ -1284,7 +1464,9 @@ def _parse_side_picks(side_str):
 
 
 def evaluate_pending_recommendations(log):
-    """[정확도 개선 ⑩] EVAL_HORIZON_HOURS가 지난 pending 추천을 현재가로 승/패 판정."""
+    """[정확도 개선 ⑩] EVAL_HORIZON_HOURS가 지난 pending 추천을 현재가로 승/패 판정.
+    [2026-07-25] entry에 exchange/raw_ticker가 있으면(신규 로그) 그 거래소에서 정확히
+    조회하고, 없으면(구버전 로그, 업비트 지원 전에 기록된 것) 빗썸으로 폴백한다."""
     now = datetime.now()
     price_cache = {}
     updated = False
@@ -1297,13 +1479,21 @@ def evaluate_pending_recommendations(log):
             continue
         if now - ts < timedelta(hours=EVAL_HORIZON_HOURS):
             continue
-        coin = entry["ticker"]
-        if coin not in price_cache:
+        raw_ticker = entry.get("raw_ticker", entry["ticker"])
+        exchange = entry.get("exchange", "bithumb")
+        cache_key = (exchange, raw_ticker)
+        if cache_key not in price_cache:
             try:
-                price_cache[coin] = python_bithumb.get_current_price(f"KRW-{coin}")
+                if exchange == "upbit":
+                    resp = requests.get("https://api.upbit.com/v1/ticker",
+                                         params={"markets": f"KRW-{raw_ticker}"}, timeout=8)
+                    data = resp.json()
+                    price_cache[cache_key] = data[0]["trade_price"] if data else None
+                else:
+                    price_cache[cache_key] = python_bithumb.get_current_price(f"KRW-{raw_ticker}")
             except Exception:
-                price_cache[coin] = None
-        cur_price = price_cache[coin]
+                price_cache[cache_key] = None
+        cur_price = price_cache[cache_key]
         if not cur_price:
             continue
         entry_price = entry["entry_price"]
@@ -1412,9 +1602,9 @@ def main():
 
     computed_rows = compute_scores_standalone()
 
-    print("② 바이낸스 상장 코인 후보군 확정 중...")
-    all_tickers, all_rows = get_all_tickers(computed_rows)
-    print(f"   바이낸스 상장 후보군 {len(all_tickers)}개:", ", ".join(all_tickers))
+    print("② 바이낸스 상장 코인 후보군 확정 중 (빗썸+업비트 병행)...")
+    all_tickers, all_rows, label_map = get_all_tickers(computed_rows)
+    print(f"   후보군 {len(all_tickers)}개:", ", ".join(all_tickers))
 
     regime, composite_score, regime_detail = detect_market_regime(all_rows)
     print(f"   시장 국면: {regime} — {regime_detail}")
@@ -1423,7 +1613,7 @@ def main():
 
     print(f"④ {len(all_tickers)}개 코인 차트/CSV/HTF/펀딩·OI/rule_score 생성 중...")
     combined_pdf, combined_csv, images, ok_tickers, dfs_by_ticker, coin_context = build_combined_outputs(
-        all_tickers, rows=all_rows, weights=weights, dominance=dominance, regime=regime
+        all_tickers, rows=all_rows, weights=weights, dominance=dominance, regime=regime, label_map=label_map
     )
     print("   차트 PDF:", combined_pdf)
     print("   데이터 CSV:", combined_csv)
@@ -1442,7 +1632,7 @@ def main():
     # 정규식 예외 처리 강화: Grok이 대소문자를 혼용하거나 예외적인 공백을 섞어 반환해도
     # 메인 루프 파싱이 끊기지 않도록, 공백을 완전히 제거한 뒤 매칭한다.
     clean_answer = answer.lower().replace(" ", "")
-    m = re.search(r'long\s*:\s*([a-z0-9:.,]*)\s*/\s*short\s*:\s*([a-z0-9:.,]*)', clean_answer)
+    m = re.search(r'long\s*:\s*([a-z0-9:._,]*)\s*/\s*short\s*:\s*([a-z0-9:._,]*)', clean_answer)
     if not m:
         print("\n⚠️ 응답 형식이 예상과 달라 자동 파싱 실패 — 위 원본 텍스트를 직접 확인하세요")
         return
@@ -1480,6 +1670,9 @@ def main():
         print(f"   ⑨ 신뢰도 미달로 제외됨: {rej_txt}")
 
     # ⑩ 이번에 확정된 추천을 로그에 pending으로 기록 (다음 실행들에서 평가·재보정에 사용)
+    # [2026-07-25] ticker가 이제 "라벨"(예: BTC_UPBIT)일 수 있어서, 나중에 현재가를 다시
+    # 조회할 때 어느 거래소에서 가져와야 하는지 알 수 있게 순수 심볼(raw_ticker)과
+    # exchange를 같이 저장한다(label 자체는 표시/추적용으로 그대로 둠).
     now_iso = datetime.now().isoformat()
     for side, picks in (("long", final_longs), ("short", final_shorts)):
         for ticker, conf in picks:
@@ -1487,9 +1680,10 @@ def main():
             entry_price = float(df['close'].iloc[-1]) if df is not None and len(df) else None
             if entry_price is None:
                 continue
+            raw_ticker, exchange = label_map.get(ticker, (ticker, "bithumb"))
             reco_log.append({
-                "timestamp": now_iso, "ticker": ticker, "side": side,
-                "entry_price": entry_price, "confidence": conf,
+                "timestamp": now_iso, "ticker": ticker, "raw_ticker": raw_ticker, "exchange": exchange,
+                "side": side, "entry_price": entry_price, "confidence": conf,
                 "regime": regime, "status": "pending",
             })
     save_recommendation_log(reco_log)

@@ -682,6 +682,7 @@ def append_history_csv(record):
 def load_history_csv():
     """앱 시작 시 history CSV 로드"""
     global trade_history
+    trade_history = []  # [2026-07-25] 혹시 이 함수가 두 번 불려도 누적되지 않게 항상 비우고 시작
     if not os.path.exists(HISTORY_FILE):
         return
     try:
@@ -2965,17 +2966,35 @@ def srv_reset_balance():
 
 def srv_reset_history():
     """청산 기록(trade_history.csv)만 비운다. 보유 중인 포지션/잔고는 절대 안 건드림 —
-    positions는 이 함수가 아예 참조하지 않고, HISTORY_FILE(청산+진입로그)만 초기화한다."""
+    positions는 이 함수가 아예 참조하지 않고, HISTORY_FILE(청산+진입로그)만 초기화한다.
+    [2026-07-25 수정] 예전엔 open(HISTORY_FILE,'w') 한 번만 하고 끝냈는데, 이 기기의
+    안드로이드 공용저장소(scoped storage)에서 파일쓰기가 간헐적으로 조용히 실패하는
+    현상이 계좌/마켓 스냅샷 저장에서도 있었던 걸 이미 확인한 적 있다(_atomic_write_csv
+    참고) — 초기화했는데 재시작하면 예전 기록이 되살아나 보인다는 신고가 실제로 있어서,
+    같은 원인일 가능성이 높다고 보고 동일하게 재시도+검증 로직을 적용한다."""
     global trade_history
     trade_history = []
-    try:
-        with open(HISTORY_FILE, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(['type', 'ticker', 'direction', 'amount', 'leverage',
-                              'entry_price', 'exit_price', 'pnl', 'pnl_rate_pct', 'entry_time', 'exit_time'])
-        return True, "청산/거래 기록을 초기화했습니다 (보유 포지션은 그대로 유지됩니다)"
-    except Exception as e:
-        return False, f"기록 초기화 실패: {e}"
+    header = ['type', 'ticker', 'direction', 'amount', 'leverage',
+              'entry_price', 'exit_price', 'pnl', 'pnl_rate_pct', 'entry_time', 'exit_time']
+    last_err = None
+    for attempt in range(3):
+        try:
+            with open(HISTORY_FILE, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
+            # 쓰고 나서 바로 다시 읽어서 진짜로 비워졌는지 확인 — 안드로이드 저장소가
+            # "쓰기는 성공한 것처럼 보이는데 실제로는 반영 안 됨" 상태를 만들 수 있어서
+            # 검증 없이 성공 메시지만 보내면 사용자가 속아넘어갈 수 있다.
+            with open(HISTORY_FILE, 'r', newline='', encoding='utf-8') as f:
+                lines = f.readlines()
+            if len(lines) <= 1:
+                return True, "청산/거래 기록을 초기화했습니다 (보유 포지션은 그대로 유지됩니다)"
+            last_err = f"쓰기 후 재확인했더니 여전히 {len(lines)-1}건 남아있음(저장소 반영 지연 의심)"
+        except Exception as e:
+            last_err = str(e)
+        if attempt < 2:
+            time.sleep(0.2)
+    return False, f"기록 초기화 실패(3회 재시도 후에도 확인 안 됨): {last_err}"
 
 def srv_set_interval(interval):
     """
