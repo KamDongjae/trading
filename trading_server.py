@@ -45,6 +45,36 @@ INITIAL_BALANCE = 10000  # USD (달러 기준 계좌)
 DEFAULT_LEVERAGE = 10
 FEE_RATE = 0.0004
 SLIPPAGE_RATE = 0.007  # [2026-07-21 조정] 0.3%→0.7% — 실제 바이낸스 체결과 비교해보니 0.3%는 낮았음
+
+# ============================================================
+# [2026-07-26 추가] 바이낸스 미상장 코인 거래 지원 — 원/달러 환율(전날 종가 기준, 실시간 아님)
+# 계좌 자체는 USD 기준이라, 바이낸스 가격이 없는 코인(KRW로만 거래됨)의 손익을 USD로
+# 환산해서 잔고에 반영하려면 환율이 필요하다. 하루에 한 번만 외부 API를 조회하고,
+# 실패하면 마지막으로 성공한 값(최초엔 기본값)을 계속 쓴다 — 실시간 시세가 아니라
+# "전날 종가" 개념이라 자주 갱신할 필요도 없고, 매매 순간마다 API를 때릴 필요도 없다.
+# ============================================================
+USD_KRW_RATE_FALLBACK = 1380.0  # API가 한 번도 성공 못 했을 때 쓰는 최후 기본값
+_usd_krw_rate = {"value": USD_KRW_RATE_FALLBACK, "date": None}
+
+def get_usd_krw_rate():
+    """오늘 날짜 기준으로 아직 안 갱신했으면 외부 API(frankfurter.dev, 무료/키불필요)에서
+    USD/KRW 환율을 가져온다. 실패해도 예외 없이 마지막 값을 반환(거래가 이 때문에 막히면
+    안 되므로)."""
+    today = datetime.now().date().isoformat()
+    if _usd_krw_rate["date"] == today:
+        return _usd_krw_rate["value"]
+    try:
+        resp = requests.get("https://api.frankfurter.dev/v1/latest",
+                             params={"base": "USD", "symbols": "KRW"}, timeout=8)
+        rate = resp.json().get("rates", {}).get("KRW")
+        if rate:
+            _usd_krw_rate["value"] = float(rate)
+            _usd_krw_rate["date"] = today
+            print(f"💱 원/달러 환율 갱신: {_usd_krw_rate['value']:.2f}원 ({today} 기준, 전날 종가)")
+    except Exception as e:
+        print(f"⚠️ 환율 조회 실패, 기존값({_usd_krw_rate['value']:.2f}) 유지: {e}")
+    return _usd_krw_rate["value"]
+
 # 크로스 마진 모드: 바이낸스 크로스 마진처럼, 개별 포지션 손실이 그 포지션에 배정한
 # 증거금(amount)의 100%를 넘어도(-100% 초과) 계좌 전체 잔고가 버텨주는 한 그 포지션 하나만
 # 따로 강제청산하지 않는다. 계좌 총자산(현금+미실현손익 합)이 바닥날 때만 청산한다.
@@ -2857,9 +2887,11 @@ def write_market_snapshot(exchange='bithumb'):
         print(f"마켓 스냅샷 저장 실패({exchange}): {e}")
 
 def write_account_snapshot():
+    """[2026-07-26 변경] 포지션마다 price_currency(usd/krw)에 맞는 현재가를 가져오고,
+    바이낸스 미상장 코인(krw 모드)은 pnl_krw(원화 미실현손익, 포지션 탭 표시용)도 같이
+    내려준다. pnl(달러) 자체는 지금까지처럼 _pos_pnl()이 내부적으로 환율 환산해서 계산."""
     with data_lock:
         pos_snap = {t: dict(p) for t, p in positions.items()}
-        prices = dict(latest_prices_usd)
     fng = get_fear_greed_index()
     rows = [['balance', round(balance, 2)],
             ['ts', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
@@ -2870,19 +2902,26 @@ def write_account_snapshot():
             ['fng_value', fng.get('value') if fng.get('value') is not None else ''],
             ['fng_class', fng.get('classification', '')],
             ['positions', 'entry_price', 'amount', 'leverage', 'type',
-             'entry_fee', 'entry_time', 'current_price', 'pnl', 'pnl_rate_pct', 'entry_score']]
+             'entry_fee', 'entry_time', 'current_price', 'pnl', 'pnl_rate_pct', 'entry_score',
+             'price_currency', 'pnl_krw']]
     for t, pos in pos_snap.items():
         entry = pos.get('entry_price', 0)
-        cur = prices.get(t, entry)
+        cur = _pos_current_price(t, pos) or entry
         ptype = pos.get('position_type', 'long')
         amt = pos.get('amount', 0); lev = pos.get('leverage', 1)
         if entry <= 0: continue
+        is_krw = pos.get('price_currency') == 'krw'
+        pnl = _pos_pnl(pos, cur)  # usd/krw 둘 다 여기서 달러로 정리해서 반환
         rate = (cur - entry) / entry if ptype == 'long' else (entry - cur) / entry
-        pnl = rate * amt * lev
+        pnl_krw = ''
+        if is_krw:
+            entry_fx = pos.get('entry_fx_rate') or get_usd_krw_rate()
+            pnl_krw = round(rate * amt * lev * entry_fx, 0)
         et = pos.get('entry_time', '')
         et_str = et.strftime('%Y-%m-%d %H:%M:%S') if isinstance(et, datetime) else str(et)
         rows.append([t, entry, amt, lev, ptype, pos.get('entry_fee', 0), et_str,
-                     cur, round(pnl, 2), round(rate * lev * 100, 2), pos.get('entry_score', 0)])
+                     cur, round(pnl, 2), round(rate * lev * 100, 2), pos.get('entry_score', 0),
+                     pos.get('price_currency', 'usd'), pnl_krw])
     try:
         _atomic_write_csv(ACCOUNT_SNAPSHOT, rows)
     except Exception as e:
@@ -3317,6 +3356,11 @@ def srv_get_candles(ticker, interval=None, exchange='bithumb'):
     return True, f"차트 데이터 준비 완료 ({interval}): {path}"
 
 def srv_open(ticker, position_type, amount_won, leverage, exchange='bithumb'):
+    """[2026-07-26 변경] 바이낸스 미상장 코인도 거래 가능하게 확장했다. 바이낸스 USD가
+    없으면 그 거래소(빗썸/업비트)의 KRW 시세로 대신 체결한다 — 증거금(amount_won)은
+    지금까지와 동일하게 USD로 결제되고, 포지션의 진입가/현재가/미실현손익은 KRW로
+    추적되다가(포지션 탭에 원화로 표시), 청산할 때만 그 시점 환율(전날 종가 기준,
+    get_usd_krw_rate)로 원화 손익을 달러로 환산해서 계좌 잔고에 반영한다."""
     global balance
     if not ticker: return False, "티커 없음"
     existing = positions.get(ticker)
@@ -3342,9 +3386,18 @@ def srv_open(ticker, position_type, amount_won, leverage, exchange='bithumb'):
                             f"(명목가치 ${new_notional:,.2f}, 유지증거금 {CROSS_MARGIN_MAINTENANCE_RATIO*100:.1f}%). "
                             f"증거금을 늘리거나 레버리지를 낮추세요.")
     with data_lock:
-        current_price = latest_prices_usd.get(ticker, 0)
-    if current_price <= 0:
-        return False, "USD 가격 없음 (바이낸스 미상장 코인은 거래 불가)"
+        current_price_usd = latest_prices_usd.get(ticker, 0)
+        current_price_krw = latest_prices_upbit.get(ticker, 0) if exchange == 'upbit' else latest_prices.get(ticker, 0)
+    if current_price_usd > 0:
+        price_currency = 'usd'
+        current_price = current_price_usd
+        fx_rate = None
+    elif current_price_krw > 0:
+        price_currency = 'krw'
+        current_price = current_price_krw
+        fx_rate = get_usd_krw_rate()
+    else:
+        return False, "시세 없음 (바이낸스에도, 해당 거래소 KRW 시세에도 가격이 없습니다)"
     fill_price = current_price * (1 + SLIPPAGE_RATE) if position_type == "long" else current_price * (1 - SLIPPAGE_RATE)
     balance -= total_cost
     if balance < 0: balance = 0
@@ -3357,8 +3410,13 @@ def srv_open(ticker, position_type, amount_won, leverage, exchange='bithumb'):
     else:
         entry_score = max(snap.get('short_score', 0), snap.get('preshort_score', 0))
 
+    price_unit = "원" if price_currency == 'krw' else "$"
+    price_fmt = (lambda v: f"{v:,.4f}" if v < 1 else f"{v:,.2f}") if price_currency == 'usd' else \
+                (lambda v: f"{v:,.6f}" if v < 1 else f"{v:,.2f}")
+
     if existing:
         # 바이낸스식 물타기/불타기: 명목가치(증거금×레버리지) 가중평균으로 진입가·레버리지를 재계산.
+        # (같은 티커면 price_currency도 항상 같다 — 바이낸스 상장 여부가 물타기 중에 바뀌진 않으므로.)
         old_notional = existing['amount'] * existing['leverage']
         add_notional = amount_won * leverage
         combined_notional = old_notional + add_notional
@@ -3370,6 +3428,8 @@ def srv_open(ticker, position_type, amount_won, leverage, exchange='bithumb'):
             "position_type": position_type, "entry_time": existing.get('entry_time', datetime.now()),
             "entry_fee": existing.get('entry_fee', 0) + entry_fee,
             "entry_score": existing.get('entry_score', entry_score),  # 최초 진입 시점 점수 유지
+            "exchange": exchange, "price_currency": price_currency,
+            "entry_fx_rate": existing.get('entry_fx_rate', fx_rate),
         }
         direction = "롱" if position_type == "long" else "숏"
         trade_history.append({'type': '추가진입', 'ticker': ticker, 'direction': direction,
@@ -3377,13 +3437,14 @@ def srv_open(ticker, position_type, amount_won, leverage, exchange='bithumb'):
                               'exit_price': 0, 'pnl': 0, 'pnl_rate_pct': 0,
                               'entry_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'exit_time': ''})
         save_to_csv()
-        pfmt = f"{weighted_entry:,.2f}" if weighted_entry >= 1 else f"{weighted_entry:,.4f}"
-        return True, f"{ticker} {direction} 추가진입 @ ${fill_price:,.4f} (평균단가 ${pfmt}, 합계 ${combined_amount:,.2f}/{combined_leverage}x)"
+        return True, (f"{ticker} {direction} 추가진입 @ {price_unit}{price_fmt(fill_price)} "
+                       f"(평균단가 {price_unit}{price_fmt(weighted_entry)}, 합계 ${combined_amount:,.2f}/{combined_leverage}x)")
 
     positions[ticker] = {
         "entry_price": fill_price, "amount": amount_won, "leverage": leverage,
         "position_type": position_type, "entry_time": datetime.now(), "entry_fee": entry_fee,
-        "entry_score": entry_score,
+        "entry_score": entry_score, "exchange": exchange, "price_currency": price_currency,
+        "entry_fx_rate": fx_rate,
     }
     direction = "롱" if position_type == "long" else "숏"
     trade_history.append({'type': '진입', 'ticker': ticker, 'direction': direction,
@@ -3391,8 +3452,8 @@ def srv_open(ticker, position_type, amount_won, leverage, exchange='bithumb'):
                           'exit_price': 0, 'pnl': 0, 'pnl_rate_pct': 0,
                           'entry_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'exit_time': ''})
     save_to_csv()
-    pfmt = f"{fill_price:,.2f}" if fill_price >= 1 else f"{fill_price:,.4f}"
-    return True, f"{ticker} {direction} 진입 @ ${pfmt}"
+    note = "" if price_currency == 'usd' else f" (바이낸스 미상장 — {exchange} KRW시세 기준, 환율 {fx_rate:,.1f}원)"
+    return True, f"{ticker} {direction} 진입 @ {price_unit}{price_fmt(fill_price)}{note}"
 
 def _calc_liq_price_preview(entry_price, leverage, position_type):
     """
@@ -3493,19 +3554,30 @@ def srv_open_manual(ticker, position_type, entry_price, amount_won, leverage, ex
                   f"(증거금 ${amount_won:,.2f}, 수수료 ${entry_fee:,.2f}, 청산가(격리기준) ${liq:,.4f})")
 
 def srv_close(ticker):
+    """[2026-07-26 변경] price_currency=='krw'인 포지션(바이낸스 미상장 코인)은 원화 손익을
+    청산 시점 환율(get_usd_krw_rate, 전날 종가 기준)로 달러 환산해서 계좌에 반영한다."""
     global balance
     if ticker not in positions:
         return False, "보유 포지션이 없습니다"
-    with data_lock:
-        price = latest_prices_usd.get(ticker, 0)
-    if price <= 0:
-        return False, "USD 가격 없음 (잠시 후 다시 시도)"
     pos = positions[ticker]
+    price = _pos_current_price(ticker, pos)
+    if not price or price <= 0:
+        return False, "가격 없음 (잠시 후 다시 시도)"
     ptype = pos['position_type']
+    is_krw = pos.get('price_currency') == 'krw'
     rate = (price - pos['entry_price']) / pos['entry_price'] if ptype == 'long' else (pos['entry_price'] - price) / pos['entry_price']
+    if is_krw:
+        entry_fx = pos.get('entry_fx_rate') or get_usd_krw_rate()
+        notional_krw = pos['amount'] * pos['leverage'] * entry_fx
+        pnl_krw = rate * notional_krw
+        close_fx = get_usd_krw_rate()
+        raw_pnl = pnl_krw / close_fx
+        fx_note = f" [원화손익 {pnl_krw:+,.0f}원 ÷ 환율 {close_fx:,.1f} = 달러 {raw_pnl:+,.2f}]"
+    else:
+        raw_pnl = rate * pos['amount'] * pos['leverage']
+        fx_note = ""
     # 격리마진 모드에서는 포지션 손실이 배정 증거금(amount)을 못 넘도록 -100%에서 바닥을 잡았지만,
     # 크로스 마진 모드에서는 계좌 전체 잔고가 받쳐주므로 -100% 밑으로도 그대로 내려가게 둔다.
-    raw_pnl = rate * pos['amount'] * pos['leverage']
     pnl = raw_pnl if CROSS_MARGIN_MODE else max(raw_pnl, -pos['amount'])
     exit_fee = (pos['amount'] * pos['leverage']) * FEE_RATE
     if CROSS_MARGIN_MODE:
@@ -3528,7 +3600,7 @@ def srv_close(ticker):
     append_history_csv(record)
     del positions[ticker]
     save_to_csv()
-    return True, f"{ticker} {direction} 청산 손익 ${pnl:+,.2f} ({pnl_rate_pct:+.2f}%)"
+    return True, f"{ticker} {direction} 청산 손익 ${pnl:+,.2f} ({pnl_rate_pct:+.2f}%){fx_note}"
 
 def srv_close_all():
     ok_cnt = 0
@@ -3556,16 +3628,22 @@ def srv_close_partial(ticker, fraction):
         return False, "청산 비율은 0~100% 사이여야 합니다"
     if fraction >= 0.999:
         return srv_close(ticker)  # 100%는 그냥 전체 청산과 동일
-    with data_lock:
-        price = latest_prices_usd.get(ticker, 0)
-    if price <= 0:
-        return False, "USD 가격 없음 (잠시 후 다시 시도)"
     pos = positions[ticker]
+    price = _pos_current_price(ticker, pos)
+    if not price or price <= 0:
+        return False, "가격 없음 (잠시 후 다시 시도)"
     ptype = pos['position_type']
     lev = pos['leverage']
+    is_krw = pos.get('price_currency') == 'krw'
     realize_amt = pos['amount'] * fraction
     rate = (price - pos['entry_price']) / pos['entry_price'] if ptype == 'long' else (pos['entry_price'] - price) / pos['entry_price']
-    raw_pnl = rate * realize_amt * lev  # pnl은 amount에 선형 비례하므로 realize_amt만큼만 계산
+    if is_krw:
+        entry_fx = pos.get('entry_fx_rate') or get_usd_krw_rate()
+        notional_krw = realize_amt * lev * entry_fx
+        pnl_krw = rate * notional_krw
+        raw_pnl = pnl_krw / get_usd_krw_rate()
+    else:
+        raw_pnl = rate * realize_amt * lev  # pnl은 amount에 선형 비례하므로 realize_amt만큼만 계산
     pnl = raw_pnl if CROSS_MARGIN_MODE else max(raw_pnl, -realize_amt)
     exit_fee = (realize_amt * lev) * FEE_RATE
     settle = realize_amt + pnl - exit_fee
@@ -3590,12 +3668,33 @@ def srv_close_partial(ticker, fraction):
     return True, f"{ticker} {direction} {fraction*100:.0f}% 부분청산 손익 ${pnl:+,.2f} → 현금 반영 (잔여 ${pos['amount']:,.2f})"
 
 def _pos_pnl(pos, cur_price):
+    """[2026-07-26 변경] price_currency=='krw'인 포지션(바이낸스 미상장 코인)은 cur_price가
+    원화 시세로 들어온다는 전제로, 그 포지션의 원화 명목가치(진입 시 환율 기준 고정)에
+    대해 손익률을 곱해 원화손익을 구한 뒤, 리스크/청산 판정에 쓸 수 있게 '현재' 환율로
+    달러 환산해서 반환한다(실제 계좌 정산은 srv_close에서 청산 시점 환율로 별도 계산 —
+    여기 반환값은 어디까지나 강제청산 판정·미실현손익 표시용 추정치)."""
     entry = pos.get('entry_price', 0)
     if entry <= 0 or cur_price <= 0:
         return 0.0
     ptype = pos.get('position_type')
     rate = (cur_price - entry) / entry if ptype == 'long' else (entry - cur_price) / entry
+    if pos.get('price_currency') == 'krw':
+        entry_fx = pos.get('entry_fx_rate') or get_usd_krw_rate()
+        notional_krw = pos.get('amount', 0) * pos.get('leverage', 1) * entry_fx
+        pnl_krw = rate * notional_krw
+        return pnl_krw / get_usd_krw_rate()
     return rate * pos.get('amount', 0) * pos.get('leverage', 1)
+
+
+def _pos_current_price(t, pos):
+    """포지션의 price_currency에 맞는 '현재가'를 가져온다 — usd면 바이낸스가,
+    krw면 해당 거래소(exchange 필드)의 원화 시세."""
+    with data_lock:
+        if pos.get('price_currency') == 'krw':
+            if pos.get('exchange') == 'upbit':
+                return latest_prices_upbit.get(t, 0)
+            return latest_prices.get(t, 0)
+        return latest_prices_usd.get(t, 0)
 
 def _liquidate_position(t, pos, cur_price, tag="강제청산"):
     """포지션 하나를 강제청산 처리하고 거래 기록에 남긴다. balance는 호출부에서 반영."""
@@ -3636,7 +3735,6 @@ def _check_cross_margin_liquidation():
     """
     global balance
     with data_lock:
-        prices = dict(latest_prices_usd)
         snap = {t: dict(p) for t, p in positions.items()}
     if not snap:
         return
@@ -3644,7 +3742,7 @@ def _check_cross_margin_liquidation():
     def total_equity(remaining):
         eq = balance
         for t, pos in remaining.items():
-            eq += _pos_pnl(pos, prices.get(t, pos.get('entry_price', 0)))
+            eq += _pos_pnl(pos, _pos_current_price(t, pos) or pos.get('entry_price', 0))
         return eq
 
     def maintenance_required(remaining):
@@ -3659,13 +3757,13 @@ def _check_cross_margin_liquidation():
         # 손실이 가장 큰(가장 음수인) 포지션을 골라 하나씩 청산
         worst_t, worst_pos, worst_pnl = None, None, None
         for t, pos in remaining.items():
-            cur = prices.get(t, pos.get('entry_price', 0))
+            cur = _pos_current_price(t, pos) or pos.get('entry_price', 0)
             pnl = _pos_pnl(pos, cur)
             if worst_pnl is None or pnl < worst_pnl:
                 worst_t, worst_pos, worst_pnl = t, pos, pnl
         if worst_t is None:
             break
-        cur = prices.get(worst_t, worst_pos.get('entry_price', 0))
+        cur = _pos_current_price(worst_t, worst_pos) or worst_pos.get('entry_price', 0)
         entry = worst_pos.get('entry_price', 0)
         lev = worst_pos.get('leverage', 1)
         rate_pct = ((cur - entry) / entry * 100) if entry > 0 else 0
@@ -3690,10 +3788,9 @@ def _check_isolated_liquidation():
     global balance
     LIQ_RATIO = 0.9
     with data_lock:
-        prices = dict(latest_prices_usd)
         snap = {t: dict(p) for t, p in positions.items()}
     for t, pos in snap.items():
-        cur = prices.get(t, pos.get('entry_price', 0))
+        cur = _pos_current_price(t, pos) or pos.get('entry_price', 0)
         amt = pos.get('amount', 0)
         pnl = _pos_pnl(pos, cur)
         if pnl <= -amt * LIQ_RATIO and t in positions:

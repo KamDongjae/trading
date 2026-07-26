@@ -179,6 +179,30 @@ def _f(v, default=0.0):
     except Exception:
         return default
 
+def format_price_adaptive(value, unit=""):
+    """[2026-07-26 추가] 가격 크기에 맞춰 소수점 자릿수를 자동으로 늘리는 포맷터
+    (업비트/빗썸이 실제로 쓰는 호가단위 방식과 같은 취지). 예전엔 1000원 미만이면
+    무조건 소수점 2자리(:,.2f)로 고정해서, PEPE처럼 1원도 안 되는 코인이 0.00원으로
+    뭉개져 보이는 문제가 있었다."""
+    if value is None:
+        return f"N/A{unit}"
+    v = abs(value)
+    if v == 0:
+        return f"0{unit}"
+    if v >= 1000:
+        return f"{value:,.0f}{unit}"
+    elif v >= 100:
+        return f"{value:,.1f}{unit}"
+    elif v >= 1:
+        return f"{value:,.2f}{unit}"
+    elif v >= 0.01:
+        return f"{value:,.4f}{unit}"
+    elif v >= 0.0001:
+        return f"{value:,.6f}{unit}"
+    else:
+        return f"{value:,.8f}{unit}"
+
+
 def read_market_snapshot(path=None):
     global current_min_score, pp_current_min_score, watch_current_min_score, current_interval
     path = path or MARKET_SNAPSHOT
@@ -276,6 +300,8 @@ def read_account_snapshot():
                         'pnl': _f(row[8]),
                         'pnl_rate_pct': _f(row[9]),
                         'entry_score': _f(row[10], 0) if len(row) >= 11 else 0,
+                        'price_currency': row[11] if len(row) >= 12 and row[11] else 'usd',
+                        'pnl_krw': _f(row[12]) if len(row) >= 13 and row[12] not in ('', None) else None,
                     })
         return balance, ts, pos_list
     except Exception:
@@ -1142,12 +1168,23 @@ class TradingClient:
             self._cfg(card._trend_light, text=f"P{pred['score']}{arrow}", fg=pred['tier_color'])
             warn_txt = "!!!!" if risk >= 70 else ("PRED⚠" if pred['risk'] == 'HIGH' else "")
             self._cfg(card._warn, text=warn_txt)
-            self._cfg(card._pnl, text=f"{pnl:+,.2f}", fg=pnl_color)
+            # [2026-07-26 추가] 바이낸스 미상장 코인(price_currency=='krw')은 포지션 탭에서
+            # 손익을 원화로 보여준다 — 실제 정산(잔고 반영)은 청산 시점 환율로 서버가
+            # 달러 환산해서 처리하고, 여기 표시는 어디까지나 "지금 원화로 얼마 벌었는지" 참고용.
+            is_krw_pos = p.get('price_currency') == 'krw'
+            pnl_krw = p.get('pnl_krw')
+            if is_krw_pos and pnl_krw is not None:
+                self._cfg(card._pnl, text=f"{format_price_adaptive(pnl_krw, '원')} (${pnl:+,.2f})", fg=pnl_color)
+            else:
+                self._cfg(card._pnl, text=f"{pnl:+,.2f}", fg=pnl_color)
             self._cfg(card._roe, text=f"{roe:+.2f}%", fg=pnl_color)
             self._cfg(card._size_val, text=f"{size:,.2f}")
             self._cfg(card._margin_val, text=f"{amt:,.2f}")
             self._cfg(card._mratio_val, text=f"{risk:.1f}%", fg=risk_color)
-            fmt = (lambda v: f"{v:,.2f}") if entry >= 1 else (lambda v: f"{v:,.4f}")
+            if is_krw_pos:
+                fmt = lambda v: format_price_adaptive(v, "원")
+            else:
+                fmt = (lambda v: f"{v:,.2f}") if entry >= 1 else (lambda v: f"{v:,.4f}")
             self._cfg(card._entry_val, text=fmt(entry))
             self._cfg(card._mark_val, text=fmt(cur))
             self._cfg(card._liq_val, text=fmt(liq))
@@ -1337,7 +1374,7 @@ class TradingClient:
                 price = row['price']
                 price_usd = row.get('price_usd')
 
-                krw_str = f"{price:,.0f}원" if price >= 1000 else f"{price:,.2f}원"
+                krw_str = format_price_adaptive(price, "원")
                 if price_usd is not None and price_usd > 0:
                     usd_str = f"USD {price_usd:,.4f}" if price_usd < 1 else f"USD {price_usd:,.2f}"
                 else:

@@ -56,7 +56,10 @@
     "entry_price": 91.46,
     "confidence": 0.577,
     "regime": "DOWNTREND",
-    "status": "pending"
+    "status": "lost",
+    "exit_price": 92.72,
+    "pnl_pct": -1.378,
+    "evaluated_at": "2026-07-26T16:00:11.347377"
   },
   {
     "timestamp": "2026-07-25T16:11:17.424921",
@@ -67,7 +70,10 @@
     "entry_price": 238.0,
     "confidence": 0.566,
     "regime": "DOWNTREND",
-    "status": "pending"
+    "status": "lost",
+    "exit_price": 242.0,
+    "pnl_pct": -1.681,
+    "evaluated_at": "2026-07-26T16:00:11.347377"
   },
   {
     "timestamp": "2026-07-25T16:11:17.424921",
@@ -78,6 +84,9 @@
     "entry_price": 93625000.0,
     "confidence": 0.514,
     "regime": "DOWNTREND",
-    "status": "pending"
+    "status": "lost",
+    "exit_price": 94162000.0,
+    "pnl_pct": -0.574,
+    "evaluated_at": "2026-07-26T16:00:11.347377"
   }
 ]
