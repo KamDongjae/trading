@@ -2101,7 +2101,11 @@ class TradingClient:
             added, bad = 0, []
             for i, raw in enumerate(lines, 1):
                 line = raw.rstrip("\n")
-                if not line.strip() or line.strip().startswith("#"):
+                # [2026-07-29 버그수정] "#"으로 시작하면 주석으로 건너뛰던 로직이 색상 hex코드
+                # (예: #2eaa4a)로 시작하는 정상 데이터 줄까지 전부 주석으로 오인해서 매번
+                # "0개 불러옴"이 되던 버그가 있었다 — 주석은 "# "(해시+공백)처럼 뒤에 공백이
+                # 오는 경우만 걸러내도록 고쳤다(hex코드는 "#" 바로 뒤에 공백 없이 숫자/글자).
+                if not line.strip() or line.startswith("# "):
                     continue
                 parts = line.split("\t")
                 if len(parts) != 4:
