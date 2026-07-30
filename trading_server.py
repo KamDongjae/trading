@@ -36,9 +36,15 @@ ssl._create_default_https_context = ssl._create_unverified_context
 # 설정
 # ============================================================
 TOP_COIN_COUNT = 40
-MIN_SCORE = 75  # 기본 진입 컷("일반장 진입"). 개편안 v2 권장 기준: 65 관심 / 70 추세장 진입 / 75 일반장 진입 / 80 횡보장(보수적 진입)
-                 # 시장 상태(평균 ATR%)에 따라 70(추세장)~80(횡보장)로 자동 조정됨
-WATCH_MIN_SCORE = 65  # "관심" 참고용 하한선. 실제 진입 필터(current_min_score)에는 안 쓰고 클라이언트 표시용으로만 내려준다.
+MIN_SCORE = 50  # [2026-07-26 대폭 하향] 기본 진입 컷("일반장 진입"). 7/14~28 실측(16만행,
+                 # 모멘텀 재설계 반영)으로 확인해보니 롱 점수 실측 최댓값이 66점이었다 —
+                 # 예전 컷(70~80)으로는 이론상 신호가 "절대" 안 터지는 상태였다. 새 기준:
+                 # 40 관심 / 45 추세장 진입 / 50 일반장 진입 / 55 횡보장(보수적 진입).
+                 # score>=50 구간 실측 승률 49~54%(n=1,398~1,480, 1h/2h/4h)로 확인됨.
+                 # score>=65 구간(n=14뿐)은 71~79%로 더 좋아 보이지만 표본이 너무 적어서
+                 # 컷 기준으로 아직 못 씀 — v8 자동학습이 데이터 쌓이면서 계속 다듬을 것.
+                 # 시장 상태(평균 ATR%)에 따라 45(추세장)~55(횡보장)로 자동 조정됨
+WATCH_MIN_SCORE = 40  # [2026-07-26 하향] "관심" 참고용 하한선(위 재조정과 같은 이유).
 # DISCORD_WEBHOOK_URL은 SCRIPT_DIR이 정해진 뒤(안드로이드 공용 저장소 경로 판별 후)
 # DISCORD_WEBHOOK.txt에서 읽어온다 — 아래쪽 "SCRIPT_DIR 확정" 블록 바로 다음 참고.
 INITIAL_BALANCE = 10000  # USD (달러 기준 계좌)
@@ -1114,21 +1120,35 @@ def score_volz_v3(vol_z):
 
 def score_chg30m_long(chg_30m):
     """
-    최근 30분 모멘텀 롱 점수(최대 15점).
-      0.5%~2.5%: 15 (안정적 양봉) | 4.0%초과: 5 (과열, 꼬리물림 위험)
-      2.5%초과~4.0%: 10 (과열 직전, 문서에 없는 구간 보간)
-      그 외(0.5% 미만/음수): 0 (모멘텀 부족)
+    [2026-07-26 전면 재설계] 최근 30분 모멘텀 롱 점수(최대 15점).
+    실측 재검증(7/14~28, 16만행)으로 기존 로직이 완전히 거꾸로였다는 게 드러났다 —
+    "0.5~2.5%면 안정적 양봉이라 좋다"고 만점을 줬는데, 실제로는 chg_30m이 클수록(이미
+    그 방향으로 많이 움직인 뒤일수록) 4시간 후 상승승률이 오히려 계속 떨어졌다:
+      -0.5~0.5%(거의 안 움직임): 42.9% (최고)
+      0.5~1.0%: 35.0% | 1.0~1.5%: 34.9% | 1.5~2.5%: 31~32% | 2.5~4%: 24.6% | 4%초과: 17.4%(최저)
+    "모멘텀이 세다"를 "확인신호"로 오독한 게 원인이었다 — 실제로는 "이미 추격매수하기엔
+    늦었다"는 뜻이었다(이 프로젝트에서 몇 번이나 반복된 "다 지나간 뒤에 뒤늦게 진입컷
+    넘는" 문제와 같은 종류). 그래서 완전히 뒤집어서, 아직 별로 안 움직인(추격 아닌)
+    상태에 만점을 준다.
     """
-    if 0.5 <= chg_30m <= 2.5: return 15
-    elif chg_30m > 4.0: return 5
-    elif 2.5 < chg_30m <= 4.0: return 10
+    ac = abs(chg_30m)
+    if ac <= 0.5: return 15
+    elif ac <= 1.0: return 8
     return 0
 
 def score_chg30m_short(chg_30m):
-    """최근 30분 모멘텀 숏 점수(최대 15점, 롱과 대칭)."""
-    if -2.5 <= chg_30m <= -0.5: return 15
-    elif chg_30m < -4.0: return 5
-    elif -4.0 <= chg_30m < -2.5: return 10
+    """
+    [2026-07-26 전면 재설계] 최근 30분 모멘텀 숏 점수(최대 15점).
+    실측 재검증 결과 기존 로직("이미 하락 시작"에 만점)도 거꾸로였다 — chg_30m이 여전히
+    양수로 오르는 중일 때(아직 고점 반전 전)가 오히려 4시간 후 하락승률이 더 높았다:
+      -0.5~0%: 45.1% | 0~0.5%: 46.6% | 0.5~1%: 48.3% | 1%초과: 49.2%(최고)
+      (반대로 -1~-0.5%대는 42.8%로 더 낮음 — "이미 떨어지기 시작"은 오히려 반등 위험)
+    같은 원인: "이미 하락 시작"을 확인신호로 오독했는데 실제론 뒤늦은 진입(고점을 이미
+    놓친 뒤)이었다. 그래서 뒤집어서, 아직 계속 오르는 중(반전 전, 고점 근처)인 상태에
+    만점을 준다.
+    """
+    if 0.5 <= chg_30m <= 2.0: return 15
+    elif -0.5 <= chg_30m < 0.5: return 8
     return 0
 
 def score_liquidity_filter(atr_pct, vol_24h_m):
@@ -1238,12 +1258,19 @@ def score_overextension_penalty_cap(final_score, ema_pts, pp_pts, cvd_pts, oi_pt
     maxes_override: [2026-07-21 추가] 숏 점수가 재조정(가격위치 위주, 3/55/2/0/2/2/5)되면서
     항목별 만점 기준이 롱과 달라져서, 호출하는 쪽에서 실제 배점 상한 리스트를 넘겨줄 수 있게 했다.
     안 넘기면 기존 롱 기준(10/40/8/10/8/8/5)을 그대로 쓴다.
+    [2026-07-26 문턱 하향] 7/14~28 데이터(16만행)로 다시 확인해보니, 롱 60~70점대(상위
+    극소수 구간, n=58~74)가 30분~4시간 전 구간에서 승률 19~46%로 계속 나쁘게 나왔다.
+    그 구간을 실측 재현해보니 "4개 핵심요소 중 3개가 동시에 거의 만점"인 경우들이었고,
+    "5개 이상 동시만점" 문턱으로는 이 케이스들을 못 걸러내고 있었다(문턱이 너무 높았음).
+    그래서 5→4로 낮췄다 — 다만 이 재검증은 ema/cvd 항목까지 정확히 재현하지 못한
+    근사 모델 기준이라(원시 CSV에 그 두 항목 원본이 없음), 정확한 최적 문턱값이라기보다
+    "5는 너무 높다"는 방향성 확인 수준으로 봐야 한다. v8 자동학습으로 계속 검증 필요.
     """
     default_maxes = [10, 40, 8, 10, 8, 8, 5]
     mx_list = maxes_override or default_maxes
     maxes = list(zip([ema_pts, pp_pts, cvd_pts, oi_pts, m30_pts, volz_pts, liq_pts], mx_list))
     n_maxed = sum(1 for v, mx in maxes if mx > 0 and v >= mx * 0.9)
-    if n_maxed >= 5:
+    if n_maxed >= 4:
         return min(final_score, 45)
     return final_score
 
@@ -1297,6 +1324,15 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
     # oi_sc는 롱 총점에서 뺀 것과 동일하게, 과열 캡 판정(몇 개 항목이 동시에 만점인지)에서도
     # 제외한다 — 백테스트 때 검증한 조건과 정확히 똑같이 맞추기 위함(0을 넘겨서 항상 미달 처리).
     final = score_overextension_penalty_cap(final, p_ema, p_pp, p_cvd, 0, p_m30, p_volz, p_liq)
+    final = max(0, min(final, 100))
+    # [2026-07-26 추가] 아이소토닉 보정 — "점수가 높을수록 실제 승률도 반드시 높다"를
+    # 구조적으로 보장하는 마지막 단계(pava_isotonic_calibration 참고). 학습 전엔 항등
+    # 변환이라 원점수 그대로 나간다.
+    try:
+        calib_table = score_calibration.get(exchange, score_calibration['bithumb'])['long']
+        final = int(round(calib_table[final]))
+    except Exception:
+        pass
     return max(0, min(final, 100))
 
 def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, chg_30m,
@@ -1345,6 +1381,13 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
     final = round(raw / TOTAL_SCORE_WEIGHT * 100)
     final = score_overextension_penalty_cap(final, p_ema, p_pp, p_cvd, p_oi, p_m30, p_volz, p_liq,
                                              maxes_override=[3, 55, 2, 0, 2, 2, 5])
+    final = max(0, min(final, 100))
+    # [2026-07-26 추가] 아이소토닉 보정(calculate_long_score와 동일한 이유/방식)
+    try:
+        calib_table = score_calibration.get(exchange, score_calibration['bithumb'])['short']
+        final = int(round(calib_table[final]))
+    except Exception:
+        pass
     return max(0, min(final, 100))
 
 
@@ -1679,16 +1722,18 @@ def detect_market_regime(results):
 
 def compute_dynamic_min_score(results):
     """결과 리스트의 평균 ATR%로 시장 상태를 추정해 진입 컷을 반환한다.
-    (개편안 v2 권장 기준: 65 관심 / 70 추세장 진입 / 75 일반장 진입 / 80 횡보장)"""
+    [2026-07-26 하향] 40 관심 / 45 추세장 진입 / 50 일반장 진입 / 55 횡보장
+    (실측 최댓값 66점 기준 재조정 — score_overextension_penalty_cap 주석 및
+    MIN_SCORE 정의부 참고)"""
     try:
         atrs = [r.get('atr_pct', 0) for r in results if r.get('atr_pct', 0) > 0]
         if not atrs:
             return MIN_SCORE
         avg = sum(atrs) / len(atrs)
         if avg >= 1.2:   # 강한 추세/변동장
-            return 70
+            return 45
         elif avg <= 0.6:  # 횡보장
-            return 80
+            return 55
         else:             # 보통
             return MIN_SCORE
     except Exception:
@@ -1720,6 +1765,7 @@ def compute_dynamic_min_score(results):
 # ============================================================
 SIGNAL_LOG_FILE = os.path.join(SCRIPT_DIR, "signal_outcomes.csv")
 LEARNED_WEIGHTS_FILE = os.path.join(SCRIPT_DIR, "learned_weights.json")
+SCORE_CALIBRATION_FILE = os.path.join(SCRIPT_DIR, "score_calibration.json")
 WEIGHT_RETRAIN_LOG_FILE = os.path.join(SCRIPT_DIR, "weight_retrain_log.csv")
 SIGNAL_LOG_COLS = ["signal_id", "opened_ts", "exchange", "ticker", "direction", "entry_price", "score", "regime",
                     "ema", "pp", "cvd", "oi", "volz", "m30", "liq",
@@ -1963,6 +2009,84 @@ def _load_learned_weights():
         print(f"학습 가중치 로드 실패, 기본값(1.0) 사용: {e}")
     return default
 
+def _load_score_calibration():
+    """[2026-07-26 추가] 아이소토닉 보정표 로드. {exchange: {'long':[101개], 'short':[101개]}}
+    형태 — index가 원점수(0~100), 값이 그 자리에 대응하는 '보정점수'. 파일이 없으면
+    항등변환(원점수 그대로)으로 시작한다 — 학습 전에는 지금까지처럼 원점수 그대로 쓰인다."""
+    identity = list(range(101))
+    default = {ex: {'long': list(identity), 'short': list(identity)} for ex in EXCHANGES}
+    if os.path.exists(SCORE_CALIBRATION_FILE):
+        try:
+            with open(SCORE_CALIBRATION_FILE, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+            for ex in EXCHANGES:
+                for d in ('long', 'short'):
+                    tbl = loaded.get(ex, {}).get(d)
+                    if isinstance(tbl, list) and len(tbl) == 101:
+                        default[ex][d] = tbl
+        except Exception as e:
+            print(f"보정표 로드 실패, 항등변환으로 시작: {e}")
+    return default
+
+
+def pava_isotonic_calibration(raw_scores, wins, min_bucket_n=10):
+    """
+    [2026-07-26 추가] Pool Adjacent Violators Algorithm — "점수가 높을수록 실제 승률도
+    반드시 같이 높아지게" 구조적으로 강제하는 보정표를 만든다. 지금까지는 컴포넌트를
+    하나씩 손으로 살펴보고 이상한 걸 찾아 고치는 식이었는데(가격위치 반전, 30분모멘텀
+    반전 등), 그렇게 개별로 고쳐도 여러 항목이 겹치는 지점에서 또 비단조 구간이 생길 수
+    있다(실제로 "여러 항목 동시만점=과열" 현상을 발견했었음). 이 보정은 원인을 찾아
+    고치는 게 아니라, 결과 자체가 항상 단조증가하도록 수학적으로 보장하는 마지막 안전장치다.
+    raw_scores, wins: 같은 길이의 배열(정수 원점수 0~100, 승리여부 0/1). 정수점수별로
+    먼저 집계(평균승률+표본수)한 뒤 PAVA를 적용해서 위반구간을 인접한 것과 병합한다.
+    표본이 min_bucket_n 미만인 점수는 집계에서 제외(제외된 점수는 나중에 인접값으로 채움).
+    반환: 0~100 전 구간을 채운 101개짜리 리스트(보정점수, 0~100 스케일).
+    """
+    df = pd.DataFrame({'score': raw_scores, 'win': wins})
+    agg = df.groupby('score')['win'].agg(['mean', 'count'])
+    agg = agg[agg['count'] >= min_bucket_n]
+    if len(agg) < 3:
+        return None  # 표본 부족 — 보정 안 함(호출부에서 기존 표 유지)
+    scores = agg.index.values.astype(float)
+    vals = list(agg['mean'].values.astype(float))
+    wts = list(agg['count'].values.astype(float))
+    reps = [[s] for s in scores]
+    i = 0
+    while i < len(vals) - 1:
+        if vals[i] > vals[i + 1]:
+            merged_val = (vals[i] * wts[i] + vals[i + 1] * wts[i + 1]) / (wts[i] + wts[i + 1])
+            merged_wt = wts[i] + wts[i + 1]
+            merged_rep = reps[i] + reps[i + 1]
+            vals[i:i + 2] = [merged_val]
+            wts[i:i + 2] = [merged_wt]
+            reps[i:i + 2] = [merged_rep]
+            i = max(i - 1, 0)
+        else:
+            i += 1
+    point_calib = {}
+    for v, rep in zip(vals, reps):
+        for s in rep:
+            point_calib[int(s)] = v * 100  # 승률(0~1) -> 점수 스케일(0~100)로 변환
+    # 관측 안 된 정수점수(표본부족으로 빠진 것 포함)는 앞/뒤 값으로 채운다.
+    full = [None] * 101
+    for s, v in point_calib.items():
+        full[s] = v
+    last = 0.0
+    for i in range(101):
+        if full[i] is None:
+            full[i] = last
+        else:
+            last = full[i]
+    nxt = full[-1]
+    for i in range(100, -1, -1):
+        if point_calib.get(i) is None and full[i] == 0.0:
+            full[i] = nxt
+        else:
+            nxt = full[i]
+    return [round(v, 1) for v in full]
+
+
+score_calibration = _load_score_calibration()  # calculate_long/short_score 마지막 단계에서 참조
 learned_component_weights = _load_learned_weights()  # calculate_long/short_score가 매번 참조하는 현재 배수(거래소별)
 
 def analyze_and_update_weights():
@@ -2031,6 +2155,31 @@ def analyze_and_update_weights():
                 json.dump(new_weights, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"학습 가중치 저장 실패: {e}")
+
+        # [2026-07-26 추가] 아이소토닉 보정표도 같은 주기에 같이 재학습 — score 컬럼(그
+        # 신호가 실제로 받았던 최종 점수)과 ret_120m(RESOLVE_AFTER_MIN과 맞춘 지표) 승패로
+        # PAVA를 돌려서, "점수가 높을수록 승률도 반드시 높다"는 걸 구조적으로 보장한다.
+        global score_calibration
+        calib_updated = False
+        for exchange in EXCHANGES:
+            edf = df[df['exchange'] == exchange]
+            for direction in ('long', 'short'):
+                sub = edf[(edf['direction'] == direction) & edf['score'].notna() & edf['ret_120m'].notna()]
+                if len(sub) < SIGNAL_MIN_TOTAL:
+                    continue
+                wins = (sub['ret_120m'] > 0) if direction == 'long' else (sub['ret_120m'] < 0)
+                new_table = pava_isotonic_calibration(sub['score'].round().astype(int).values, wins.astype(int).values)
+                if new_table is not None:
+                    score_calibration[exchange][direction] = new_table
+                    calib_updated = True
+        if calib_updated:
+            try:
+                with open(SCORE_CALIBRATION_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(score_calibration, f, ensure_ascii=False, indent=2)
+                print("[자동 재학습] 아이소토닉 보정표 갱신 완료")
+            except Exception as e:
+                print(f"보정표 저장 실패: {e}")
+
         try:
             file_exists = os.path.exists(WEIGHT_RETRAIN_LOG_FILE)
             with open(WEIGHT_RETRAIN_LOG_FILE, 'a', newline='', encoding='utf-8') as f:
