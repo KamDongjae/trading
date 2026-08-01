@@ -210,14 +210,52 @@ def _evaluate_condition_server(expr, row):
     except Exception:
         return False
 
+_custom_conditions_cache = {"data": [], "loaded_at": 0.0}
+
 def load_custom_conditions_server():
+    """[2026-07-26 캐시 추가] calculate_long/short_score가 티커마다(사이클당 40개+) 이
+    함수를 호출하게 됐는데, 매번 디스크에서 JSON을 다시 읽으면 I/O 부담이 크다(특히
+    안드로이드 저장소). 10초 이내 재호출이면 캐시된 값을 그대로 반환한다 — 조건식은
+    사용자가 등록/수정할 때만 바뀌니 10초 지연은 실사용에 지장 없다."""
+    now = time.time()
+    if now - _custom_conditions_cache["loaded_at"] < 10:
+        return _custom_conditions_cache["data"]
     try:
         if os.path.exists(CUSTOM_CONDITIONS_FILE):
             with open(CUSTOM_CONDITIONS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                data = json.load(f)
+            _custom_conditions_cache["data"] = data
+            _custom_conditions_cache["loaded_at"] = now
+            return data
     except Exception as e:
         print(f"커스텀 조건식 로드 실패: {e}")
-    return []
+    _custom_conditions_cache["loaded_at"] = now  # 실패해도 10초간 재시도 스팸 방지
+    return _custom_conditions_cache["data"]
+
+
+def _condition_match_bonus(row_for_eval):
+    """[2026-07-26 추가, 07-26 재조정] 사용자가 등록한 커스텀 조건식(custom_conditions.json,
+    trading_client.py "조건식" 창과 같은 파일)에 매칭되는지 여부를 반환한다.
+    실측으로 확인해보니 조건식(지표 2~3개 AND) 방식이 순수 가산식 스코어보다 승률이 훨씬
+    높았다(예: 숏 조건식 4h 승률 69% vs 가산식 스코어 최고 구간 57%) — 가산식은 강한
+    신호가 약한 신호들에 희석되는 반면, AND 조건은 강한 지표 몇 개가 동시에 맞을 때만
+    통과되기 때문으로 해석된다.
+    [처음엔 flat +20점을 시도했는데] 원점수가 낮은 애나 높은 애나 똑같이 20점을 더하다
+    보니, "원래 40점대였는데 조건식 하나 맞아서 60점대로 확 뛴 애"랑 "원래도 60점대에
+    가까웠던 애"가 같은 점수 구간에 섞이는 문제가 있었다. 그래서 원점수에 비례하는
+    곱셈(×1.5)으로 바꿨다 — 이러면 원점수가 이미 높은 애일수록 보너스도 커져서, 조건식
+    으로 검증된 고득점과 단순히 원점수만 우연히 높은 경우가 더 잘 분리된다(백테스트:
+    상관계수 -0.059→-0.082로 개선, 70점 이상 구간 실측 승률 69~70%로 확인)."""
+    try:
+        conditions = load_custom_conditions_server()
+        enabled = [c for c in conditions if c.get('enabled', True)]
+        for cond in enabled:
+            if _evaluate_condition_server(cond.get('expr', ''), row_for_eval):
+                return True
+    except Exception:
+        pass
+    return False
+
 
 def check_custom_condition_alerts(row, exchange):
     """write_market_snapshot()이 CSV에 쓰는 것과 똑같은 row 하나를 받아서, 활성화+알림
@@ -1031,14 +1069,20 @@ def score_price_position_long(rsi, bb_percent, rsi_delta=0.0):
     (RSI 높을수록 이후 수익률 낮음 = 평균회귀 우세 장세). 기존엔 RSI 55~70(모멘텀 구간)을
     최고점으로 줬는데 이게 오히려 실측과 반대 방향이었다 — 그래서 과매도+반등시작을
     최고점으로 뒤집었다. 비중도 20→40으로 크게 키움(가장 강력한 단일신호이므로).
-      40점: RSI≤30 & %B≤30 & 이미 반등 시작(rsi_delta>0) — 과매도 바닥+반등 확인
+      40점: 20≤RSI≤30 & %B≤30 & 이미 반등 시작(rsi_delta>0) — 과매도 바닥+반등 확인
       30점: RSI≤35 & 반등 시작
       20점: RSI≤40
       10점: RSI 40~55 (중립)
-       5점: RSI 55~80
+       5점: RSI 55~80, 또는 RSI<20
        0점: RSI≥80 (과매수 — 롱 진입으로 최악 구간, 실측으로 확인됨)
+    [2026-07-26 RSI 하한 추가] 7/14~8/1 실측(22만행)으로 확인해보니, 이 만점 조건을
+    만족하는 케이스 중에서도 RSI가 20 밑으로 내려간 것들은 승률이 22.1%(그 외 38.8%)로
+    확 나빠졌다 — "바닥 찍고 반등 시작"이 아니라 "아직 패닉셀이 안 끝난 채 계속 추락 중"
+    일 가능성이 높다는 뜻으로 해석해서, RSI<20은 만점 대상에서 빼고 낮은 점수로 내렸다.
     """
     try:
+        if rsi < 20:
+            return 5
         if rsi <= 30 and bb_percent <= 30 and rsi_delta > 0:
             return 40
         elif rsi <= 35 and rsi_delta > 0:
@@ -1227,6 +1271,14 @@ def score_extension_penalty(extension_pct, direction):
     보다 강한 2번째 신호였다(1위는 RSI, 위의 score_price_position_* 참고) — 그래서
     페널티 강도를 대폭 올렸다(-15/-8/-3 → -25/-15/-5). 롱은 이미 많이 오른 경우, 숏은
     이미 많이 내린 경우 감점한다. 레짐/학습 배수와 무관하게 항상 고정폭으로 깎는다.
+    [2026-07-26 추가] 롱에 "너무 많이 떨어진 경우"(자유낙하 중일 가능성) 페널티 신설.
+    22만행 실측으로 확인해보니, 롱 고득점(50점+) 구간이 나쁜 이유 중 하나가 recent_pct가
+    -10% 넘게 떨어진(아직 안 멈춘 급락) 케이스가 새고 있었기 때문이었다 — 승률 27.0%로
+    최악. 기존 페널티는 "이미 많이 오른"(추격매수) 경우만 봤지 "이미 많이 떨어진"(아직
+    안 멈춘 급락) 경우는 전혀 안 걸렀다 — RSI 하한(20)으로 일부 걸러지지만 완전히
+    겹치진 않아서(RSI 25인데 recent_pct -12%인 경우도 있음) 별도로 추가했다. 단,
+    -4~-10% 구간은 오히려 실측 승률이 제일 좋아서(48~56%) 건드리지 않는다 — 딱
+    -10% 넘는 극단적인 경우만 감점.
     """
     try:
         e = extension_pct if extension_pct is not None else 0.0
@@ -1234,6 +1286,7 @@ def score_extension_penalty(extension_pct, direction):
             if e >= 10: return -25
             elif e >= 6: return -15
             elif e >= 4: return -5
+            elif e <= -10: return -20
             return 0
         else:
             if e <= -10: return -25
@@ -1321,10 +1374,36 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
         final = round(raw / TOTAL_SCORE_WEIGHT * 100)
         return max(0, min(final, 100))
     final = round(raw / TOTAL_SCORE_WEIGHT * 100)
-    # oi_sc는 롱 총점에서 뺀 것과 동일하게, 과열 캡 판정(몇 개 항목이 동시에 만점인지)에서도
-    # 제외한다 — 백테스트 때 검증한 조건과 정확히 똑같이 맞추기 위함(0을 넘겨서 항상 미달 처리).
-    final = score_overextension_penalty_cap(final, p_ema, p_pp, p_cvd, 0, p_m30, p_volz, p_liq)
+    # [2026-07-26 추가] 학습된 로지스틱 모델이 있으면 그걸 우선 쓴다 — _fit_logistic_numpy
+    # 주석 참고("가산식이 신호강도∝점수 원칙을 계속 어겨서" 도입). 컴포넌트 원점수를
+    # 그대로 입력 특징으로 쓰고(LONG_COMPONENTS와 같은 순서), 모델이 상호작용/과열 효과를
+    # 알아서 학습하므로 과열 상한 캡은 이 경로에서는 적용하지 않는다(이미 필요 없어짐).
+    # 학습 전(모델 없음)엔 기존 가산식+과열캡 그대로 유지 — 점진적 전환.
+    logi_model = logistic_score_models.get(exchange, {}).get('long')
+    if logi_model:
+        logi_score = _logistic_predict_score(logi_model, [p_ema, p_pp, p_cvd, p_volz, p_m30, p_liq])
+        if logi_score is not None:
+            final = round(logi_score)
+    else:
+        # oi_sc는 롱 총점에서 뺀 것과 동일하게, 과열 캡 판정(몇 개 항목이 동시에 만점인지)에서도
+        # 제외한다 — 백테스트 때 검증한 조건과 정확히 똑같이 맞추기 위함(0을 넘겨서 항상 미달 처리).
+        final = score_overextension_penalty_cap(final, p_ema, p_pp, p_cvd, 0, p_m30, p_volz, p_liq)
     final = max(0, min(final, 100))
+    # [2026-07-26 추가] 조건식 매칭 보너스 — _condition_match_bonus 주석 참고
+    try:
+        row_for_eval = {
+            "ticker": "", "rsi": rsi, "rsi_delta": rsi_delta, "vol_z": vol_z, "bb_percent": bb_percent,
+            "price": price, "price_usd": None, "chg_24h": None, "cvd": cvd_diff, "cvd_diff": cvd_diff,
+            "funding": funding_rate, "vol_24h_m": vol_24h_m, "atr_pct": atr_pct,
+            "oi_change_pct": oi_change_pct, "chg_30m": chg_30m, "ls_ratio": ls_ratio,
+            "ema20": ema20, "ema60": ema60, "recent_pct": extension_pct,
+            "long_score": final, "short_score": 0, "prepump_score": 0, "preshort_score": 0,
+        }
+        if _condition_match_bonus(row_for_eval):
+            final = round(final * 1.5)
+    except Exception:
+        pass
+    final = int(max(0, min(final, 100)))
     # [2026-07-26 추가] 아이소토닉 보정 — "점수가 높을수록 실제 승률도 반드시 높다"를
     # 구조적으로 보장하는 마지막 단계(pava_isotonic_calibration 참고). 학습 전엔 항등
     # 변환이라 원점수 그대로 나간다.
@@ -1379,9 +1458,32 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
         final = round(raw / TOTAL_SCORE_WEIGHT * 100)
         return max(0, min(final, 100))
     final = round(raw / TOTAL_SCORE_WEIGHT * 100)
-    final = score_overextension_penalty_cap(final, p_ema, p_pp, p_cvd, p_oi, p_m30, p_volz, p_liq,
-                                             maxes_override=[3, 55, 2, 0, 2, 2, 5])
+    # [2026-07-26 추가] 학습된 로지스틱 모델 우선 사용(calculate_long_score와 동일 이유).
+    # SHORT_COMPONENTS 순서(ema,pp,cvd,oi,volz,m30,liq)와 정확히 맞춰서 넣어야 한다.
+    logi_model = logistic_score_models.get(exchange, {}).get('short')
+    if logi_model:
+        logi_score = _logistic_predict_score(logi_model, [p_ema, p_pp, p_cvd, p_oi, p_volz, p_m30, p_liq])
+        if logi_score is not None:
+            final = round(logi_score)
+    else:
+        final = score_overextension_penalty_cap(final, p_ema, p_pp, p_cvd, p_oi, p_m30, p_volz, p_liq,
+                                                 maxes_override=[3, 55, 2, 0, 2, 2, 5])
     final = max(0, min(final, 100))
+    # [2026-07-26 추가] 조건식 매칭 보너스 — _condition_match_bonus 주석 참고
+    try:
+        row_for_eval = {
+            "ticker": "", "rsi": rsi, "rsi_delta": rsi_delta, "vol_z": vol_z, "bb_percent": bb_percent,
+            "price": price, "price_usd": None, "chg_24h": None, "cvd": cvd_diff, "cvd_diff": cvd_diff,
+            "funding": funding_rate, "vol_24h_m": vol_24h_m, "atr_pct": atr_pct,
+            "oi_change_pct": oi_change_pct, "chg_30m": chg_30m, "ls_ratio": ls_ratio,
+            "ema20": ema20, "ema60": ema60, "recent_pct": extension_pct,
+            "long_score": 0, "short_score": final, "prepump_score": 0, "preshort_score": 0,
+        }
+        if _condition_match_bonus(row_for_eval):
+            final = round(final * 1.5)
+    except Exception:
+        pass
+    final = int(max(0, min(final, 100)))
     # [2026-07-26 추가] 아이소토닉 보정(calculate_long_score와 동일한 이유/방식)
     try:
         calib_table = score_calibration.get(exchange, score_calibration['bithumb'])['short']
@@ -1773,6 +1875,70 @@ SIGNAL_LOG_COLS = ["signal_id", "opened_ts", "exchange", "ticker", "direction", 
 
 LONG_COMPONENTS = ['ema', 'pp', 'cvd', 'volz', 'm30', 'liq']
 SHORT_COMPONENTS = ['ema', 'pp', 'cvd', 'oi', 'volz', 'm30', 'liq']
+
+LOGISTIC_MODEL_FILE = os.path.join(SCRIPT_DIR, "logistic_score_model.json")
+
+def _fit_logistic_numpy(X, y, epochs=400, lr=0.3, l2=0.02):
+    """[2026-07-26 추가] 순수 numpy로 짠 로지스틱 회귀(경사하강법) — sklearn 의존성 추가
+    없이 Termux에서도 가볍게 돌아가게 하려고 직접 구현했다.
+    배경: 이 프로젝트에서 손으로 짠 가산식 점수(구간별 배점을 사람이 정해서 더하는 방식)가
+    "신호강도 ∝ 점수" 원칙을 계속 어기는 문제가 반복됐다(RSI 하한, 30분모멘텀 반전,
+    추세소진 페널티, 과열 캡, 조건식 보너스 — 전부 같은 근본원인의 서로 다른 증상이었다).
+    가산식은 여러 지표가 동시에 강할 때 생기는 상호작용 효과(예: "다 겹치면 오히려
+    과열")를 원천적으로 표현할 수 없다. 로지스틱 회귀로 walk-forward 검증(과거 70%
+    학습, 미래 30%로 검증)해보니 이 문제가 거의 사라지는 걸 실측으로 확인했다
+    (예측확률 0.7~1.0 구간이 미래 데이터에서도 실제 69.2% 승률로 그대로 나타남, 가산식
+    점수는 최상위 구간에서 승률이 오히려 꺾이는 경우가 반복됐었음).
+    반환: {"mean":[...], "std":[...], "weights":[...], "bias":float} — None이면 학습 실패.
+    """
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if len(X) < 30 or X.shape[1] == 0:
+        return None
+    mean = X.mean(axis=0)
+    std = X.std(axis=0)
+    std[std < 1e-6] = 1.0
+    Xs = (X - mean) / std
+    n, d = Xs.shape
+    w = np.zeros(d)
+    b = 0.0
+    for _ in range(epochs):
+        z = Xs @ w + b
+        p = 1.0 / (1.0 + np.exp(-np.clip(z, -30, 30)))
+        grad_w = Xs.T @ (p - y) / n + l2 * w
+        grad_b = float(np.mean(p - y))
+        w -= lr * grad_w
+        b -= lr * grad_b
+    return {"mean": mean.tolist(), "std": std.tolist(), "weights": w.tolist(), "bias": b}
+
+
+def _logistic_predict_score(model, feature_values):
+    """학습된 모델(_fit_logistic_numpy 결과)과 원점수 리스트를 받아 0~100 점수를 반환한다."""
+    if not model:
+        return None
+    try:
+        x = (np.asarray(feature_values, dtype=float) - np.asarray(model["mean"])) / np.asarray(model["std"])
+        z = float(np.dot(x, model["weights"]) + model["bias"])
+        p = 1.0 / (1.0 + np.exp(-max(-30, min(30, z))))
+        return p * 100
+    except Exception:
+        return None
+
+
+def _load_logistic_models():
+    default = {ex: {'long': None, 'short': None} for ex in EXCHANGES}
+    if os.path.exists(LOGISTIC_MODEL_FILE):
+        try:
+            with open(LOGISTIC_MODEL_FILE, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+            for ex in EXCHANGES:
+                for d in ('long', 'short'):
+                    if loaded.get(ex, {}).get(d):
+                        default[ex][d] = loaded[ex][d]
+        except Exception as e:
+            print(f"로지스틱 모델 로드 실패: {e}")
+    return default
+
 EXCHANGES = ['bithumb', 'upbit']  # [2026-07-19 추가] 업비트 병행 — signal_outcomes.csv 한 파일에
                                   # exchange 컬럼으로 구분해서 같이 쌓고, 배수는 거래소별로 따로 학습한다.
 
@@ -2088,6 +2254,7 @@ def pava_isotonic_calibration(raw_scores, wins, min_bucket_n=10):
 
 score_calibration = _load_score_calibration()  # calculate_long/short_score 마지막 단계에서 참조
 learned_component_weights = _load_learned_weights()  # calculate_long/short_score가 매번 참조하는 현재 배수(거래소별)
+logistic_score_models = _load_logistic_models()  # [2026-07-26 추가] 있으면 calculate_long/short_score가 이걸 우선 사용
 
 def analyze_and_update_weights():
     """resolved==True인 신호들의 컴포넌트-수익률 상관관계로, 거래소×방향별 배수를 재계산한다.
@@ -2179,6 +2346,35 @@ def analyze_and_update_weights():
                 print("[자동 재학습] 아이소토닉 보정표 갱신 완료")
             except Exception as e:
                 print(f"보정표 저장 실패: {e}")
+
+        # [2026-07-26 추가] 로지스틱 회귀 모델도 같은 주기에 재학습 — _fit_logistic_numpy
+        # 주석 참고. 가산식 점수 대신 이 모델이 있으면 우선 사용한다(calculate_long/
+        # short_score 마지막 단계). ema/pp/cvd/oi/volz/m30/liq(컴포넌트 원점수)를 입력
+        # 특징으로 쓴다 — signal_outcomes.csv에 이미 로깅되고 있어서 별도 데이터 수집
+        # 없이 바로 학습 가능하다.
+        global logistic_score_models
+        logi_updated = False
+        for exchange in EXCHANGES:
+            edf = df[df['exchange'] == exchange]
+            for direction, components in (('long', LONG_COMPONENTS), ('short', SHORT_COMPONENTS)):
+                sub = edf[(edf['direction'] == direction) & edf['ret_120m'].notna()]
+                sub = sub.dropna(subset=components)
+                if len(sub) < SIGNAL_MIN_TOTAL:
+                    continue
+                X = sub[components].values
+                y = ((sub['ret_120m'] > 0) if direction == 'long' else (sub['ret_120m'] < 0)).astype(int).values
+                model = _fit_logistic_numpy(X, y)
+                if model is not None:
+                    model["features"] = components  # 예측 시 같은 순서로 넣어야 하므로 같이 저장
+                    logistic_score_models[exchange][direction] = model
+                    logi_updated = True
+        if logi_updated:
+            try:
+                with open(LOGISTIC_MODEL_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(logistic_score_models, f, ensure_ascii=False, indent=2)
+                print("[자동 재학습] 로지스틱 점수모델 갱신 완료")
+            except Exception as e:
+                print(f"로지스틱 모델 저장 실패: {e}")
 
         try:
             file_exists = os.path.exists(WEIGHT_RETRAIN_LOG_FILE)
