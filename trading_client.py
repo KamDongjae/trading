@@ -667,9 +667,33 @@ class TradingClient:
                         "진입가", "현재/청산가", "손익($)", "수익률", "시간")
 
         tree = ttk.Treeview(self.history_win, columns=cols, show="headings", height=28)
-        
+
+        # [2026-08-02 추가] 헤더 클릭하면 그 컬럼 기준 오름/내림차순 정렬(같은 컬럼 다시
+        # 누르면 방향 반전). 숫자처럼 보이는 값(콤마/$/%/+ 등 붙은 것 포함)은 숫자로,
+        # 아니면 문자열로 비교한다.
+        self._history_sort_state = {"col": None, "reverse": False}
+
+        def _sort_key(raw):
+            s = str(raw).replace(",", "").replace("$", "").replace("%", "").replace("+", "").strip()
+            try:
+                return (0, float(s))
+            except ValueError:
+                return (1, s)
+
+        def _sort_by_column(col):
+            state = self._history_sort_state
+            reverse = (not state["reverse"]) if state["col"] == col else False
+            state["col"], state["reverse"] = col, reverse
+            items = [(tree.set(iid, col), iid) for iid in tree.get_children("")]
+            items.sort(key=lambda t: _sort_key(t[0]), reverse=reverse)
+            for idx, (_, iid) in enumerate(items):
+                tree.move(iid, "", idx)
+            for c, name in zip(cols, display_names):
+                arrow = (" ▼" if reverse else " ▲") if c == col else ""
+                tree.heading(c, text=name + arrow, command=lambda cc=c: _sort_by_column(cc))
+
         for col, name in zip(cols, display_names):
-            tree.heading(col, text=name)
+            tree.heading(col, text=name, command=lambda c=col: _sort_by_column(c))
             tree.column(col, width=100, anchor="center")
         
         tree.column("ticker", width=85)

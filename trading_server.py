@@ -3900,12 +3900,21 @@ def srv_open_manual(ticker, position_type, entry_price, amount_won, leverage, ex
 
 def srv_close(ticker):
     """[2026-07-26 변경] price_currency=='krw'인 포지션(바이낸스 미상장 코인)은 원화 손익을
-    청산 시점 환율(get_usd_krw_rate, 전날 종가 기준)로 달러 환산해서 계좌에 반영한다."""
+    청산 시점 환율(get_usd_krw_rate, 전날 종가 기준)로 달러 환산해서 계좌에 반영한다.
+    [2026-08-02 추가] 가격 캐시가 순간적으로 비어있는 경우(백그라운드 시세갱신 스레드와의
+    타이밍 문제)가 실제로 있어서, 바로 실패 처리하지 않고 0.5초 간격으로 최대 3번
+    재시도한다 — 그래도 안 되면 진짜 문제(코인이 리스트에서 빠졌거나 API 문제)로 보고
+    실패를 반환한다."""
     global balance
     if ticker not in positions:
         return False, "보유 포지션이 없습니다"
     pos = positions[ticker]
     price = _pos_current_price(ticker, pos)
+    for _ in range(2):
+        if price and price > 0:
+            break
+        time.sleep(0.5)
+        price = _pos_current_price(ticker, pos)
     if not price or price <= 0:
         return False, "가격 없음 (잠시 후 다시 시도)"
     ptype = pos['position_type']
@@ -3975,6 +3984,11 @@ def srv_close_partial(ticker, fraction):
         return srv_close(ticker)  # 100%는 그냥 전체 청산과 동일
     pos = positions[ticker]
     price = _pos_current_price(ticker, pos)
+    for _ in range(2):
+        if price and price > 0:
+            break
+        time.sleep(0.5)
+        price = _pos_current_price(ticker, pos)
     if not price or price <= 0:
         return False, "가격 없음 (잠시 후 다시 시도)"
     ptype = pos['position_type']
