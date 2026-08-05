@@ -1461,28 +1461,29 @@ class TradingClient:
                 cut = current_min_score
                 wcut = watch_current_min_score
                 pp_cut = pp_current_min_score
+                # [2026-08-06 변경] 조건식 색칠(배경)이랑 롱/숏/매집/분산 신호(테두리)를
+                # 동시에 표시하도록 분리했다 — 예전엔 점수신호 있으면 배경을 그걸로 덮어써서
+                # 조건식 매칭이 안 보였는데, 이제 점수신호는 굵은 색 테두리로, 조건식은
+                # 배경색으로 각각 따로 표시되니 둘 다 한눈에 보인다.
                 if ls >= cut and ls >= ss:
-                    bg = "#6fe08a"
+                    border_color = "#2fa84f"   # 초록(진하게) — 롱 진입
                 elif ss >= cut:
-                    bg = "#e04040"   # [2026-08-05 변경] 연어색(#f5807d)이 주황으로 보인다는 피드백 -> 확실한 빨강으로
+                    border_color = "#e04040"   # 빨강 — 숏 진입
                 elif pp >= pp_cut and pp >= ps:
-                    bg = "#7fbdf5"   # 파랑 계열: 아직 안 터진 매집 구간(prepump) 대기
+                    border_color = "#3a7fd0"   # 파랑 — 매집(prepump) 대기
                 elif ps >= pp_cut:
-                    bg = "#d38ff2"   # 보라 계열: 고점 분산(preshort) 대기
+                    border_color = "#9a4fd0"   # 보라 — 분산(preshort) 대기
                 elif ls >= wcut or ss >= wcut:
-                    bg = "#f2e070"   # 진노랑: 진입 컷엔 못 미치지만 "관심" 구간(65점대)
+                    border_color = "#c9a800"   # 진노랑 — 관심
                 else:
-                    bg = "white"
-                # [2026-08-05 변경] 우선순위 반전 — 롱/숏 점수 상황을 먼저 봐야 하니까,
-                # 점수 기준 색(초록/빨강/파랑/보라/노랑)이 이미 정해졌으면 그걸 그대로 두고,
-                # "흰색(아무 신호 없음)"일 때만 조건식 색으로 채운다. 즉 점수 신호가 조건식보다 우선.
-                if bg == "white":
-                    for cond in self.custom_conditions:
-                        if not cond.get("enabled", True):
-                            continue
-                        if evaluate_condition(cond["expr"], row):
-                            bg = cond["color"]
-                            break
+                    border_color = None
+                bg = "white"
+                for cond in self.custom_conditions:
+                    if not cond.get("enabled", True):
+                        continue
+                    if evaluate_condition(cond["expr"], row):
+                        bg = cond["color"]
+                        break
                 display_ticker = f"[{ticker}]" if ticker in self.pinned_tickers else ticker
                 line1 = f"{display_ticker}  {chg24h_str} ({krw_str})  {usd_str}  롱{ls} 숏{ss}  매집{pp} 분산{ps}"
                 lsr = row.get('ls_ratio')
@@ -1512,6 +1513,11 @@ class TradingClient:
                 self._cfg(card._lbl1, text=line1, bg=bg)
                 self._cfg(card._lbl2, text=line2, bg=bg)
                 self._cfg(card, bg=bg)
+                if border_color:
+                    self._cfg(card, highlightbackground=border_color, highlightcolor=border_color,
+                              highlightthickness=3, bd=0)
+                else:
+                    self._cfg(card, highlightthickness=0, bd=1, relief="solid")
                 if is_new:
                     card.pack(fill="x", padx=2, pady=1)
 
