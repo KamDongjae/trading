@@ -1,3 +1,4 @@
+import sys
 import threading
 import time
 import numpy as np
@@ -1379,7 +1380,7 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
     # 그대로 입력 특징으로 쓰고(LONG_COMPONENTS와 같은 순서), 모델이 상호작용/과열 효과를
     # 알아서 학습하므로 과열 상한 캡은 이 경로에서는 적용하지 않는다(이미 필요 없어짐).
     # 학습 전(모델 없음)엔 기존 가산식+과열캡 그대로 유지 — 점진적 전환.
-    logi_model = logistic_score_models.get(exchange, {}).get('long')
+    logi_model = logistic_score_models.get(exchange, {}).get('long') if USE_LOGISTIC_SCORE_MODEL else None
     if logi_model:
         logi_score = _logistic_predict_score(logi_model, [p_ema, p_pp, p_cvd, p_volz, p_m30, p_liq])
         if logi_score is not None:
@@ -1407,11 +1408,12 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
     # [2026-07-26 추가] 아이소토닉 보정 — "점수가 높을수록 실제 승률도 반드시 높다"를
     # 구조적으로 보장하는 마지막 단계(pava_isotonic_calibration 참고). 학습 전엔 항등
     # 변환이라 원점수 그대로 나간다.
-    try:
-        calib_table = score_calibration.get(exchange, score_calibration['bithumb'])['long']
-        final = int(round(calib_table[final]))
-    except Exception:
-        pass
+    if USE_SCORE_CALIBRATION:
+        try:
+            calib_table = score_calibration.get(exchange, score_calibration['bithumb'])['long']
+            final = int(round(calib_table[final]))
+        except Exception:
+            pass
     return max(0, min(final, 100))
 
 def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, chg_30m,
@@ -1460,7 +1462,7 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
     final = round(raw / TOTAL_SCORE_WEIGHT * 100)
     # [2026-07-26 추가] 학습된 로지스틱 모델 우선 사용(calculate_long_score와 동일 이유).
     # SHORT_COMPONENTS 순서(ema,pp,cvd,oi,volz,m30,liq)와 정확히 맞춰서 넣어야 한다.
-    logi_model = logistic_score_models.get(exchange, {}).get('short')
+    logi_model = logistic_score_models.get(exchange, {}).get('short') if USE_LOGISTIC_SCORE_MODEL else None
     if logi_model:
         logi_score = _logistic_predict_score(logi_model, [p_ema, p_pp, p_cvd, p_oi, p_volz, p_m30, p_liq])
         if logi_score is not None:
@@ -1485,11 +1487,12 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
         pass
     final = int(max(0, min(final, 100)))
     # [2026-07-26 추가] 아이소토닉 보정(calculate_long_score와 동일한 이유/방식)
-    try:
-        calib_table = score_calibration.get(exchange, score_calibration['bithumb'])['short']
-        final = int(round(calib_table[final]))
-    except Exception:
-        pass
+    if USE_SCORE_CALIBRATION:
+        try:
+            calib_table = score_calibration.get(exchange, score_calibration['bithumb'])['short']
+            final = int(round(calib_table[final]))
+        except Exception:
+            pass
     return max(0, min(final, 100))
 
 
@@ -1877,6 +1880,13 @@ LONG_COMPONENTS = ['ema', 'pp', 'cvd', 'volz', 'm30', 'liq']
 SHORT_COMPONENTS = ['ema', 'pp', 'cvd', 'oi', 'volz', 'm30', 'liq']
 
 LOGISTIC_MODEL_FILE = os.path.join(SCRIPT_DIR, "logistic_score_model.json")
+# [2026-08-05 재차 비활성화] 서버 하나만 켠 상태에서도 여전히 점수가 몇 개 값으로
+# 뭉치는 현상이 재현됨 — "중복 실행" 하나만으로 설명되는 문제가 아니었다는 뜻.
+# 실전에서 반복적으로 문제가 재현되는데 원격으로는 정확한 원인을 못 잡고 있어서,
+# 검증된 가산식으로 확실하게 되돌린다. 아이소토닉 보정도 같이 끈다(아래).
+USE_LOGISTIC_SCORE_MODEL = False  # 여전히 원인 불명확한 문제가 있어 비활성 유지
+USE_SCORE_CALIBRATION = True  # [2026-08-05] 21만행 백테스트로 미리 계산한 정적 보정표 사용
+                               # (실시간 재학습은 아래에서 꺼둠 — 파일이 덮어써지지 않음)
 
 def _fit_logistic_numpy(X, y, epochs=400, lr=0.3, l2=0.02):
     """[2026-07-26 추가] 순수 numpy로 짠 로지스틱 회귀(경사하강법) — sklearn 의존성 추가
@@ -1926,6 +1936,11 @@ def _logistic_predict_score(model, feature_values):
 
 
 def _load_logistic_models():
+    """[2026-08-05 안전장치 추가] 로드한 모델이 이미 고장난 상태(입력이 달라도 출력이
+    거의 안 바뀌는 상수 모델 — 실제로 롱 점수가 전부 62로 고정되는 사고가 있었음)면
+    자동으로 걸러낸다. 모델 자체에 저장된 mean/std를 이용해 "평균-2표준편차"와
+    "평균+2표준편차" 두 극단 입력을 넣어보고 출력 차이가 너무 작으면 버린다 —
+    v8 재학습을 기다리거나 파일을 수동으로 지울 필요 없이 서버 재시작만으로 복구된다."""
     default = {ex: {'long': None, 'short': None} for ex in EXCHANGES}
     if os.path.exists(LOGISTIC_MODEL_FILE):
         try:
@@ -1933,8 +1948,22 @@ def _load_logistic_models():
                 loaded = json.load(f)
             for ex in EXCHANGES:
                 for d in ('long', 'short'):
-                    if loaded.get(ex, {}).get(d):
-                        default[ex][d] = loaded[ex][d]
+                    m = loaded.get(ex, {}).get(d)
+                    if not m:
+                        continue
+                    try:
+                        mean = m["mean"]; std = m["std"]
+                        lo = [mean[i] - 2 * std[i] for i in range(len(mean))]
+                        hi = [mean[i] + 2 * std[i] for i in range(len(mean))]
+                        p_lo = _logistic_predict_score(m, lo)
+                        p_hi = _logistic_predict_score(m, hi)
+                        if p_lo is None or p_hi is None or abs(p_hi - p_lo) < 10:
+                            print(f"⚠️ {ex}/{d} 로지스틱 모델이 사실상 상수 출력(극단값 차이 "
+                                  f"{abs((p_hi or 0)-(p_lo or 0)):.1f}점) — 로드 거부, 가산식 사용")
+                            continue
+                    except Exception:
+                        continue
+                    default[ex][d] = m
         except Exception as e:
             print(f"로지스틱 모델 로드 실패: {e}")
     return default
@@ -2178,7 +2207,11 @@ def _load_learned_weights():
 def _load_score_calibration():
     """[2026-07-26 추가] 아이소토닉 보정표 로드. {exchange: {'long':[101개], 'short':[101개]}}
     형태 — index가 원점수(0~100), 값이 그 자리에 대응하는 '보정점수'. 파일이 없으면
-    항등변환(원점수 그대로)으로 시작한다 — 학습 전에는 지금까지처럼 원점수 그대로 쓰인다."""
+    항등변환(원점수 그대로)으로 시작한다 — 학습 전에는 지금까지처럼 원점수 그대로 쓰인다.
+    [2026-08-05 안전장치 추가] 표본이 너무 적을 때 표가 몇 개 값으로 뭉개지는 사고가
+    있었다(실측: 서로 다른 출력값이 3~4개뿐이라 코인마다 점수가 거의 똑같이 보임) —
+    선형보간으로 완화했지만(pava_isotonic_calibration), 그래도 혹시 몰라 로드 시점에
+    서로 다른 값이 8개 미만이면 너무 거칠다고 보고 항등변환으로 되돌린다."""
     identity = list(range(101))
     default = {ex: {'long': list(identity), 'short': list(identity)} for ex in EXCHANGES}
     if os.path.exists(SCORE_CALIBRATION_FILE):
@@ -2189,6 +2222,9 @@ def _load_score_calibration():
                 for d in ('long', 'short'):
                     tbl = loaded.get(ex, {}).get(d)
                     if isinstance(tbl, list) and len(tbl) == 101:
+                        if len(set(tbl)) < 8:
+                            print(f"⚠️ {ex}/{d} 보정표가 너무 거침(서로 다른 값 {len(set(tbl))}개) — 항등변환으로 대체")
+                            continue
                         default[ex][d] = tbl
         except Exception as e:
             print(f"보정표 로드 실패, 항등변환으로 시작: {e}")
@@ -2233,22 +2269,21 @@ def pava_isotonic_calibration(raw_scores, wins, min_bucket_n=10):
     for v, rep in zip(vals, reps):
         for s in rep:
             point_calib[int(s)] = v * 100  # 승률(0~1) -> 점수 스케일(0~100)로 변환
-    # 관측 안 된 정수점수(표본부족으로 빠진 것 포함)는 앞/뒤 값으로 채운다.
-    full = [None] * 101
-    for s, v in point_calib.items():
-        full[s] = v
-    last = 0.0
-    for i in range(101):
-        if full[i] is None:
-            full[i] = last
-        else:
-            last = full[i]
-    nxt = full[-1]
-    for i in range(100, -1, -1):
-        if point_calib.get(i) is None and full[i] == 0.0:
-            full[i] = nxt
-        else:
-            nxt = full[i]
+    # [2026-08-05 수정] 관측 안 된(또는 표본부족으로 제외된) 정수점수는 예전엔 "가장
+    # 가까운 값으로 평평하게 채우기"를 했는데, 초기 데이터(300건 갓 넘긴 수준)처럼
+    # 표본이 넓게 흩어져 있으면 고정점이 몇 개 안 남아서 넓은 구간이 통째로 같은 값
+    # 하나로 뭉개지는 문제가 실제로 있었다(실측: 업비트 롱이 겨우 4개 값으로, 숏은 3개
+    # 값으로 뭉쳐서 화면상 서로 다른 코인들이 다 같은 점수로 보이는 사고가 있었음).
+    # 그래서 평평한 채우기 대신, 남은 고정점들 사이를 선형보간으로 채운다 — 데이터가
+    # 적어도 최소한 "매끄럽게 이어지는" 곡선이 나오고, 데이터가 쌓일수록 고정점이
+    # 늘어나면서 자연스럽게 더 정교해진다.
+    if len(point_calib) < 2:
+        # 고정점이 1개 이하면 보간할 게 없음 — 안전하게 항등변환으로 폴백
+        return list(range(101))
+    anchor_scores = np.array(sorted(point_calib.keys()), dtype=float)
+    anchor_vals = np.array([point_calib[int(s)] for s in anchor_scores], dtype=float)
+    full_scores = np.arange(101, dtype=float)
+    full = np.interp(full_scores, anchor_scores, anchor_vals).tolist()
     return [round(v, 1) for v in full]
 
 
@@ -2323,29 +2358,33 @@ def analyze_and_update_weights():
         except Exception as e:
             print(f"학습 가중치 저장 실패: {e}")
 
-        # [2026-07-26 추가] 아이소토닉 보정표도 같은 주기에 같이 재학습 — score 컬럼(그
-        # 신호가 실제로 받았던 최종 점수)과 ret_120m(RESOLVE_AFTER_MIN과 맞춘 지표) 승패로
-        # PAVA를 돌려서, "점수가 높을수록 승률도 반드시 높다"는 걸 구조적으로 보장한다.
-        global score_calibration
-        calib_updated = False
-        for exchange in EXCHANGES:
-            edf = df[df['exchange'] == exchange]
-            for direction in ('long', 'short'):
-                sub = edf[(edf['direction'] == direction) & edf['score'].notna() & edf['ret_120m'].notna()]
-                if len(sub) < SIGNAL_MIN_TOTAL:
-                    continue
-                wins = (sub['ret_120m'] > 0) if direction == 'long' else (sub['ret_120m'] < 0)
-                new_table = pava_isotonic_calibration(sub['score'].round().astype(int).values, wins.astype(int).values)
-                if new_table is not None:
-                    score_calibration[exchange][direction] = new_table
-                    calib_updated = True
-        if calib_updated:
-            try:
-                with open(SCORE_CALIBRATION_FILE, 'w', encoding='utf-8') as f:
-                    json.dump(score_calibration, f, ensure_ascii=False, indent=2)
-                print("[자동 재학습] 아이소토닉 보정표 갱신 완료")
-            except Exception as e:
-                print(f"보정표 저장 실패: {e}")
+        # [2026-07-26 추가, 2026-08-05 실시간 재학습 중단] 아이소토닉 보정표는 이제
+        # 21만행 백테스트로 미리 계산한 정적 파일(score_calibration.json)을 그대로 쓴다
+        # (USE_SCORE_CALIBRATION=True). 실시간 재학습 도중 원인 불명 문제가 반복돼서,
+        # RETRAIN_CALIBRATION_LIVE를 False로 꺼서 이 블록 자체가 실행 안 되게 막았다 —
+        # 나중에 원인 찾고 다시 켤 수 있게 코드는 남겨둔다.
+        RETRAIN_CALIBRATION_LIVE = False
+        if RETRAIN_CALIBRATION_LIVE:
+            global score_calibration
+            calib_updated = False
+            for exchange in EXCHANGES:
+                edf = df[df['exchange'] == exchange]
+                for direction in ('long', 'short'):
+                    sub = edf[(edf['direction'] == direction) & edf['score'].notna() & edf['ret_120m'].notna()]
+                    if len(sub) < SIGNAL_MIN_TOTAL:
+                        continue
+                    wins = (sub['ret_120m'] > 0) if direction == 'long' else (sub['ret_120m'] < 0)
+                    new_table = pava_isotonic_calibration(sub['score'].round().astype(int).values, wins.astype(int).values)
+                    if new_table is not None:
+                        score_calibration[exchange][direction] = new_table
+                        calib_updated = True
+            if calib_updated:
+                try:
+                    with open(SCORE_CALIBRATION_FILE, 'w', encoding='utf-8') as f:
+                        json.dump(score_calibration, f, ensure_ascii=False, indent=2)
+                    print("[자동 재학습] 아이소토닉 보정표 갱신 완료")
+                except Exception as e:
+                    print(f"보정표 저장 실패: {e}")
 
         # [2026-07-26 추가] 로지스틱 회귀 모델도 같은 주기에 재학습 — _fit_logistic_numpy
         # 주석 참고. 가산식 점수 대신 이 모델이 있으면 우선 사용한다(calculate_long/
@@ -2366,6 +2405,18 @@ def analyze_and_update_weights():
                 model = _fit_logistic_numpy(X, y)
                 if model is not None:
                     model["features"] = components  # 예측 시 같은 순서로 넣어야 하므로 같이 저장
+                    # [2026-08-05 추가] 학습 직후 검증 — 학습에 쓴 데이터 자체에 넣어봤을 때
+                    # 예측값이 사실상 상수(입력이 달라도 출력이 거의 안 바뀜)로 나오면 그
+                    # 모델은 코인 구분력이 0이라 가산식보다 못하다(실제로 롱 점수가 전부
+                    # 62로 고정되는 사고가 있었음 — 원인은 특정 안 됐지만, 원인을 몰라도
+                    # "쓸모없는 모델을 거르는" 이 검증만으로 재발을 막을 수 있다).
+                    train_preds = [_logistic_predict_score(model, list(x)) for x in X[:500]]
+                    train_preds = [p for p in train_preds if p is not None]
+                    pred_std = float(np.std(train_preds)) if train_preds else 0.0
+                    if pred_std < 3.0:
+                        print(f"[자동 재학습] {exchange}/{direction} 로지스틱 모델 거부 — "
+                              f"예측값 표준편차 {pred_std:.2f}(3.0 미만, 사실상 상수) — 가산식 유지")
+                        continue
                     logistic_score_models[exchange][direction] = model
                     logi_updated = True
         if logi_updated:
@@ -4307,7 +4358,34 @@ def score_updater(tickers_ref, exchange='bithumb'):  # noqa: F811
     _orig_score_updater(tickers_ref, exchange=exchange)
 
 # ============================================================
+def _acquire_single_instance_lock():
+    """[2026-08-05 추가] 서버 프로세스가 실수로 2개 동시에 뜨는 걸 막는다 — 실제로 그래서
+    logistic_score_model.json/score_calibration.json 등 공유 파일을 두 프로세스가 서로
+    경쟁하며 쓰다가 롱 점수가 상수로 고정되는 사고가 있었다. 락파일에 PID를 적어두고,
+    시작할 때 그 PID가 아직 살아있는 프로세스인지 확인한다(죽은 프로세스가 남긴 락파일은
+    무시하고 새로 씀 — 비정상 종료 후 재시작이 막히면 안 되므로)."""
+    lock_path = os.path.join(SCRIPT_DIR, "trading_server.lock")
+    my_pid = os.getpid()
+    if os.path.exists(lock_path):
+        try:
+            with open(lock_path, 'r') as f:
+                old_pid = int(f.read().strip())
+            os.kill(old_pid, 0)  # 신호 0 = 실제로 죽이지 않고 살아있는지만 확인
+            print(f"❌ 이미 서버가 실행 중입니다 (PID {old_pid}) — 중복 실행 방지를 위해 종료합니다.")
+            print(f"   진짜 다른 프로세스가 아니라면 {lock_path} 파일을 지우고 다시 시도하세요.")
+            sys.exit(1)
+        except ProcessLookupError:
+            print(f"⚠️ 이전 락파일(PID {old_pid})은 이미 죽은 프로세스 — 무시하고 새로 시작합니다.")
+        except (ValueError, OSError):
+            pass  # 락파일이 깨졌거나 읽기 실패 — 그냥 덮어씀
+    with open(lock_path, 'w') as f:
+        f.write(str(my_pid))
+    import atexit
+    atexit.register(lambda: os.path.exists(lock_path) and os.remove(lock_path))
+
+
 if __name__ == "__main__":
+    _acquire_single_instance_lock()
     print("=" * 50)
     print("트레이딩 서버 시작 (계산/계좌 엔진 — 마켓 로깅 없음, 수집은 별도 기기)")
     print(f"데이터 폴더: {SCRIPT_DIR}")

@@ -1416,7 +1416,7 @@ class TradingClient:
                 if ls >= cut and ls >= ss:
                     bg = "#6fe08a"
                 elif ss >= cut:
-                    bg = "#f5807d"
+                    bg = "#e04040"   # [2026-08-05 변경] 연어색(#f5807d)이 주황으로 보인다는 피드백 -> 확실한 빨강으로
                 elif pp >= pp_cut and pp >= ps:
                     bg = "#7fbdf5"   # 파랑 계열: 아직 안 터진 매집 구간(prepump) 대기
                 elif ps >= pp_cut:
