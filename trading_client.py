@@ -47,6 +47,7 @@ CMD_DIR = os.path.join(SCRIPT_DIR, "server_cmds")
 RESULTS_FILE = os.path.join(SCRIPT_DIR, "server_results.csv")
 HISTORY_FILE = os.path.join(SCRIPT_DIR, "trade_history_usd.csv")  # 서버가 실제로 쓰는 파일명과 일치시킴(기존엔 이름이 달라서 청산기록이 항상 비어 보였음)
 CUSTOM_CONDITIONS_FILE = os.path.join(SCRIPT_DIR, "custom_conditions.json")  # [2026-07-21 추가] 사용자 정의 조건식 저장
+FILTER_CONDITIONS_FILE = os.path.join(SCRIPT_DIR, "filter_conditions.json")  # [2026-08-05 추가] 필터(코인 목록 자체를 걸러냄) 저장
 
 
 def _load_discord_webhook_client():
@@ -156,6 +157,26 @@ def save_custom_conditions(conditions):
             json.dump(conditions, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"커스텀 조건식 저장 실패: {e}")
+
+
+def load_filter_conditions():
+    """[2026-08-05 추가] 필터 조건식 로드 — 조건식이랑 같은 형식(expr/enabled)이지만
+    색상은 없다(칠하는 게 아니라 걸러내는 용도라서)."""
+    try:
+        if os.path.exists(FILTER_CONDITIONS_FILE):
+            with open(FILTER_CONDITIONS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"필터 조건식 로드 실패: {e}")
+    return []
+
+
+def save_filter_conditions(conditions):
+    try:
+        with open(FILTER_CONDITIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(conditions, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"필터 조건식 저장 실패: {e}")
 
 
 os.makedirs(CMD_DIR, exist_ok=True)
@@ -368,6 +389,7 @@ class TradingClient:
         self.pinned_tickers = set()
         self.current_exchange = 'bithumb'  # 코인탭 빗썸/업비트 토글 — open/close/차트 명령에도 그대로 씀
         self.custom_conditions = load_custom_conditions()  # [2026-07-21] 사용자 정의 조건식 목록
+        self.filter_conditions = load_filter_conditions()  # [2026-08-05] 필터 조건식 목록(통과한 코인만 표시)
         self._custom_alert_cooldown = {}  # (조건id, 티커) -> 마지막 알림 보낸 시각(초)
         self._last_render_data = []
         self._tap_state = {"last_time": 0.0, "last_ticker": None}
@@ -570,6 +592,13 @@ class TradingClient:
         tk.Button(exchange_bar, text="조건식", font=("Arial", self.FONT_SMALL, "bold"),
                   bg="#3a7a5a", fg="white", padx=8, pady=2,
                   command=self.open_custom_condition_dialog).pack(side="left", padx=2)
+        # [2026-08-05 추가] 필터 버튼 — 조건식이랑 같은 입력방식(지표버튼/직접타이핑/OR묶기)
+        # 이지만, 색칠이 아니라 "통과 못 한 코인은 아예 안 보이게" 걸러내는 용도.
+        self.btn_filter = tk.Button(exchange_bar, text="필터", font=("Arial", self.FONT_SMALL, "bold"),
+                                     bg="#555555", fg="white", padx=8, pady=2,
+                                     command=self.open_filter_dialog)
+        self.btn_filter.pack(side="left", padx=2)
+        self._highlight_filter_button()
 
         # 타임프레임(계산 기준 캔들) 전환 버튼 — 테이블 바로 위
         tf_bar = tk.Frame(self.root)
@@ -1322,6 +1351,24 @@ class TradingClient:
         return [r for r in data_list
                 if text in r['ticker'].upper() or r['ticker'] in self.pinned_tickers]
 
+    def _apply_custom_filter(self, data_list):
+        """[2026-08-05 추가] "필터" 버튼으로 등록한 필터식 — 하나라도 통과 못 하면
+        그 코인 카드 자체를 목록에서 뺀다(조건식처럼 색칠만 하는 게 아니라 아예 숨김).
+        여러 필터가 등록돼있으면 OR(하나라도 맞으면 통과). 활성화된 필터가 하나도
+        없으면 그냥 전체를 반환(필터링 안 함). 검색창이랑 같은 이유로, 고정(pin)된
+        코인은 필터에 안 걸려도 항상 남겨둔다."""
+        enabled = [f_ for f_ in self.filter_conditions if f_.get("enabled", True)]
+        if not enabled:
+            return data_list
+        out = []
+        for r in data_list:
+            if r['ticker'] in self.pinned_tickers:
+                out.append(r)
+                continue
+            if any(evaluate_condition(f_["expr"], r) for f_ in enabled):
+                out.append(r)
+        return out
+
     def _on_search_change(self, event=None):
         # 입력할 때마다 마지막으로 받은 데이터로 즉시 다시 그린다 (다음 서버 갱신을 안 기다림)
         if self._last_render_data:
@@ -1388,6 +1435,7 @@ class TradingClient:
             self._update_score_history(data_list)
             yview_top = self.card_canvas.yview()[0]
             data_list = self._apply_search_filter(data_list)
+            data_list = self._apply_custom_filter(data_list)
             data_list = self._apply_sort(data_list)
             seen = set()
             new_order = []
@@ -1964,6 +2012,230 @@ class TradingClient:
             messagebox.showwarning("경고", "티커를 입력하세요.")
             return
         self._send_and_wait('close', ticker=ticker, label="청산")
+
+    def open_filter_dialog(self):
+        """[2026-08-05 추가] 필터 관리 창. 조건식 창이랑 입력방식(지표버튼/직접타이핑/
+        일괄 OR등록/txt 내보내기·가져오기)은 완전히 같지만, 색칠하는 대신 "하나라도
+        통과 못 하면 그 코인 자체를 목록에서 숨긴다"는 점만 다르다. 여러 필터가
+        등록되면 OR로 합쳐진다(하나라도 통과하면 표시). 색상 개념이 없어서 조건식 txt
+        가져오기/내보내기와 같은 4열 형식을 그대로 쓰되(다른 도구 결과물 재사용 가능),
+        색상 칸은 그냥 무시한다."""
+        win = tk.Toplevel(self.root)
+        win.title("필터")
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        win_w = max(700, int(screen_w * 0.55))
+        win_h = int(screen_h * 0.85)
+        win_x = (screen_w - win_w) // 2
+        win_y = (screen_h - win_h) // 2
+        win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+        win.resizable(True, True)
+
+        top = tk.Frame(win)
+        top.pack(fill="x", padx=10, pady=(10, 4))
+
+        expr_entry = tk.Entry(top, font=("Consolas", 11))
+        expr_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        def register():
+            expr = expr_entry.get().strip()
+            ok, err = validate_condition_expr(expr)
+            if not ok:
+                messagebox.showwarning("필터 오류", err, parent=win)
+                return
+            f_ = {"id": f"f{int(time.time()*1000)}", "expr": expr, "enabled": True}
+            self.filter_conditions.append(f_)
+            save_filter_conditions(self.filter_conditions)
+            self._highlight_filter_button()
+            expr_entry.delete(0, tk.END)
+            refresh_list()
+
+        tk.Button(top, text="등록", command=register, bg="#3a7a5a", fg="white",
+                  font=("Arial", 10, "bold"), padx=10).pack(side="left")
+
+        tk.Label(win, text="지표 버튼을 누르면 필터식 입력칸에 삽입됩니다. "
+                            "연산자는 직접 타이핑: && || ! == != < > <= >= ( )\n"
+                            "코인명 비교는 따옴표로: ticker=='xrp' (대소문자 구분 안 함) — "
+                            "필터를 여러 개 등록하면 OR로 합쳐져서, 하나라도 통과하면 표시됩니다.",
+                 font=("Arial", 9), fg="#666666", justify="left", wraplength=win_w-30, anchor="w").pack(
+            fill="x", padx=10, pady=(0, 6))
+
+        grid = tk.Frame(win)
+        grid.pack(fill="x", padx=10)
+        cols = 3
+        for i, (name, label) in enumerate(CONDITION_INDICATORS):
+            r, c = divmod(i, cols)
+            b = tk.Button(grid, text=label, font=("Arial", 9), padx=4, pady=2,
+                          command=lambda n=name: expr_entry.insert(tk.INSERT, n))
+            b.grid(row=r, column=c, sticky="ew", padx=2, pady=2)
+        for c in range(cols):
+            grid.grid_columnconfigure(c, weight=1)
+
+        tk.Label(win, text="여러 줄 붙여넣기 — 줄바꿈된 조건들을 OR로 묶어 한 번에 등록",
+                 font=("Arial", 10, "bold"), fg="#1a4a7a").pack(anchor="w", padx=10, pady=(10, 2))
+
+        bulk_text = tk.Text(win, height=6, font=("Consolas", 9), wrap="none")
+        bulk_text.pack(fill="x", padx=10, pady=(4, 4))
+        bulk_text.insert("1.0", "rsi < 30 && bb_percent < 20\nrsi > 70 && bb_percent > 80")
+
+        def register_bulk():
+            raw = bulk_text.get("1.0", tk.END)
+            lines = [ln.strip().rstrip(',').strip() for ln in raw.splitlines() if ln.strip()]
+            if not lines:
+                messagebox.showwarning("경고", "붙여넣은 필터식이 없습니다.", parent=win)
+                return
+            bad = []
+            for i, ln in enumerate(lines, 1):
+                ok, err = validate_condition_expr(ln)
+                if not ok:
+                    bad.append(f"{i}번째 줄: {err}\n  → {ln}")
+            if bad:
+                messagebox.showwarning("필터 오류",
+                                        f"{len(bad)}개 줄에 문제가 있습니다. 고친 뒤 다시 시도하세요:\n\n" +
+                                        "\n\n".join(bad[:5]) +
+                                        (f"\n\n...외 {len(bad)-5}개 더" if len(bad) > 5 else ""),
+                                        parent=win)
+                return
+            combined = " || ".join(f"({ln})" for ln in lines)
+            ok, err = validate_condition_expr(combined)
+            if not ok:
+                messagebox.showwarning("필터 오류", f"묶은 결과가 유효하지 않습니다: {err}", parent=win)
+                return
+            f_ = {"id": f"f{int(time.time()*1000)}", "expr": combined, "enabled": True}
+            self.filter_conditions.append(f_)
+            save_filter_conditions(self.filter_conditions)
+            self._highlight_filter_button()
+            messagebox.showinfo("등록 완료", f"{len(lines)}개 필터를 OR로 묶어 한 개로 등록했습니다.", parent=win)
+            refresh_list()
+
+        tk.Button(win, text="일괄등록 (OR로 묶기)", command=register_bulk, bg="#7a4aa0", fg="white",
+                  font=("Arial", 10, "bold"), padx=10).pack(anchor="w", padx=10, pady=(0, 8))
+
+        def export_filters():
+            if not self.filter_conditions:
+                messagebox.showinfo("내보내기", "등록된 필터가 없습니다.", parent=win)
+                return
+            path = filedialog.asksaveasfilename(
+                parent=win, defaultextension=".txt",
+                initialfile=f"filter_conditions_{time.strftime('%Y%m%d_%H%M%S')}.txt",
+                filetypes=[("Text files", "*.txt")])
+            if not path:
+                return
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("# 필터 내보내기\n")
+                    f.write("# 형식: 색상(무시됨)\\t사용여부(1/0)\\t알림여부(무시됨)\\t필터식\n")
+                    for f_ in self.filter_conditions:
+                        f.write(f"-\t{1 if f_.get('enabled', True) else 0}\t0\t{f_['expr']}\n")
+                messagebox.showinfo("내보내기 완료", f"{len(self.filter_conditions)}개 필터를 저장했습니다.\n{path}", parent=win)
+            except Exception as e:
+                messagebox.showerror("오류", f"저장 실패: {e}", parent=win)
+
+        def import_filters():
+            path = filedialog.askopenfilename(parent=win, filetypes=[("Text files", "*.txt")])
+            if not path:
+                return
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+            except Exception as e:
+                messagebox.showerror("오류", f"파일 읽기 실패: {e}", parent=win)
+                return
+            added, bad = 0, []
+            for i, raw in enumerate(lines, 1):
+                line = raw.rstrip("\n")
+                if not line.strip() or line.startswith("# "):
+                    continue
+                parts = line.split("\t")
+                if len(parts) != 4:
+                    bad.append(f"{i}번째 줄: 형식 오류(탭 4개 구간이 아님)")
+                    continue
+                _color, enabled_s, _alert_s, expr = parts
+                expr = expr.strip()
+                ok, err = validate_condition_expr(expr)
+                if not ok:
+                    bad.append(f"{i}번째 줄: {err}")
+                    continue
+                self.filter_conditions.append({
+                    "id": f"f{int(time.time()*1000)}_{added}", "expr": expr,
+                    "enabled": enabled_s.strip() == "1",
+                })
+                added += 1
+            if added:
+                save_filter_conditions(self.filter_conditions)
+                self._highlight_filter_button()
+                refresh_list()
+            msg = f"{added}개 필터를 불러왔습니다."
+            if bad:
+                msg += f"\n\n실패 {len(bad)}개:\n" + "\n".join(bad[:8]) + (f"\n...외 {len(bad)-8}개" if len(bad) > 8 else "")
+            messagebox.showinfo("가져오기 완료", msg, parent=win)
+
+        io_row = tk.Frame(win)
+        io_row.pack(fill="x", padx=10, pady=(0, 4))
+        tk.Button(io_row, text="📤 전체 내보내기(txt)", command=export_filters,
+                  font=("Arial", 9), padx=8).pack(side="left", padx=(0, 6))
+        tk.Button(io_row, text="📥 가져오기(txt)", command=import_filters,
+                  font=("Arial", 9), padx=8).pack(side="left")
+
+        tk.Label(win, text="등록된 필터 (하나라도 통과하면 표시됨 — OR)", font=("Arial", 11, "bold")).pack(
+            anchor="w", padx=10, pady=(4, 2))
+
+        list_canvas = tk.Canvas(win, highlightthickness=0)
+        list_vsb = ttk.Scrollbar(win, orient="vertical", command=list_canvas.yview)
+        list_canvas.configure(yscrollcommand=list_vsb.set)
+        list_vsb.pack(side="right", fill="y")
+        list_canvas.pack(side="top", fill="both", expand=True, padx=(10, 0), pady=(0, 10))
+        list_inner = tk.Frame(list_canvas)
+        win_id = list_canvas.create_window((0, 0), window=list_inner, anchor="nw")
+        list_inner.bind("<Configure>", lambda e: list_canvas.configure(scrollregion=list_canvas.bbox("all")))
+        list_canvas.bind("<Configure>", lambda e: list_canvas.itemconfig(win_id, width=e.width))
+
+        def refresh_list():
+            for w in list_inner.winfo_children():
+                w.destroy()
+            if not self.filter_conditions:
+                tk.Label(list_inner, text="등록된 필터가 없습니다 — 필터가 하나도 없으면 전체 코인이 표시됩니다.",
+                         fg="#888888", font=("Arial", 10)).pack(pady=10)
+                return
+            for idx, f_ in enumerate(self.filter_conditions):
+                row = tk.Frame(list_inner, bd=1, relief="solid", bg="#f7f7f7")
+                row.pack(fill="x", pady=3, padx=2)
+                tk.Label(row, text=f"#{idx+1} {f_['expr']}", font=("Consolas", 9),
+                         bg="#f7f7f7", anchor="w", wraplength=win_w-140, justify="left").pack(
+                    side="left", fill="x", expand=True, padx=6)
+
+                en_var = tk.BooleanVar(value=f_.get("enabled", True))
+
+                def on_toggle_enabled(f2=f_, v=en_var):
+                    f2["enabled"] = v.get()
+                    save_filter_conditions(self.filter_conditions)
+                    self._highlight_filter_button()
+
+                tk.Checkbutton(row, text="사용", variable=en_var, bg="#f7f7f7",
+                               command=on_toggle_enabled, font=("Arial", 9)).pack(side="left")
+
+                def on_delete(f2=f_):
+                    if not messagebox.askyesno("삭제 확인", f"필터를 삭제할까요?\n{f2['expr']}", parent=win):
+                        return
+                    self.filter_conditions.remove(f2)
+                    save_filter_conditions(self.filter_conditions)
+                    self._highlight_filter_button()
+                    refresh_list()
+
+                tk.Button(row, text="삭제", command=on_delete, fg="white", bg="#cc4444",
+                          font=("Arial", 9), padx=6).pack(side="left", padx=4)
+
+        refresh_list()
+
+    def _highlight_filter_button(self):
+        """필터가 하나라도 활성화돼있으면 버튼을 눈에 띄게 바꿔서, 지금 코인 목록이
+        걸러진 상태라는 걸 잊지 않게 한다."""
+        active = any(f_.get("enabled", True) for f_ in self.filter_conditions)
+        if active:
+            n = sum(1 for f_ in self.filter_conditions if f_.get("enabled", True))
+            self._cfg(self.btn_filter, text=f"필터 ({n})", bg="#c77d1a", fg="white")
+        else:
+            self._cfg(self.btn_filter, text="필터", bg="#555555", fg="white")
 
     def open_custom_condition_dialog(self):
         """[2026-07-21 추가] 사용자 정의 조건식(커스텀 알림) 관리 창. C스타일(&&, ||, !)
