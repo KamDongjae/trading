@@ -667,9 +667,33 @@ class TradingClient:
                         "진입가", "현재/청산가", "손익($)", "수익률", "시간")
 
         tree = ttk.Treeview(self.history_win, columns=cols, show="headings", height=28)
-        
+
+        # [2026-08-02 추가] 헤더 클릭하면 그 컬럼 기준 오름/내림차순 정렬(같은 컬럼 다시
+        # 누르면 방향 반전). 숫자처럼 보이는 값(콤마/$/%/+ 등 붙은 것 포함)은 숫자로,
+        # 아니면 문자열로 비교한다.
+        self._history_sort_state = {"col": None, "reverse": False}
+
+        def _sort_key(raw):
+            s = str(raw).replace(",", "").replace("$", "").replace("%", "").replace("+", "").strip()
+            try:
+                return (0, float(s))
+            except ValueError:
+                return (1, s)
+
+        def _sort_by_column(col):
+            state = self._history_sort_state
+            reverse = (not state["reverse"]) if state["col"] == col else False
+            state["col"], state["reverse"] = col, reverse
+            items = [(tree.set(iid, col), iid) for iid in tree.get_children("")]
+            items.sort(key=lambda t: _sort_key(t[0]), reverse=reverse)
+            for idx, (_, iid) in enumerate(items):
+                tree.move(iid, "", idx)
+            for c, name in zip(cols, display_names):
+                arrow = (" ▼" if reverse else " ▲") if c == col else ""
+                tree.heading(c, text=name + arrow, command=lambda cc=c: _sort_by_column(cc))
+
         for col, name in zip(cols, display_names):
-            tree.heading(col, text=name)
+            tree.heading(col, text=name, command=lambda c=col: _sort_by_column(c))
             tree.column(col, width=100, anchor="center")
         
         tree.column("ticker", width=85)
@@ -1948,7 +1972,17 @@ class TradingClient:
         클라이언트가 이미 읽고 있는 지표값만으로 전부 처리한다(_render_table에서 평가)."""
         win = tk.Toplevel(self.root)
         win.title("커스텀 조건식")
-        win.geometry("480x760")
+        # [2026-08-05 수정] 예전엔 480px 고정폭이라 OR로 여러 줄 묶은 긴 조건식이
+        # 좁은 칸에 계속 줄바꿈돼서 읽기 힘들었다 — 화면 크기에 비례하게 바꿈
+        # (거래기록 창 등 다른 팝업이랑 같은 방식). 최소 700px은 보장.
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        win_w = max(700, int(screen_w * 0.55))
+        win_h = int(screen_h * 0.85)
+        win_x = (screen_w - win_w) // 2
+        win_y = (screen_h - win_h) // 2
+        win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+        win.resizable(True, True)
 
         self._cond_color = "#ffcc00"
 
@@ -1986,7 +2020,7 @@ class TradingClient:
         tk.Label(win, text="지표 버튼을 누르면 조건식 입력칸에 삽입됩니다. "
                             "연산자는 직접 타이핑: && || ! == != < > <= >= ( )\n"
                             "코인명 비교는 따옴표로: ticker=='xrp' (대소문자 구분 안 함)",
-                 font=("Arial", 9), fg="#666666", justify="left", wraplength=450, anchor="w").pack(
+                 font=("Arial", 9), fg="#666666", justify="left", wraplength=win_w-30, anchor="w").pack(
             fill="x", padx=10, pady=(0, 6))
 
         grid = tk.Frame(win)
@@ -2163,7 +2197,7 @@ class TradingClient:
                 swatch = tk.Label(row, text="  ", bg=cond["color"], width=2)
                 swatch.pack(side="left", padx=4, pady=4)
                 tk.Label(row, text=f"#{idx+1} {cond['expr']}", font=("Consolas", 9),
-                         bg="#f7f7f7", anchor="w", wraplength=250, justify="left").pack(
+                         bg="#f7f7f7", anchor="w", wraplength=win_w-160, justify="left").pack(
                     side="left", fill="x", expand=True, padx=4)
 
                 en_var = tk.BooleanVar(value=cond.get("enabled", True))
