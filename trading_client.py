@@ -1425,16 +1425,16 @@ class TradingClient:
                     bg = "#f2e070"   # 진노랑: 진입 컷엔 못 미치지만 "관심" 구간(65점대)
                 else:
                     bg = "white"
-                # [2026-07-21] 커스텀 조건식 평가 — 매칭되면 그 조건의 색으로 카드를 칠함
-                # (등록 순서상 먼저 매칭된 조건이 우선). 디스코드 알림 전송은 서버가 담당
-                # (check_custom_condition_alerts, write_market_snapshot 안에서 호출) —
-                # 클라이언트를 꺼도 알림이 계속 오게 하려고 서버로 옮겼다. 여기선 색칠만.
-                for cond in self.custom_conditions:
-                    if not cond.get("enabled", True):
-                        continue
-                    if evaluate_condition(cond["expr"], row):
-                        bg = cond["color"]
-                        break
+                # [2026-08-05 변경] 우선순위 반전 — 롱/숏 점수 상황을 먼저 봐야 하니까,
+                # 점수 기준 색(초록/빨강/파랑/보라/노랑)이 이미 정해졌으면 그걸 그대로 두고,
+                # "흰색(아무 신호 없음)"일 때만 조건식 색으로 채운다. 즉 점수 신호가 조건식보다 우선.
+                if bg == "white":
+                    for cond in self.custom_conditions:
+                        if not cond.get("enabled", True):
+                            continue
+                        if evaluate_condition(cond["expr"], row):
+                            bg = cond["color"]
+                            break
                 display_ticker = f"[{ticker}]" if ticker in self.pinned_tickers else ticker
                 line1 = f"{display_ticker}  {chg24h_str} ({krw_str})  {usd_str}  롱{ls} 숏{ss}  매집{pp} 분산{ps}"
                 lsr = row.get('ls_ratio')
@@ -1972,7 +1972,17 @@ class TradingClient:
         클라이언트가 이미 읽고 있는 지표값만으로 전부 처리한다(_render_table에서 평가)."""
         win = tk.Toplevel(self.root)
         win.title("커스텀 조건식")
-        win.geometry("480x760")
+        # [2026-08-05 수정] 예전엔 480px 고정폭이라 OR로 여러 줄 묶은 긴 조건식이
+        # 좁은 칸에 계속 줄바꿈돼서 읽기 힘들었다 — 화면 크기에 비례하게 바꿈
+        # (거래기록 창 등 다른 팝업이랑 같은 방식). 최소 700px은 보장.
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        win_w = max(700, int(screen_w * 0.55))
+        win_h = int(screen_h * 0.85)
+        win_x = (screen_w - win_w) // 2
+        win_y = (screen_h - win_h) // 2
+        win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+        win.resizable(True, True)
 
         self._cond_color = "#ffcc00"
 
@@ -2010,7 +2020,7 @@ class TradingClient:
         tk.Label(win, text="지표 버튼을 누르면 조건식 입력칸에 삽입됩니다. "
                             "연산자는 직접 타이핑: && || ! == != < > <= >= ( )\n"
                             "코인명 비교는 따옴표로: ticker=='xrp' (대소문자 구분 안 함)",
-                 font=("Arial", 9), fg="#666666", justify="left", wraplength=450, anchor="w").pack(
+                 font=("Arial", 9), fg="#666666", justify="left", wraplength=win_w-30, anchor="w").pack(
             fill="x", padx=10, pady=(0, 6))
 
         grid = tk.Frame(win)
@@ -2187,7 +2197,7 @@ class TradingClient:
                 swatch = tk.Label(row, text="  ", bg=cond["color"], width=2)
                 swatch.pack(side="left", padx=4, pady=4)
                 tk.Label(row, text=f"#{idx+1} {cond['expr']}", font=("Consolas", 9),
-                         bg="#f7f7f7", anchor="w", wraplength=250, justify="left").pack(
+                         bg="#f7f7f7", anchor="w", wraplength=win_w-160, justify="left").pack(
                     side="left", fill="x", expand=True, padx=4)
 
                 en_var = tk.BooleanVar(value=cond.get("enabled", True))

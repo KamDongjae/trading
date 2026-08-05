@@ -3909,12 +3909,13 @@ def srv_close(ticker):
     if ticker not in positions:
         return False, "보유 포지션이 없습니다"
     pos = positions[ticker]
-    price = _pos_current_price(ticker, pos)
+    price, auto_fixed = _pos_current_price_with_fallback(ticker, pos)
     for _ in range(2):
         if price and price > 0:
             break
         time.sleep(0.5)
-        price = _pos_current_price(ticker, pos)
+        price, auto_fixed2 = _pos_current_price_with_fallback(ticker, pos)
+        auto_fixed = auto_fixed or auto_fixed2
     if not price or price <= 0:
         return False, "가격 없음 (잠시 후 다시 시도)"
     ptype = pos['position_type']
@@ -3954,7 +3955,8 @@ def srv_close(ticker):
     append_history_csv(record)
     del positions[ticker]
     save_to_csv()
-    return True, f"{ticker} {direction} 청산 손익 ${pnl:+,.2f} ({pnl_rate_pct:+.2f}%){fx_note}"
+    fix_note = " [통화표기 자동교정됨 — 진입시 통화 오분류 의심, 손익 재확인 권장]" if auto_fixed else ""
+    return True, f"{ticker} {direction} 청산 손익 ${pnl:+,.2f} ({pnl_rate_pct:+.2f}%){fx_note}{fix_note}"
 
 def srv_close_all():
     ok_cnt = 0
@@ -3983,12 +3985,13 @@ def srv_close_partial(ticker, fraction):
     if fraction >= 0.999:
         return srv_close(ticker)  # 100%는 그냥 전체 청산과 동일
     pos = positions[ticker]
-    price = _pos_current_price(ticker, pos)
+    price, auto_fixed = _pos_current_price_with_fallback(ticker, pos)
     for _ in range(2):
         if price and price > 0:
             break
         time.sleep(0.5)
-        price = _pos_current_price(ticker, pos)
+        price, auto_fixed2 = _pos_current_price_with_fallback(ticker, pos)
+        auto_fixed = auto_fixed or auto_fixed2
     if not price or price <= 0:
         return False, "가격 없음 (잠시 후 다시 시도)"
     ptype = pos['position_type']
@@ -4024,7 +4027,8 @@ def srv_close_partial(ticker, fraction):
     trade_history.append(record)
     append_history_csv(record)
     save_to_csv()
-    return True, f"{ticker} {direction} {fraction*100:.0f}% 부분청산 손익 ${pnl:+,.2f} → 현금 반영 (잔여 ${pos['amount']:,.2f})"
+    fix_note = " [통화표기 자동교정됨]" if auto_fixed else ""
+    return True, f"{ticker} {direction} {fraction*100:.0f}% 부분청산 손익 ${pnl:+,.2f} → 현금 반영 (잔여 ${pos['amount']:,.2f}){fix_note}"
 
 def _pos_pnl(pos, cur_price):
     """[2026-07-26 변경] price_currency=='krw'인 포지션(바이낸스 미상장 코인)은 cur_price가
@@ -4054,6 +4058,35 @@ def _pos_current_price(t, pos):
                 return latest_prices_upbit.get(t, 0)
             return latest_prices.get(t, 0)
         return latest_prices_usd.get(t, 0)
+
+
+def _pos_current_price_with_fallback(t, pos):
+    """[2026-08-02 추가] 진입 시점에 price_currency가 잘못 기록된 경우(예: 실제로는
+    바이낸스 미상장인데 그 순간 latest_prices_usd에 값이 있어서 'usd'로 잘못 저장된 사례가
+    실제로 있었음) 청산이 영구히 "가격 없음"으로 막히는 문제가 있었다. 선언된 통화로
+    조회가 안 되면 반대쪽 통화도 시도해보고, 거기서 값이 나오면 pos 자체의
+    price_currency/exchange/entry_fx_rate를 그 자리에서 바로 잡아준다(더 이상 안 막히게).
+    entry_price 자체는 그대로 두므로 손익 계산이 정확히 들어맞는다는 보장은 없지만,
+    "영구히 청산 불가능"보다는 낫다 — 자동수정됐다는 걸 반환값으로 알려준다."""
+    price = _pos_current_price(t, pos)
+    if price and price > 0:
+        return price, False
+    was_krw = pos.get('price_currency') == 'krw'
+    with data_lock:
+        if was_krw:
+            fallback = latest_prices_usd.get(t, 0)
+        else:
+            fallback = latest_prices_upbit.get(t, 0) or latest_prices.get(t, 0)
+            fallback_exchange = 'upbit' if latest_prices_upbit.get(t, 0) else 'bithumb'
+    if fallback and fallback > 0:
+        pos['price_currency'] = 'usd' if was_krw else 'krw'
+        if not was_krw:
+            pos['exchange'] = fallback_exchange
+            pos['entry_fx_rate'] = pos.get('entry_fx_rate') or get_usd_krw_rate()
+        print(f"⚠️ {t} price_currency 자동수정: {'krw' if was_krw else 'usd'} -> {pos['price_currency']} "
+              f"(선언된 통화로 시세 조회 실패, 반대쪽에서 값 발견돼 자동 교정함)")
+        return fallback, True
+    return 0, False
 
 def _liquidate_position(t, pos, cur_price, tag="강제청산"):
     """포지션 하나를 강제청산 처리하고 거래 기록에 남긴다. balance는 호출부에서 반영."""
