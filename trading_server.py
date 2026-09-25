@@ -1280,6 +1280,11 @@ def score_extension_penalty(extension_pct, direction):
     겹치진 않아서(RSI 25인데 recent_pct -12%인 경우도 있음) 별도로 추가했다. 단,
     -4~-10% 구간은 오히려 실측 승률이 제일 좋아서(48~56%) 건드리지 않는다 — 딱
     -10% 넘는 극단적인 경우만 감점.
+    [2026-08-06 검토 후 반려] 숏 60~70점대 미검증 잔여그룹(n=352)에서 recent_pct>10%가
+    승률 5.0%(n=20)로 극단적으로 나빠 보여서 대칭 페널티를 추가해봤는데, 전체 60~70점
+    구간에 적용해보니 오히려 승률이 49.9%→43.5%로 더 나빠졌다(n=827→492) — n=20짜리
+    효과가 실제로는 노이즈였던 것으로 판단, 반영하지 않기로 함(이 프로젝트에서 반복
+    경고했던 "표본 20~30건 조합은 재현 안 됨" 패턴을 그대로 밟을 뻔함).
     """
     try:
         e = extension_pct if extension_pct is not None else 0.0
@@ -1390,18 +1395,20 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
         # 제외한다 — 백테스트 때 검증한 조건과 정확히 똑같이 맞추기 위함(0을 넘겨서 항상 미달 처리).
         final = score_overextension_penalty_cap(final, p_ema, p_pp, p_cvd, 0, p_m30, p_volz, p_liq)
     final = max(0, min(final, 100))
-    # [2026-07-26 추가] 조건식 매칭 보너스 — _condition_match_bonus 주석 참고
+    # [2026-07-26 추가, 2026-09-25 비활성화] 조건식 매칭 보너스 — _condition_match_bonus /
+    # USE_CONDITION_MATCH_BONUS 주석 참고. 조건식 세트가 재검증되기 전엔 건너뛴다.
     try:
-        row_for_eval = {
-            "ticker": "", "rsi": rsi, "rsi_delta": rsi_delta, "vol_z": vol_z, "bb_percent": bb_percent,
-            "price": price, "price_usd": None, "chg_24h": None, "cvd": cvd_diff, "cvd_diff": cvd_diff,
-            "funding": funding_rate, "vol_24h_m": vol_24h_m, "atr_pct": atr_pct,
-            "oi_change_pct": oi_change_pct, "chg_30m": chg_30m, "ls_ratio": ls_ratio,
-            "ema20": ema20, "ema60": ema60, "recent_pct": extension_pct,
-            "long_score": final, "short_score": 0, "prepump_score": 0, "preshort_score": 0,
-        }
-        if _condition_match_bonus(row_for_eval):
-            final = round(final * 1.5)
+        if USE_CONDITION_MATCH_BONUS:
+            row_for_eval = {
+                "ticker": "", "rsi": rsi, "rsi_delta": rsi_delta, "vol_z": vol_z, "bb_percent": bb_percent,
+                "price": price, "price_usd": None, "chg_24h": None, "cvd": cvd_diff, "cvd_diff": cvd_diff,
+                "funding": funding_rate, "vol_24h_m": vol_24h_m, "atr_pct": atr_pct,
+                "oi_change_pct": oi_change_pct, "chg_30m": chg_30m, "ls_ratio": ls_ratio,
+                "ema20": ema20, "ema60": ema60, "recent_pct": extension_pct,
+                "long_score": final, "short_score": 0, "prepump_score": 0, "preshort_score": 0,
+            }
+            if _condition_match_bonus(row_for_eval):
+                final = round(final * 1.5)
     except Exception:
         pass
     final = int(max(0, min(final, 100)))
@@ -1471,18 +1478,20 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
         final = score_overextension_penalty_cap(final, p_ema, p_pp, p_cvd, p_oi, p_m30, p_volz, p_liq,
                                                  maxes_override=[3, 55, 2, 0, 2, 2, 5])
     final = max(0, min(final, 100))
-    # [2026-07-26 추가] 조건식 매칭 보너스 — _condition_match_bonus 주석 참고
+    # [2026-07-26 추가, 2026-09-25 비활성화] 조건식 매칭 보너스 — _condition_match_bonus /
+    # USE_CONDITION_MATCH_BONUS 주석 참고. 조건식 세트가 재검증되기 전엔 건너뛴다.
     try:
-        row_for_eval = {
-            "ticker": "", "rsi": rsi, "rsi_delta": rsi_delta, "vol_z": vol_z, "bb_percent": bb_percent,
-            "price": price, "price_usd": None, "chg_24h": None, "cvd": cvd_diff, "cvd_diff": cvd_diff,
-            "funding": funding_rate, "vol_24h_m": vol_24h_m, "atr_pct": atr_pct,
-            "oi_change_pct": oi_change_pct, "chg_30m": chg_30m, "ls_ratio": ls_ratio,
-            "ema20": ema20, "ema60": ema60, "recent_pct": extension_pct,
-            "long_score": 0, "short_score": final, "prepump_score": 0, "preshort_score": 0,
-        }
-        if _condition_match_bonus(row_for_eval):
-            final = round(final * 1.5)
+        if USE_CONDITION_MATCH_BONUS:
+            row_for_eval = {
+                "ticker": "", "rsi": rsi, "rsi_delta": rsi_delta, "vol_z": vol_z, "bb_percent": bb_percent,
+                "price": price, "price_usd": None, "chg_24h": None, "cvd": cvd_diff, "cvd_diff": cvd_diff,
+                "funding": funding_rate, "vol_24h_m": vol_24h_m, "atr_pct": atr_pct,
+                "oi_change_pct": oi_change_pct, "chg_30m": chg_30m, "ls_ratio": ls_ratio,
+                "ema20": ema20, "ema60": ema60, "recent_pct": extension_pct,
+                "long_score": 0, "short_score": final, "prepump_score": 0, "preshort_score": 0,
+            }
+            if _condition_match_bonus(row_for_eval):
+                final = round(final * 1.5)
     except Exception:
         pass
     final = int(max(0, min(final, 100)))
@@ -1885,8 +1894,30 @@ LOGISTIC_MODEL_FILE = os.path.join(SCRIPT_DIR, "logistic_score_model.json")
 # 실전에서 반복적으로 문제가 재현되는데 원격으로는 정확한 원인을 못 잡고 있어서,
 # 검증된 가산식으로 확실하게 되돌린다. 아이소토닉 보정도 같이 끈다(아래).
 USE_LOGISTIC_SCORE_MODEL = False  # 여전히 원인 불명확한 문제가 있어 비활성 유지
-USE_SCORE_CALIBRATION = True  # [2026-08-05] 21만행 백테스트로 미리 계산한 정적 보정표 사용
-                               # (실시간 재학습은 아래에서 꺼둠 — 파일이 덮어써지지 않음)
+USE_SCORE_CALIBRATION = False  # [2026-08-06 재차 비활성화] 정적 보정표가 "40~60점대는
+                                # 승률이 평평하다"는 실측 자체는 맞게 반영했지만, 그 결과
+                                # RSI 21인 코인이랑 RSI 40인 코인이 똑같이 53점으로 나오는
+                                # 등 코인 구분력이 너무 떨어졌다 — "정확하지만 뭉뚱그려짐"
+                                # 보다 "코인끼리 구분되는 원점수"가 실사용엔 더 낫다고 판단.
+USE_CONDITION_MATCH_BONUS = False  # [2026-09-25 비활성화] 48일 공백 이후 새로 쌓인 포스트갭
+                                    # 데이터(9/19~9/24, 54,591행, 4h fwd n=32,234)로 재검증한
+                                    # 결과, 이 보너스(×1.5)가 60~70점대 비단조성(그 아래 구간보다
+                                    # 승률이 낮아지는 문제)의 실제 원인으로 확인됐다:
+                                    #   - long_score==62(보너스로 몰린 스파이크, n=733/426표본)
+                                    #     승률 39.4% vs 그 외 55~68점대 승률 50.2% — 보너스 맞은
+                                    #     쪽이 오히려 더 나쁨.
+                                    #   - short_score 68~71(보너스 스파이크, n=432) 승률 44.7% —
+                                    #     동전던지기보다도 낮음. 이 보너스를 설계할 때 근거로 쓴
+                                    #     "조건식 매칭 시 4h 승률 69%"는 48일 전(레짐 변화 전)
+                                    #     데이터 기준이었다.
+                                    # 즉 메커니즘(원점수 비례 ×1.5) 자체의 문제가 아니라,
+                                    # custom_conditions.json에 등록된 조건식 세트 자체가 새 시장
+                                    # 레짐(9/16 Fed 금리인상 이후 고변동성)에서 더 이상 안 맞는데
+                                    # 그걸 그대로 증폭시키고 있었던 것 — 같은 기간 daily_condition_
+                                    # miner.py로 새로 마이닝한 상위 조건은 기존 세트(ls_ratio/
+                                    # bb_percent 위주 롱, rsi>60/70/75 위주 숏)와 내용 자체가 달랐다
+                                    # (롱은 RSI 과매도 위주, 숏은 recent_pct 급락 위주로 이동).
+                                    # 조건식 세트를 새 데이터로 재검증/교체한 뒤에만 다시 켤 것.
 
 def _fit_logistic_numpy(X, y, epochs=400, lr=0.3, l2=0.02):
     """[2026-07-26 추가] 순수 numpy로 짠 로지스틱 회귀(경사하강법) — sklearn 의존성 추가
