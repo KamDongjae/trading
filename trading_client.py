@@ -396,6 +396,8 @@ class TradingClient:
         self.DOUBLE_TAP_MS = 450
         self._account = (0, "", [])
         self._market_mtime = 0.0
+        self._stale_strike = 0  # [2026-09-27 추가] proot bind 경유 FUSE 지연으로 인한
+                                  # 순간적 getmtime() 오탐을 걸러내기 위한 연속 실패 카운터
 
         # 화면 폭만으로 "모바일"을 판단하면 VNC/X11 세션(해상도는 작아도 DPI는 표준
         # 96dpi)까지 모바일로 오판해서 글자가 깨알만해지는 문제가 있었다. 실제 폰
@@ -1266,10 +1268,20 @@ class TradingClient:
 
     def poll_files(self):
         snapshot_path = MARKET_SNAPSHOT if self.current_exchange == 'bithumb' else MARKET_SNAPSHOT_UPBIT
-        try:
-            mt = os.path.getmtime(snapshot_path)
-        except Exception:
-            mt = 0
+        # [2026-09-27 추가] proot(Ubuntu) --bind 경유로 안드로이드 공용저장소(FUSE)에
+        # 접근하면 경로 변환이 한 겹 더 생겨서, 정상 상황에서도 os.path.getmtime()이
+        # 순간적으로 실패/지연되는 경우가 관측됐다(직접 Termux에서 돌릴 땐 없던 증상).
+        # 한 번 실패했다고 바로 mt=0 취급하지 않고 짧게 한 번 더 시도한다.
+        mt = 0
+        for _try in range(2):
+            try:
+                mt = os.path.getmtime(snapshot_path)
+                break
+            except Exception:
+                if _try == 0:
+                    time.sleep(0.05)
+                    continue
+                mt = 0
         if mt and mt != self._market_mtime:
             res = read_market_snapshot(snapshot_path)
             if res:
@@ -1281,6 +1293,14 @@ class TradingClient:
         age = time.time() - mt if mt else 1e9
         ex_label = "빗썸" if self.current_exchange == 'bithumb' else "업비트"
         if age > STALE_SEC:
+            # [2026-09-27 추가] 위 재시도에도 불구하고 뜬 일시적 지연(FUSE 홀딱)까지
+            # 바로 "연결 끊김"으로 표시하면 몇 초에 한 번씩 깜빡이는 문제가 있었다.
+            # 연속 2번(약 2초) 이상 확인돼야 진짜 끊김으로 표시 — 실제 서버 다운은
+            # 어차피 계속 STALE 상태라 2초 늦게 뜨는 것 외엔 차이가 없다.
+            self._stale_strike += 1
+        else:
+            self._stale_strike = 0
+        if self._stale_strike >= 2:
             self.server_label.config(text=f"서버[{ex_label}]: 연결 끊김 (trading_server.py 실행 확인)", fg="red")
         else:
             self.server_label.config(text=f"서버[{ex_label}]: 정상 (기준봉 {current_interval} / 관심 {watch_current_min_score}·컷 {current_min_score}점 / 매집·분산 컷 {pp_current_min_score}점, {age:.0f}초 전 갱신)", fg="gray")

@@ -88,5 +88,16 @@
     "exit_price": 94162000.0,
     "pnl_pct": -0.574,
     "evaluated_at": "2026-07-26T16:00:11.347377"
+  },
+  {
+    "timestamp": "2026-09-26T20:39:19.466433",
+    "ticker": "LINK",
+    "raw_ticker": "LINK",
+    "exchange": "bithumb",
+    "side": "long",
+    "entry_price": 19510.0,
+    "confidence": 0.53,
+    "regime": "UPTREND",
+    "status": "pending"
   }
 ]

@@ -1098,6 +1098,42 @@ def score_price_position_long(rsi, bb_percent, rsi_delta=0.0):
     except Exception:
         return 0
 
+def score_price_position_long_bear(rsi, bb_percent, rsi_delta, ls_ratio, recent_pct, funding):
+    """
+    [2026-09-26 신설] 하락장(detect_market_regime()=='하락장') 전용 롱 가격위치 점수
+    (최대 40점). 위 score_price_position_long()의 "과매도+반등시작" 철학을 하락장
+    레짐에만 한정해서 실측했더니 상관계수가 -0.027(부호가 반대!)로 나왔다 — 확정된
+    하락추세 안에서는 "과매도"가 바닥 신호가 아니라 그냥 계속 떨어지는 중인 경우가
+    많다는 뜻(28만행, pregap 7/23~8/6 + postgap 9/19~9/25 합산 실측, detect_market_regime과
+    동일한 EMA삼중배열+ATR% 기준으로 레짐 태깅). REGIME_WEIGHT_MULTIPLIERS로 비중만
+    조절하는 기존 방식은 이 부호 반전 자체를 못 고쳤다(하락장 corr -0.027 vs 배수 없이도
+    -0.027로 사실상 동일) — 그래서 하락장에서는 아예 다른 조건을 쓴다: 단순 과매도가
+    아니라 "이미 충분히 빠진 뒤(recent_pct<-5~-10) 숏스퀴즈/자금유입 확인"을 요구한다.
+    하락장 subset(n=84,509) 실측 결과:
+      40점: RSI<40 & ls_ratio>1.1 & recent_pct<-10  → n=1,276, 4h 승률 72.5%
+      30점: %B<30 & ls_ratio>1.1 & recent_pct<-5    → n=6,489, 4h 승률 60.0%
+      20점: RSI<40 & funding>0 & recent_pct<-5       → n=3,950, 4h 승률 61.6%
+      10점: RSI<40만(확인신호 없음, 기존 로직 잔재) → 승률 40.2%(기저와 비슷, 무의미)
+       0점: 그 외
+    이 조건으로 재계산한 결과 하락장 상관계수가 -0.027 → +0.076으로 부호가 바로잡히고,
+    버킷별 승률도 40.3%→40.2%→64.2%→56.7%→72.0%로 대체로 단조증가했다(30점 구간이
+    20점보다 약간 낮은 건 남아있지만, 최소 부호 반전 문제는 해결됨). 표본 100~200건대
+    소규모 콤보가 재현 안 된 전례가 많으니, n이 작은 조합(예: rsi<20 등)은 아직 안 씀 —
+    여기 쓴 3개는 전부 n≥1,200 이상만 채택.
+    """
+    try:
+        if rsi < 40 and ls_ratio is not None and ls_ratio > 1.1 and recent_pct is not None and recent_pct < -10:
+            return 40
+        elif bb_percent < 30 and ls_ratio is not None and ls_ratio > 1.1 and recent_pct is not None and recent_pct < -5:
+            return 30
+        elif rsi < 40 and funding is not None and funding > 0 and recent_pct is not None and recent_pct < -5:
+            return 20
+        elif rsi < 40:
+            return 10
+        return 0
+    except Exception:
+        return 0
+
 def score_price_position_short(rsi, bb_percent, rsi_delta=0.0):
     """가격위치 숏 점수(최대 40점, 롱과 대칭 — 과매수+반락시작을 최고점으로).
     [2026-07-19 전면개편] 이전엔 RSI 30~45(약한 과매도, "하락 초입") 구간을 최고점으로
@@ -1363,7 +1399,12 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
         # [2026-07-19 재배점] EMA/CVD/VolZ/모멘텀은 실측 신호가 약해(|corr|<0.03) 배점을
         # 축소(원래 함수의 배점 스케일에 비례배분: 20→10, 15→8, 15→8, 15→8). 가격위치는
         # 함수 자체가 이미 40점 만점으로 재설계됨(score_price_position_long 참고).
-        raw_pp = score_price_position_long(rsi, bb_percent, rsi_delta)  # 조합보정 임계값은 이 원점수 기준
+        # [2026-09-26 추가] 하락장은 가격위치 로직 자체를 교체(score_price_position_long_bear
+        # 주석 참고 — 기존 "과매도+반등" 철학이 하락장에서 상관계수 부호가 반대로 나왔음).
+        if regime == '하락장':
+            raw_pp = score_price_position_long_bear(rsi, bb_percent, rsi_delta, ls_ratio, extension_pct, funding_rate)
+        else:
+            raw_pp = score_price_position_long(rsi, bb_percent, rsi_delta)  # 조합보정 임계값은 이 원점수 기준
         raw_cvd = score_cvd_trend(cvd_diff, vol_window_sum, 'long')
         raw_volz = score_volz_v3(vol_z)
         p_ema = min(score_ema_trend(price, ema20, ema60, ema120, 'long', ema20_slope_pct) * 0.5 * mult['ema'] * lw['ema'], 10)
