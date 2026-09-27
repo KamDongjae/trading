@@ -1582,232 +1582,197 @@ def _ema_spread_pct(ema20, ema60, ema120):
         return None
 
 # ============================================================
-# [2026-07-19 개편] 37,608행(40개 코인, 5분 간격, 7/14~7/19) 실측 로그를 바탕으로
-# 각 서브컴포넌트를 60분/120분 후 실제 가격수익률과 상관분석한 결과, 기존 배점이
-# 큰 항목(OI지속 25, CVD누적 20, EMA압축/과이격 15)일수록 예측력이 거의 없거나
-# 부호가 반대였고, 배점이 작았던 항목(최근상승패널티 5, RSI 5)이 오히려 유의미한
-# 신호였다. 이에 따라 배점을 실측 상관계수 크기에 비례해 재분배했다.
-#   - prepump_score corr(60m)=-0.028 / corr(120m)=-0.035 → 재개편 전, 총점 자체가
-#     의도(매집→상승)와 반대 방향이었음
-#   - preshort_score corr(60m)=+0.028 / corr(120m)=+0.022 → 총점이 의도(분산→하락)와 반대
-#   - 매집: 최근상승패널티(corr +0.054~+0.073, 급등 후 10~15%p 구간 60분뒤 평균 -0.22%)가
-#     가장 유효 → 배점 5→25 확대. OI지속/CVD누적은 거의 무의미(|corr|<0.02) → 25→8, 20→10 축소.
-#     EMA압축은 오히려 역방향(compression일수록 저조, corr -0.06~-0.09)이라 15→12로 축소.
-#   - 분산: RSI 과열(RSI≥70)이 압도적으로 유효(corr -0.06, n=597, 60분뒤 평균 -0.25%,
-#     120분뒤 -0.39%) → 배점 5→35 대폭 확대. OI불일치는 완전히 반대 방향(OI 감소군이
-#     오히려 최저수익률) → 25→8 대폭 축소. EMA과이격도 역방향(추세지속, corr +0.06~+0.08)
-#     → 15→8 축소.
-#   표본이 4~5일 구간(주로 상승장 성격)에 한정돼 있어 레짐이 바뀌면 재검증 필요 —
-#   특히 EMA/OI 계열의 "역방향" 신호는 방향을 완전히 뒤집기보다 배점만 낮춰
-#   과최적화 위험을 줄였다.
+# [2026-09-28 재개편 v4] 매집(prepump)/분산(preshort) 점수 체계 — pregap(7/23~8/6,
+# 172,272행,151개코인) + postgap(9/19~9/25,111,514행,40개코인) 통합 283,786행으로
+# 재검증. 07-19 개편은 5일치·40개코인·단일레짐 표본이라 상관계수가 실제보다 과대
+# 추정돼 있었다(당시 corr 0.05~0.09대 주장 vs 이번 28만행 검증 실측 0.01~0.02대에
+# 불과 — 사실상 노이즈). 원인은 두 가지였다:
+#   (1) score_box_position()에 price_krw 대신 price_usd를 넘겨야 정상인데 구현이
+#       뒤섞여 있었던 게 아니라, 이번 재검증 스크립트에서 최초 시도 시 함수는 맞게
+#       구현돼 있었지만 검증용 raw 데이터 분석 단계에서 price_usd/price_krw를
+#       혼동해 박스 위치가 사실상 상수로 나오는 버그가 있었다(정정 후 재검증).
+#   (2) 12h/24h를 기준으로 봐야 신호가 또렷했다(1h는 약하고 48h는 반감기 지남).
+# 정정 후 12h 수익률 기준 서브지표별 실측 corr(부호 포함, prepump 방향):
+#   atr=+0.136(최강) rsi=+0.079 recent_move=+0.075 oi=−0.062(부호반대!)
+#   box=+0.038 ema=+0.028 cvd=−0.041(부호반대,약함) volz=−0.020(부호반대,무의미)
+# preshort 방향(분산 신호는 하락과 음의 상관이어야 유효):
+#   atr=−0.160(최강) recent_move=−0.165(최강급) rsi=−0.111 oi=+0.035(부호반대!)
+#   box=−0.034 ema=−0.010(무의미) cvd=+0.015(무의미) volz=−0.022(무의미)
+# 이에 따라: ATR/최근움직임을 최대 배점으로 승격, OI 로직은 방향을 반대로 뒤집음
+# (OI 증가=매집이 아니라 OI 정체·감소=매집으로), CVD/VolZ는 배점 제거(노이즈),
+# EMA압축은 매집 쪽만 소폭 유지. 레짐별로 보면 하락장에서 prepump_v4 corr가
+# −0.005(사실상 무의미·부호소실)로 무너지는 게 재확인돼(기존 롱/숏 점수 하락장
+# 재설계 때와 동일 패턴), 하락장에서는 매집 점수에 0.5배를 적용해 신뢰도를
+# 낮춘다(완전 배제는 표본이 아주 없진 않아 과함, 절반 가중이 균형점).
+#   재검증 후 v4 corr(12h): prepump +0.157(v3 대비 +0.052) / preshort −0.185
+#   (v3 대비 −0.081) — 48h까지도 prepump +0.256으로 오히려 커짐(장기 매집
+#   지표라는 원래 설계 의도에 부합하는 방향으로 개선).
 # ============================================================
+
+def _ema_spread_pct(ema20, ema60, ema120):
+    """EMA20/60/120 세 값이 서로 얼마나 벌어져 있는지(%, ema60 기준)."""
+    try:
+        if not ema20 or not ema60 or not ema120 or ema60 <= 0:
+            return None
+        return (max(ema20, ema60, ema120) - min(ema20, ema60, ema120)) / ema60 * 100
+    except Exception:
+        return None
 
 def score_oi_persistence(oi_change_pct, direction):
     """
-    OI 지속 증가 점수(매집 8점 / 분산 8점, 2026-07-19 재조정 — 실측 |corr|<0.02로
-    거의 무의미해 배점 대폭 축소, 원래 순위는 유지).
+    [2026-09-28 뒤집음] 07-19판은 "OI 증가=매집/OI감소=분산"을 가정했으나, 28만행
+    실측(12h corr: prepump −0.062 / preshort +0.035, 24h에서 더 뚜렷: −0.101/+0.071)
+    결과 정반대 — OI가 늘수록 오히려 이후 수익률이 낮았다. 레버리지 롱 유입이
+    스퀴즈성 하락으로 이어지는 패턴으로 추정. 방향을 반대로 재설계.
     """
     try:
         if direction == 'prepump':
-            if oi_change_pct >= 10: return 8
-            elif oi_change_pct >= 7: return 7
-            elif oi_change_pct >= 5: return 6
-            elif oi_change_pct >= 3: return 4
-            elif oi_change_pct >= 1: return 3
-            elif oi_change_pct >= 0: return 1
+            if oi_change_pct <= -3: return 15
+            elif oi_change_pct <= -1: return 11
+            elif oi_change_pct <= 1: return 7
+            elif oi_change_pct <= 3: return 3
             return 0
         else:
-            if oi_change_pct < 0: return 8
-            elif oi_change_pct < 1: return 4
+            if oi_change_pct >= 3: return 7
+            elif oi_change_pct >= 1: return 5
+            elif oi_change_pct >= -1: return 3
             return 0
     except Exception:
         return 0
-
-def score_cvd_cumulative(cvd_1h, direction, chg_30m_pct=0.0):
-    """
-    CVD 누적 증가 점수(매집 10점 / 분산 12점, 2026-07-19 재조정 — 실측상 신호가
-    약해(|corr|<0.03) 원래 배점(20)에서 축소).
-    (cvd_1h는 별도 API가 없어 CVD_WINDOW_CANDLES 구간 변화량을 근사치로 쓴다.)
-    """
-    try:
-        if direction == 'prepump':
-            if cvd_1h > 0:
-                if cvd_1h >= 100000: base = 10
-                elif cvd_1h >= 30000: base = 9
-                elif cvd_1h >= 5000: base = 7
-                else: base = 4
-                if -0.3 <= chg_30m_pct <= 0.3:
-                    base += 2   # 가격 횡보 + CVD 증가
-                elif chg_30m_pct < -0.3:
-                    base += 3   # 가격 하락 + CVD 증가 (더 강한 매집 신호)
-                return min(base, 10)
-            return 0
-        else:
-            if cvd_1h < 0:
-                if cvd_1h <= -100000: return 12
-                elif cvd_1h <= -30000: return 10
-                elif cvd_1h <= -5000: return 8
-                return 4
-            return 0
-    except Exception:
-        return 0
-
-def score_ema_compression(ema20, ema60, ema120, direction):
-    """
-    EMA 압축도 점수(매집 12점 / 분산 8점, 2026-07-19 재조정 — 실측상 두 방향 모두
-    원래 가정과 반대 부호였다(매집: 압축일수록 저조 corr -0.06~-0.09 / 분산: 이격
-    클수록 오히려 상승 지속 corr +0.06~+0.08). 완전히 뒤집기엔 표본기간(4~5일)이
-    짧아 방향은 유지하되 배점만 낮췄고, 매집 쪽 역배열(aligned_down) 구간에는
-    실측 평균수익률이 가장 좋았던 점을 반영해 소폭의 기본점수를 부여했다.
-    """
-    spread = _ema_spread_pct(ema20, ema60, ema120)
-    if spread is None:
-        return 0
-    aligned_up = ema20 > ema60 > ema120
-    aligned_down = ema20 < ema60 < ema120
-    if direction == 'prepump':
-        if spread <= 0.3: return 12          # 거의 겹침 — 매집 최적 구간(가정)
-        elif aligned_up and spread <= 1.0: return 10   # 약한 정배열 시작
-        elif aligned_up: return 6             # 완전 정배열 — 이미 매집 끝난 상태
-        elif aligned_down: return 3           # 역배열(실측상 평균수익률 최고 구간 — 소폭 반영)
-        return 2                              # 과도한 이격(방향 불명)
-    else:
-        if spread >= 3.0: return 8            # 과도한 이격 — 분산/과열(가정)
-        elif spread >= 1.5: return 5
-        elif spread <= 0.3: return 1          # 압축 상태는 분산 신호로는 약함
-        return 3
 
 def score_atr_state(atr_pct, direction):
-    """ATR(변동성) 점수(매집 8점 / 분산 8점, 2026-07-19 재조정 — 실측 신호 약함(노이즈성)."""
+    """
+    [2026-09-28 배점 대폭 확대: 8→32(양방향)] 28만행 실측상 매집/분산 통틀어 가장
+    강력하고 일관된 단일 신호였다(12h corr: prepump +0.136 / preshort −0.160,
+    24h에서는 각각 +0.201/−0.187로 더 강해짐). 기존엔 "노이즈성"으로 저평가돼 있었음.
+    """
     try:
         if direction == 'prepump':
-            if 1.0 <= atr_pct <= 2.0: return 8
-            elif 0.5 <= atr_pct < 1.0: return 6
-            elif 2.0 < atr_pct <= 3.0: return 4
+            if 1.0 <= atr_pct <= 2.0: return 32
+            elif 0.5 <= atr_pct < 1.0: return 24
+            elif 2.0 < atr_pct <= 3.0: return 14
             elif atr_pct > 3.0: return 0
-            return 2   # 0.5% 미만 — 거의 죽어있음, 낮은 점수
+            return 6
         else:
-            if atr_pct >= 4.0: return 8
-            elif atr_pct >= 3.0: return 5
-            return 0
-
-    except Exception:
-        return 0
-
-def score_volz_state(vol_z, direction):
-    """
-    거래량(VolZ) 점수(매집 8점 / 분산 8점, 2026-07-19 재조정 — 실측 신호 약함(노이즈성).
-    """
-    try:
-        if direction == 'prepump':
-            if 0.5 <= vol_z <= 1.2: return 8
-            elif 1.2 < vol_z <= 2.0: return 6
-            elif 0.2 <= vol_z < 0.5: return 5
-            elif 2.0 < vol_z <= 3.0: return 2
-            elif vol_z > 3.0: return 0
-            return 2   # 0.2 미만 — 관심도 자체가 없음
-        else:
-            if vol_z >= 3.0: return 8
-            elif vol_z >= 2.0: return 4
+            if atr_pct >= 4.0: return 32
+            elif atr_pct >= 3.0: return 18
+            elif atr_pct >= 2.0: return 6
             return 0
     except Exception:
         return 0
 
 def score_box_position(current_price, box_high, box_low, direction):
-    """
-    가격 위치 점수(매집 17점 / 분산 15점, 2026-07-19 재조정 — 실측상 매집 방향은
-    모노토닉하게 유효(바닥권일수록 60/120분뒤 수익률 높음, corr +0.02~+0.03)해
-    배점을 확대했다. 분산 방향은 신호가 약해 원 배점 유지 수준으로만 조정.
-    """
+    """가격 위치 점수(매집 9점/분산 6점, 2026-09-28 배점 축소 — 방향은 유효하나
+    ATR/최근움직임 대비 상대적으로 약한 신호(12h corr +0.038/−0.034)라 축소."""
     try:
         if box_high is None or box_low is None or box_high <= box_low:
             return 0
         pos_pct = (current_price - box_low) / (box_high - box_low) * 100
         if direction == 'prepump':
-            if pos_pct <= 25: return 17
-            elif pos_pct <= 50: return 13
-            elif pos_pct <= 80: return 8
+            if pos_pct <= 25: return 9
+            elif pos_pct <= 50: return 7
+            elif pos_pct <= 80: return 4
             return 0
         else:
-            if pos_pct >= 80: return 15
-            elif pos_pct >= 60: return 8
+            if pos_pct >= 80: return 6
+            elif pos_pct >= 60: return 3
             return 0
     except Exception:
         return 0
 
 def score_rsi_box(rsi, direction):
-    """
-    RSI 점수(매집 12점 / 분산 35점, 2026-07-19 재조정 — 분산 방향의 RSI≥70 과열
-    신호가 실측 데이터에서 가장 강력하고 일관됐다(corr -0.06, n=597, 60분뒤 평균
-    -0.25%/120분뒤 -0.39%). 원래 배점(5)이 총점에 묻혀 있던 걸 대폭 확대(35).
-    """
+    """RSI 점수(매집 19점/분산 22점, 2026-09-28 재조정 — 여전히 유효한 신호지만
+    (12h corr +0.079/−0.111) ATR/최근움직임이 더 강하다고 확인돼 분산 쪽 기존
+    35점은 과대배점이었음, 22점으로 축소."""
     try:
         if direction == 'prepump':
-            if 45 <= rsi <= 60: return 12
-            elif 40 <= rsi < 45: return 10
-            elif 60 < rsi <= 70: return 7
-            elif 30 <= rsi < 40: return 5
+            if 45 <= rsi <= 60: return 19
+            elif 40 <= rsi < 45: return 15
+            elif 60 < rsi <= 70: return 10
+            elif 30 <= rsi < 40: return 7
             return 0
         else:
-            if rsi >= 70: return 35
-            elif rsi >= 60: return 21
+            if rsi >= 70: return 22
+            elif rsi >= 60: return 13
             return 0
     except Exception:
         return 0
 
 def score_recent_move(recent_pct, direction):
     """
-    최근 상승률 점수(매집: 급등 패널티 25점 / 분산: 급등 보너스 6점, 2026-07-19
-    재조정). 매집 방향은 실측에서 가장 유효했던 신호(corr +0.05~+0.07, 이미
-    10~15% 급등한 종목은 60분뒤 평균 -0.22%)라 배점을 5→25로 대폭 확대했다.
-    분산 방향은 표본이 거의 없어(급등 15%+ 케이스 희소) 원 배점 수준 유지.
+    [2026-09-28 배점 대폭 확대] 최근 움직임 신호 — 매집 쪽(급등 회피, 18점)은
+    유지 수준 확대, 분산 쪽(급등 뒤 조정, 6→33점)은 실측상 ATR 다음으로 강력한
+    신호(12h corr −0.165, 기존 6점은 총점에 묻혀있던 심각한 저평가)라 대폭 확대.
     """
     try:
         if direction == 'prepump':
-            if recent_pct <= 3: return 25
-            elif recent_pct <= 7: return 15
-            elif recent_pct <= 10: return 10
-            elif recent_pct <= 15: return 5
+            if recent_pct <= 3: return 18
+            elif recent_pct <= 7: return 11
+            elif recent_pct <= 10: return 7
+            elif recent_pct <= 15: return 3
             return 0
         else:
-            if recent_pct >= 15: return 6
-            elif recent_pct >= 10: return 4
+            if recent_pct >= 15: return 33
+            elif recent_pct >= 10: return 20
+            elif recent_pct >= 5: return 8
             return 0
     except Exception:
         return 0
 
+def score_ema_compression(ema20, ema60, ema120, direction):
+    """EMA 압축도(매집 7점만 유지, 분산은 0으로 제거, 2026-09-28) — 매집 방향은
+    약하지만 부호가 맞았고(12h corr +0.028), 분산 방향은 부호가 안정적이지 않고
+    (12h −0.010 / 24h +0.012로 horizon마다 뒤집힘) 사실상 무의미해 제거했다."""
+    if direction != 'prepump':
+        return 0
+    spread = _ema_spread_pct(ema20, ema60, ema120)
+    if spread is None:
+        return 0
+    aligned_up = ema20 > ema60 > ema120
+    aligned_down = ema20 < ema60 < ema120
+    if spread <= 0.3: return 7
+    elif aligned_up and spread <= 1.0: return 6
+    elif aligned_up: return 3
+    elif aligned_down: return 2
+    return 1
+
 def calculate_prepump_score(oi_change_pct, cvd_1h, ema20, ema60, ema120, atr_pct, vol_z,
-                             current_price, box_high, box_low, rsi, recent_pct, chg_30m_pct=0.0):
-    """매집 총점(0~100, 2026-07-19 재조정) = OI지속(8)+CVD누적(10)+EMA압축(12)+ATR(8)+VolZ(8)+가격위치(17)+RSI(12)+최근상승패널티(25)."""
+                             current_price, box_high, box_low, rsi, recent_pct, chg_30m_pct=0.0,
+                             regime='normal'):
+    """매집 총점(0~100, 2026-09-28 v4 재개편, 28만행 pregap+postgap 통합검증)
+    = OI반전(15)+ATR(32)+RSI(19)+최근움직임(18)+가격위치(9)+EMA압축(7).
+    CVD/VolZ는 실측상 노이즈로 확인돼 v4에서 배점 제거(파라미터는 호출부 호환을
+    위해 남겨둠). 하락장에서는 corr가 −0.005로 무너지는 게 재확인돼 0.5배 적용."""
     if not ENABLE_PREPUMP_SCORE:
         return 0
     try:
         score = (score_oi_persistence(oi_change_pct, 'prepump')
-                 + score_cvd_cumulative(cvd_1h, 'prepump', chg_30m_pct)
-                 + score_ema_compression(ema20, ema60, ema120, 'prepump')
                  + score_atr_state(atr_pct, 'prepump')
-                 + score_volz_state(vol_z, 'prepump')
-                 + score_box_position(current_price, box_high, box_low, 'prepump')
                  + score_rsi_box(rsi, 'prepump')
-                 + score_recent_move(recent_pct, 'prepump'))
+                 + score_recent_move(recent_pct, 'prepump')
+                 + score_box_position(current_price, box_high, box_low, 'prepump')
+                 + score_ema_compression(ema20, ema60, ema120, 'prepump'))
+        if regime == '하락장':
+            score *= 0.5
         return max(0, min(round(score), 100))
     except Exception:
         return 0
 
 def calculate_preshort_score(oi_change_pct, cvd_1h, ema20, ema60, ema120, atr_pct, vol_z,
-                              current_price, box_high, box_low, rsi, recent_pct, chg_30m_pct=0.0):
-    """분산 총점(0~100, 2026-07-19 재조정) = OI감소·불일치(8)+CVD지속감소(12)+EMA과이격(8)+ATR급증(8)+VolZ폭발(8)+신고가부근(15)+RSI70+(35)+최근급등(6)."""
+                              current_price, box_high, box_low, rsi, recent_pct, chg_30m_pct=0.0,
+                              regime='normal'):
+    """분산 총점(0~100, 2026-09-28 v4 재개편, 28만행 통합검증)
+    = OI반전(7)+ATR(32)+RSI(22)+최근급등(33)+가격위치(6). CVD/VolZ/EMA과이격은
+    실측상 노이즈로 v4에서 배점 제거. 하락장에서도 corr가 사실상 무의미(+0.012)
+    수준으로 약해지지만 부호 반전까진 아니라 배율 적용은 하지 않음."""
     if not ENABLE_PREPUMP_SCORE:
         return 0
     try:
         score = (score_oi_persistence(oi_change_pct, 'preshort')
-                 + score_cvd_cumulative(cvd_1h, 'preshort', chg_30m_pct)
-                 + score_ema_compression(ema20, ema60, ema120, 'preshort')
                  + score_atr_state(atr_pct, 'preshort')
-                 + score_volz_state(vol_z, 'preshort')
-                 + score_box_position(current_price, box_high, box_low, 'preshort')
                  + score_rsi_box(rsi, 'preshort')
-                 + score_recent_move(recent_pct, 'preshort'))
+                 + score_recent_move(recent_pct, 'preshort')
+                 + score_box_position(current_price, box_high, box_low, 'preshort'))
         return max(0, min(round(score), 100))
     except Exception:
         return 0
@@ -2848,10 +2813,10 @@ def process_ticker(ticker):
             recent_pct = 0.0
         prepump_score = calculate_prepump_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
                                                  atr_pct, vz, current_price, box_high, box_low,
-                                                 rsi_val, recent_pct, chg_30m)
+                                                 rsi_val, recent_pct, chg_30m, regime=current_market_regime)
         preshort_score = calculate_preshort_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
                                                    atr_pct, vz, current_price, box_high, box_low,
-                                                   rsi_val, recent_pct, chg_30m)
+                                                   rsi_val, recent_pct, chg_30m, regime=current_market_regime)
         # 항목별 세부점수 (로그 분석/배점 튜닝용 — 총점과 동일한 함수로 계산, 105점 원점수 기준)
         components = {
             "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long', ema20_slope_pct),
@@ -3019,10 +2984,10 @@ def process_ticker_upbit(ticker):
         # 매집/분산(prepump/preshort)은 거래소 학습가중치가 없는 정적 배점이라 그대로 재사용
         prepump_score = calculate_prepump_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
                                                  atr_pct, vz, current_price, box_high, box_low,
-                                                 rsi_val, recent_pct, chg_30m)
+                                                 rsi_val, recent_pct, chg_30m, regime=current_market_regime_upbit)
         preshort_score = calculate_preshort_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
                                                    atr_pct, vz, current_price, box_high, box_low,
-                                                   rsi_val, recent_pct, chg_30m)
+                                                   rsi_val, recent_pct, chg_30m, regime=current_market_regime_upbit)
         components = {
             "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long', ema20_slope_pct),
             "ema_s": score_ema_trend(current_price, ema20, ema60, ema120, 'short', ema20_slope_pct),
