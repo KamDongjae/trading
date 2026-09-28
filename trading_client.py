@@ -1535,7 +1535,7 @@ class TradingClient:
                 self._cfg(card, bg=bg)
                 if border_color:
                     self._cfg(card, highlightbackground=border_color, highlightcolor=border_color,
-                              highlightthickness=3, bd=0)
+                              highlightthickness=6, bd=0)
                 else:
                     self._cfg(card, highlightthickness=0, bd=1, relief="solid")
                 if is_new:

@@ -1582,31 +1582,27 @@ def _ema_spread_pct(ema20, ema60, ema120):
         return None
 
 # ============================================================
-# [2026-09-28 재개편 v4] 매집(prepump)/분산(preshort) 점수 체계 — pregap(7/23~8/6,
-# 172,272행,151개코인) + postgap(9/19~9/25,111,514행,40개코인) 통합 283,786행으로
-# 재검증. 07-19 개편은 5일치·40개코인·단일레짐 표본이라 상관계수가 실제보다 과대
-# 추정돼 있었다(당시 corr 0.05~0.09대 주장 vs 이번 28만행 검증 실측 0.01~0.02대에
-# 불과 — 사실상 노이즈). 원인은 두 가지였다:
-#   (1) score_box_position()에 price_krw 대신 price_usd를 넘겨야 정상인데 구현이
-#       뒤섞여 있었던 게 아니라, 이번 재검증 스크립트에서 최초 시도 시 함수는 맞게
-#       구현돼 있었지만 검증용 raw 데이터 분석 단계에서 price_usd/price_krw를
-#       혼동해 박스 위치가 사실상 상수로 나오는 버그가 있었다(정정 후 재검증).
-#   (2) 12h/24h를 기준으로 봐야 신호가 또렷했다(1h는 약하고 48h는 반감기 지남).
-# 정정 후 12h 수익률 기준 서브지표별 실측 corr(부호 포함, prepump 방향):
-#   atr=+0.136(최강) rsi=+0.079 recent_move=+0.075 oi=−0.062(부호반대!)
-#   box=+0.038 ema=+0.028 cvd=−0.041(부호반대,약함) volz=−0.020(부호반대,무의미)
-# preshort 방향(분산 신호는 하락과 음의 상관이어야 유효):
-#   atr=−0.160(최강) recent_move=−0.165(최강급) rsi=−0.111 oi=+0.035(부호반대!)
-#   box=−0.034 ema=−0.010(무의미) cvd=+0.015(무의미) volz=−0.022(무의미)
-# 이에 따라: ATR/최근움직임을 최대 배점으로 승격, OI 로직은 방향을 반대로 뒤집음
-# (OI 증가=매집이 아니라 OI 정체·감소=매집으로), CVD/VolZ는 배점 제거(노이즈),
-# EMA압축은 매집 쪽만 소폭 유지. 레짐별로 보면 하락장에서 prepump_v4 corr가
-# −0.005(사실상 무의미·부호소실)로 무너지는 게 재확인돼(기존 롱/숏 점수 하락장
-# 재설계 때와 동일 패턴), 하락장에서는 매집 점수에 0.5배를 적용해 신뢰도를
-# 낮춘다(완전 배제는 표본이 아주 없진 않아 과함, 절반 가중이 균형점).
-#   재검증 후 v4 corr(12h): prepump +0.157(v3 대비 +0.052) / preshort −0.185
-#   (v3 대비 −0.081) — 48h까지도 prepump +0.256으로 오히려 커짐(장기 매집
-#   지표라는 원래 설계 의도에 부합하는 방향으로 개선).
+# [2026-09-29 재개편 v5] 매집(prepump)/분산(preshort) — v4(09-28)에 "궤적 지표"
+# price_cv_24h(최근 1일 캔들 종가의 변동계수, std/mean) 추가. 계기: 사용자가
+# "10분 간격 스냅샷 1개로 장기 매집을 판정하는 게 말이 되냐"고 지적 — 맞는
+# 말이었다. v4까지의 모든 서브지표(OI/CVD/ATR/RSI 등)는 전부 "그 시점 값 1개"였고,
+# 진짜로 여러 시점(캔들 수십 개)의 궤적 자체를 보는 지표가 없었다.
+#
+# 28만행에서 price_cv_24h(최근 24캔들 종가의 std/mean)를 직접 계산해 검증한 결과:
+#   - 단순 선형 상관은 음수(-0.13~-0.16, "압축될수록 좋다")였지만, 10분위로
+#     쪼개보니 실제로는 비단조(가운데가 좋고 양끝이 나쁜) 관계였다:
+#     최하위 10%(사실상 죽은 코인, CV<0.32%) 평균수익률 -0.78% (나쁨)
+#     최상위 10%(이미 날뛴 뒤, CV>2.4%) 평균수익률 -1.81% (최악)
+#     70~90%ile 구간(CV 1.3~2.4%, "적당히 압축") 평균수익률 +0.95~+1.59% (최고)
+#   - 이 비단조 구간을 그대로 버킷화하니 corr +0.207~+0.221(24h/48h)로 기존
+#     ATR 단독(+0.20)보다도 강했고, ATR과 상관 0.77로 겹치는 정보지만 완전히
+#     같지는 않아 둘을 합치니 더 좋아졌다(+0.224, 단독보다 개선).
+#   - v4→v5 전체 검증(28만행): 매집 corr 24h +0.211→+0.252, 48h +0.256→+0.298
+#     (48h까지 계속 커짐 — "장기 매집 지표"라는 원래 설계 의도에 더 부합).
+#     분산은 24h -0.183→-0.175로 소폭 하락했지만 48h -0.095→-0.125로 개선.
+#   서버는 이미 기준봉 캔들(df)을 갖고 있어 별도 API 호출 없이 df['close']의
+#   최근 N개(1h봉 기준 24개)로 계산한다 — CANDLE_INTERVAL이 바뀌면 캔들수도
+#   비례 조정(기존 candles_per_3d와 동일한 패턴).
 # ============================================================
 
 def _ema_spread_pct(ema20, ema60, ema120):
@@ -1619,110 +1615,182 @@ def _ema_spread_pct(ema20, ema60, ema120):
         return None
 
 def score_oi_persistence(oi_change_pct, direction):
-    """
-    [2026-09-28 뒤집음] 07-19판은 "OI 증가=매집/OI감소=분산"을 가정했으나, 28만행
-    실측(12h corr: prepump −0.062 / preshort +0.035, 24h에서 더 뚜렷: −0.101/+0.071)
-    결과 정반대 — OI가 늘수록 오히려 이후 수익률이 낮았다. 레버리지 롱 유입이
-    스퀴즈성 하락으로 이어지는 패턴으로 추정. 방향을 반대로 재설계.
-    """
+    """[2026-09-28 뒤집음] OI 증가할수록 오히려 이후 수익률이 낮았음(실측, 레버리지
+    롱 유입→스퀴즈 추정) — 방향을 반대로. 2026-09-29 배점 소폭 축소(price_cv 추가분 확보)."""
     try:
         if direction == 'prepump':
-            if oi_change_pct <= -3: return 15
-            elif oi_change_pct <= -1: return 11
-            elif oi_change_pct <= 1: return 7
-            elif oi_change_pct <= 3: return 3
+            if oi_change_pct <= -3: return 12
+            elif oi_change_pct <= -1: return 9
+            elif oi_change_pct <= 1: return 6
+            elif oi_change_pct <= 3: return 2
             return 0
         else:
-            if oi_change_pct >= 3: return 7
-            elif oi_change_pct >= 1: return 5
-            elif oi_change_pct >= -1: return 3
+            if oi_change_pct >= 3: return 6
+            elif oi_change_pct >= 1: return 4
+            elif oi_change_pct >= -1: return 2
             return 0
     except Exception:
         return 0
 
 def score_atr_state(atr_pct, direction):
-    """
-    [2026-09-28 배점 대폭 확대: 8→32(양방향)] 28만행 실측상 매집/분산 통틀어 가장
-    강력하고 일관된 단일 신호였다(12h corr: prepump +0.136 / preshort −0.160,
-    24h에서는 각각 +0.201/−0.187로 더 강해짐). 기존엔 "노이즈성"으로 저평가돼 있었음.
-    """
+    """ATR 점수(2026-09-29 배점 소폭 축소, 32→20/22 — price_cv_24h와 0.77 상관으로
+    정보가 겹치지만, 둘을 합쳐야 corr이 더 커져서(실측) 완전 제거는 안 하고 축소만)."""
     try:
         if direction == 'prepump':
-            if 1.0 <= atr_pct <= 2.0: return 32
-            elif 0.5 <= atr_pct < 1.0: return 24
-            elif 2.0 < atr_pct <= 3.0: return 14
+            if 1.0 <= atr_pct <= 2.0: return 20
+            elif 0.5 <= atr_pct < 1.0: return 15
+            elif 2.0 < atr_pct <= 3.0: return 9
             elif atr_pct > 3.0: return 0
-            return 6
+            return 4
         else:
-            if atr_pct >= 4.0: return 32
-            elif atr_pct >= 3.0: return 18
-            elif atr_pct >= 2.0: return 6
+            if atr_pct >= 4.0: return 22
+            elif atr_pct >= 3.0: return 12
+            elif atr_pct >= 2.0: return 4
             return 0
     except Exception:
         return 0
 
+def score_price_cv(price_cv_24h, direction):
+    """
+    [2026-09-29 신설] 최근 24캔들(≈1일) 종가의 변동계수(std/mean) — 스냅샷이
+    아니라 "최근 하루 동안 실제로 얼마나 조용히 압축돼왔는지"를 보는 궤적 지표.
+    28만행 10분위 분석 결과 비단조(U자 반대) 관계였다: 너무 낮으면(죽은 코인)
+    나쁘고, 너무 높으면(이미 날뛴 뒤) 최악, 중간 상단(1.3~2.4%)이 최적.
+    매집=이 최적구간을 채점, 분산=반대로 "이미 과열된 최상위 구간"을 채점.
+    """
+    try:
+        cv = price_cv_24h
+        if direction == 'prepump':
+            if cv < 0.006: return 0
+            elif cv < 0.007: return 6
+            elif cv < 0.0087: return 15
+            elif cv < 0.0106: return 21
+            elif cv < 0.0129: return 13
+            elif cv < 0.0166: return 19
+            elif cv < 0.0241: return 24
+            return 0
+        else:
+            if cv >= 0.0241: return 20
+            elif cv >= 0.0166: return 6
+            return 0
+    except Exception:
+        return 0
+
+def _zigzag_hl_flag(closes, threshold=0.02, lookback=100):
+    """[2026-09-29 신설] causal(미래참조 없는) ZigZag로 최근 스윙 저점 2개를 확정하고
+    higher-low(상승구조) 여부를 1/0으로 반환. 28만행 백테스트에서 상승장 48h +3.43%
+    vs +2.91%, 횡보장 48h +1.54% vs +0.39%로 유의미한 차이 확인(하락장/고변동성은
+    차이 없어 calculate_prepump_score 쪽에서 레짐 게이팅). threshold=2% 되돌림이
+    나와야 스윙포인트가 확정되므로 그 시점까지의 정보만 사용, 미래 데이터 없음."""
+    try:
+        prices = list(closes[-lookback:]) if len(closes) > lookback else list(closes)
+        if len(prices) < 10:
+            return 0
+        direction_state = None
+        last_extreme = prices[0]
+        troughs = []
+        for p in prices[1:]:
+            if last_extreme == 0:
+                continue
+            change = (p - last_extreme) / last_extreme
+            if direction_state is None:
+                if change >= threshold:
+                    troughs.append(last_extreme)
+                    direction_state = 'up'
+                    last_extreme = p
+                elif change <= -threshold:
+                    direction_state = 'down'
+                    last_extreme = p
+            elif direction_state == 'up':
+                if p >= last_extreme:
+                    last_extreme = p
+                else:
+                    retrace = (last_extreme - p) / last_extreme
+                    if retrace >= threshold:
+                        direction_state = 'down'
+                        last_extreme = p
+            else:
+                if p <= last_extreme:
+                    last_extreme = p
+                else:
+                    retrace = (p - last_extreme) / last_extreme
+                    if retrace >= threshold:
+                        troughs.append(last_extreme)
+                        direction_state = 'up'
+                        last_extreme = p
+        if len(troughs) >= 2:
+            return 1 if troughs[-1] > troughs[-2] else 0
+        return 0
+    except Exception:
+        return 0
+
+def score_structure_hl(hl_flag, regime='normal'):
+    """[2026-09-29 신설] 최근 저점이 이전 저점보다 높은 구조(higher-low, 매집형 파형).
+    상승장/횡보장에서만 유효(백테스트 근거는 _zigzag_hl_flag 주석), 하락장/고변동성은 0점.
+    분산(preshort) 쪽은 대칭 신호(lower-high)가 백테스트에서 방향성 판별력 없음이
+    확인돼(오히려 상승장에서 LH=1일 때 수익률이 더 높게 나옴, 변동성 혼입 추정)
+    배점하지 않음 — DTW 템플릿 매칭으로 별도 검증 예정."""
+    try:
+        if regime not in ('상승장', '횡보장'):
+            return 0
+        return 10 if hl_flag else 0
+    except Exception:
+        return 0
+
 def score_box_position(current_price, box_high, box_low, direction):
-    """가격 위치 점수(매집 9점/분산 6점, 2026-09-28 배점 축소 — 방향은 유효하나
-    ATR/최근움직임 대비 상대적으로 약한 신호(12h corr +0.038/−0.034)라 축소."""
+    """가격 위치 점수(매집 8점/분산 8점, 2026-09-29 배점 소폭 축소)."""
     try:
         if box_high is None or box_low is None or box_high <= box_low:
             return 0
         pos_pct = (current_price - box_low) / (box_high - box_low) * 100
         if direction == 'prepump':
-            if pos_pct <= 25: return 9
-            elif pos_pct <= 50: return 7
-            elif pos_pct <= 80: return 4
+            if pos_pct <= 25: return 8
+            elif pos_pct <= 50: return 6
+            elif pos_pct <= 80: return 3
             return 0
         else:
-            if pos_pct >= 80: return 6
-            elif pos_pct >= 60: return 3
+            if pos_pct >= 80: return 8
+            elif pos_pct >= 60: return 4
             return 0
     except Exception:
         return 0
 
 def score_rsi_box(rsi, direction):
-    """RSI 점수(매집 19점/분산 22점, 2026-09-28 재조정 — 여전히 유효한 신호지만
-    (12h corr +0.079/−0.111) ATR/최근움직임이 더 강하다고 확인돼 분산 쪽 기존
-    35점은 과대배점이었음, 22점으로 축소."""
+    """RSI 점수(매집 16점/분산 18점, 2026-09-29 배점 소폭 축소 — price_cv 추가분 확보)."""
     try:
         if direction == 'prepump':
-            if 45 <= rsi <= 60: return 19
-            elif 40 <= rsi < 45: return 15
-            elif 60 < rsi <= 70: return 10
-            elif 30 <= rsi < 40: return 7
+            if 45 <= rsi <= 60: return 16
+            elif 40 <= rsi < 45: return 13
+            elif 60 < rsi <= 70: return 8
+            elif 30 <= rsi < 40: return 6
             return 0
         else:
-            if rsi >= 70: return 22
-            elif rsi >= 60: return 13
+            if rsi >= 70: return 18
+            elif rsi >= 60: return 11
             return 0
     except Exception:
         return 0
 
 def score_recent_move(recent_pct, direction):
-    """
-    [2026-09-28 배점 대폭 확대] 최근 움직임 신호 — 매집 쪽(급등 회피, 18점)은
-    유지 수준 확대, 분산 쪽(급등 뒤 조정, 6→33점)은 실측상 ATR 다음으로 강력한
-    신호(12h corr −0.165, 기존 6점은 총점에 묻혀있던 심각한 저평가)라 대폭 확대.
-    """
+    """최근 움직임 점수(매집 14점/분산 26점, 2026-09-29 배점 소폭 축소, 순위는 유지 —
+    분산 쪽은 여전히 ATR 다음으로 강력한 신호라 최대 배점 유지 수준)."""
     try:
         if direction == 'prepump':
-            if recent_pct <= 3: return 18
-            elif recent_pct <= 7: return 11
-            elif recent_pct <= 10: return 7
-            elif recent_pct <= 15: return 3
+            if recent_pct <= 3: return 14
+            elif recent_pct <= 7: return 9
+            elif recent_pct <= 10: return 6
+            elif recent_pct <= 15: return 2
             return 0
         else:
-            if recent_pct >= 15: return 33
-            elif recent_pct >= 10: return 20
-            elif recent_pct >= 5: return 8
+            if recent_pct >= 15: return 26
+            elif recent_pct >= 10: return 16
+            elif recent_pct >= 5: return 6
             return 0
     except Exception:
         return 0
 
 def score_ema_compression(ema20, ema60, ema120, direction):
-    """EMA 압축도(매집 7점만 유지, 분산은 0으로 제거, 2026-09-28) — 매집 방향은
-    약하지만 부호가 맞았고(12h corr +0.028), 분산 방향은 부호가 안정적이지 않고
-    (12h −0.010 / 24h +0.012로 horizon마다 뒤집힘) 사실상 무의미해 제거했다."""
+    """EMA 압축도(매집 6점만 유지, 분산 0, 2026-09-29 배점 소폭 축소)."""
     if direction != 'prepump':
         return 0
     spread = _ema_spread_pct(ema20, ema60, ema120)
@@ -1730,28 +1798,32 @@ def score_ema_compression(ema20, ema60, ema120, direction):
         return 0
     aligned_up = ema20 > ema60 > ema120
     aligned_down = ema20 < ema60 < ema120
-    if spread <= 0.3: return 7
-    elif aligned_up and spread <= 1.0: return 6
+    if spread <= 0.3: return 6
+    elif aligned_up and spread <= 1.0: return 5
     elif aligned_up: return 3
     elif aligned_down: return 2
     return 1
 
 def calculate_prepump_score(oi_change_pct, cvd_1h, ema20, ema60, ema120, atr_pct, vol_z,
                              current_price, box_high, box_low, rsi, recent_pct, chg_30m_pct=0.0,
-                             regime='normal'):
-    """매집 총점(0~100, 2026-09-28 v4 재개편, 28만행 pregap+postgap 통합검증)
-    = OI반전(15)+ATR(32)+RSI(19)+최근움직임(18)+가격위치(9)+EMA압축(7).
-    CVD/VolZ는 실측상 노이즈로 확인돼 v4에서 배점 제거(파라미터는 호출부 호환을
-    위해 남겨둠). 하락장에서는 corr가 −0.005로 무너지는 게 재확인돼 0.5배 적용."""
+                             regime='normal', price_cv_24h=0.0, hl_flag=0):
+    """매집 총점(0~100 cap, 2026-09-29 v6)
+    = OI반전(12)+ATR(20)+price_cv궤적(24)+RSI(16)+최근움직임(14)+가격위치(8)+EMA압축(6)
+      +구조HL보너스(10, ZigZag higher-low, 상승장/횡보장만).
+    CVD/VolZ는 v4에서 이미 노이즈로 확인돼 배점 없음(파라미터는 호출 호환용).
+    HL보너스는 기존 배점 재조정 없이 얹고 100점에서 clip(과열 방지겸 재검증 부담 최소화).
+    하락장에서는 신호가 무너지는 게 재확인돼(corr≈0) 0.5배 적용."""
     if not ENABLE_PREPUMP_SCORE:
         return 0
     try:
         score = (score_oi_persistence(oi_change_pct, 'prepump')
                  + score_atr_state(atr_pct, 'prepump')
+                 + score_price_cv(price_cv_24h, 'prepump')
                  + score_rsi_box(rsi, 'prepump')
                  + score_recent_move(recent_pct, 'prepump')
                  + score_box_position(current_price, box_high, box_low, 'prepump')
-                 + score_ema_compression(ema20, ema60, ema120, 'prepump'))
+                 + score_ema_compression(ema20, ema60, ema120, 'prepump')
+                 + score_structure_hl(hl_flag, regime))
         if regime == '하락장':
             score *= 0.5
         return max(0, min(round(score), 100))
@@ -1760,16 +1832,16 @@ def calculate_prepump_score(oi_change_pct, cvd_1h, ema20, ema60, ema120, atr_pct
 
 def calculate_preshort_score(oi_change_pct, cvd_1h, ema20, ema60, ema120, atr_pct, vol_z,
                               current_price, box_high, box_low, rsi, recent_pct, chg_30m_pct=0.0,
-                              regime='normal'):
-    """분산 총점(0~100, 2026-09-28 v4 재개편, 28만행 통합검증)
-    = OI반전(7)+ATR(32)+RSI(22)+최근급등(33)+가격위치(6). CVD/VolZ/EMA과이격은
-    실측상 노이즈로 v4에서 배점 제거. 하락장에서도 corr가 사실상 무의미(+0.012)
-    수준으로 약해지지만 부호 반전까진 아니라 배율 적용은 하지 않음."""
+                              regime='normal', price_cv_24h=0.0):
+    """분산 총점(0~100, 2026-09-29 v5)
+    = OI반전(6)+ATR(22)+price_cv궤적(20)+RSI(18)+최근급등(26)+가격위치(8).
+    28만행 검증: 24h corr -0.183→-0.175(소폭 하락), 48h -0.095→-0.125(개선)."""
     if not ENABLE_PREPUMP_SCORE:
         return 0
     try:
         score = (score_oi_persistence(oi_change_pct, 'preshort')
                  + score_atr_state(atr_pct, 'preshort')
+                 + score_price_cv(price_cv_24h, 'preshort')
                  + score_rsi_box(rsi, 'preshort')
                  + score_recent_move(recent_pct, 'preshort')
                  + score_box_position(current_price, box_high, box_low, 'preshort'))
@@ -2811,12 +2883,30 @@ def process_ticker(ticker):
             recent_pct = (current_price - ref_price) / ref_price * 100 if ref_price > 0 else 0.0
         except Exception:
             recent_pct = 0.0
+        try:
+            # [2026-09-29 추가] "최근 1일" 가격 변동계수(std/mean) — 스냅샷 1개가 아니라
+            # 최근 N개 캔들 전체의 궤적(얼마나 조용히 압축돼왔는지)을 보는 지표.
+            # 28만행 실측 결과 단일 시점 ATR보다도 강한 신호로 확인돼(corr 0.21~0.22)
+            # v5에 추가함 — 근거는 calculate_prepump_score의 score_price_cv 주석 참고.
+            candles_per_1d = {"1h": 24, "2h": 12, "6h": 4, "12h": 2}.get(CANDLE_INTERVAL, 24)
+            cv_window = df['close'].iloc[-candles_per_1d:] if len(df) >= candles_per_1d else df['close']
+            price_cv_24h = float(cv_window.std() / cv_window.mean()) if cv_window.mean() > 0 else 0.0
+        except Exception:
+            price_cv_24h = 0.0
+        try:
+            # [2026-09-29 추가] ZigZag 기반 higher-low 구조 플래그 — 근거는
+            # score_structure_hl/_zigzag_hl_flag 주석 참고.
+            hl_flag = _zigzag_hl_flag(df['close'].values)
+        except Exception:
+            hl_flag = 0
         prepump_score = calculate_prepump_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
                                                  atr_pct, vz, current_price, box_high, box_low,
-                                                 rsi_val, recent_pct, chg_30m, regime=current_market_regime)
+                                                 rsi_val, recent_pct, chg_30m, regime=current_market_regime,
+                                                 price_cv_24h=price_cv_24h, hl_flag=hl_flag)
         preshort_score = calculate_preshort_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
                                                    atr_pct, vz, current_price, box_high, box_low,
-                                                   rsi_val, recent_pct, chg_30m, regime=current_market_regime)
+                                                   rsi_val, recent_pct, chg_30m, regime=current_market_regime,
+                                                   price_cv_24h=price_cv_24h)
         # 항목별 세부점수 (로그 분석/배점 튜닝용 — 총점과 동일한 함수로 계산, 105점 원점수 기준)
         components = {
             "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long', ema20_slope_pct),
@@ -2981,13 +3071,25 @@ def process_ticker_upbit(ticker):
             recent_pct = (current_price - ref_price) / ref_price * 100 if ref_price > 0 else 0.0
         except Exception:
             recent_pct = 0.0
+        try:
+            candles_per_1d = {"1h": 24, "2h": 12, "6h": 4, "12h": 2}.get(CANDLE_INTERVAL, 24)
+            cv_window = df['close'].iloc[-candles_per_1d:] if len(df) >= candles_per_1d else df['close']
+            price_cv_24h = float(cv_window.std() / cv_window.mean()) if cv_window.mean() > 0 else 0.0
+        except Exception:
+            price_cv_24h = 0.0
+        try:
+            hl_flag = _zigzag_hl_flag(df['close'].values)
+        except Exception:
+            hl_flag = 0
         # 매집/분산(prepump/preshort)은 거래소 학습가중치가 없는 정적 배점이라 그대로 재사용
         prepump_score = calculate_prepump_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
                                                  atr_pct, vz, current_price, box_high, box_low,
-                                                 rsi_val, recent_pct, chg_30m, regime=current_market_regime_upbit)
+                                                 rsi_val, recent_pct, chg_30m, regime=current_market_regime_upbit,
+                                                 price_cv_24h=price_cv_24h, hl_flag=hl_flag)
         preshort_score = calculate_preshort_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
                                                    atr_pct, vz, current_price, box_high, box_low,
-                                                   rsi_val, recent_pct, chg_30m, regime=current_market_regime_upbit)
+                                                   rsi_val, recent_pct, chg_30m, regime=current_market_regime_upbit,
+                                                   price_cv_24h=price_cv_24h)
         components = {
             "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long', ema20_slope_pct),
             "ema_s": score_ema_trend(current_price, ema20, ema60, ema120, 'short', ema20_slope_pct),
