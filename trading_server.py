@@ -1155,6 +1155,32 @@ def score_price_position_short(rsi, bb_percent, rsi_delta=0.0):
     except Exception:
         return 0
 
+def score_price_position_short_range(rsi, bb_percent, rsi_delta, recent_pct):
+    """[2026-10-04 추가] 가격위치 숏 점수 — 횡보장 전용 대체판.
+    score_price_position_long_bear(하락장 롱 전용 대체판)와 같은 이유로 신설: 횡보장
+    표본(114,029건) 실측 결과, 기존 score_price_position_short(과매수+반락 시작을
+    최고점)가 24h 기준 corr -0.064로 부호 자체가 반대였다(raw_pp=40 구간 평균 24h
+    수익률 +3.42% — 과매수 신호가 강할수록 오히려 더 오름). 그런데 REGIME_WEIGHT_
+    MULTIPLIERS['횡보장']['pp']=1.3으로 하필 이 깨진 컴포넌트를 1.3배 증폭시키고
+    있었던 게 숏 점수가 횡보장에서 역신호(-0.036)를 내던 핵심 원인.
+
+    "이미 충분히 오른 뒤(recent_pct>=15)" 확인조건을 추가하자 반기분할 검증
+    (9/22~9/26 vs 9/26~10/3) 양쪽 모두에서 안정적으로 작동함을 확인:
+      raw_pp>=20 & recent_pct>=15 → 전반 n=517 24h평균-2.60%/승률77.9%,
+                                     후반 n=837 24h평균-5.94%/승률99.4%
+    이 조합 외(중간 단계들, recent_pct 10~15 등)는 반기별로 부호가 뒤집혀
+    불안정함을 확인(과최적화 위험, DTW 템플릿 실패 때와 같은 패턴) — 그래서
+    검증된 조합 하나만 강신호(40점)로 쓰고, 나머지는 기존처럼 증폭하지 말고
+    원점수를 10점 상한으로 눌러서 "확인 안 되면 약하게만 반영"하는 보수적 설계로 함.
+    """
+    try:
+        raw_pp = score_price_position_short(rsi, bb_percent, rsi_delta)
+        if raw_pp >= 20 and recent_pct is not None and recent_pct >= 15:
+            return 40
+        return min(raw_pp, 10)
+    except Exception:
+        return 0
+
 def cvd_direction(cvd_diff, vol_window_sum):
     """CVD 추세 방향 판정. 최근 거래량 대비 2%를 기준선(eps)으로 +1/0/-1 반환."""
     eps = 0.02 * vol_window_sum if vol_window_sum > 0 else 0.0
@@ -1369,12 +1395,110 @@ def score_overextension_penalty_cap(final_score, ema_pts, pp_pts, cvd_pts, oi_pt
         return min(final_score, 45)
     return final_score
 
+def score_recent_reversal_bonus(recent_pct_3d):
+    """[2026-10-02 신설, 같은날 배점 축소] PDF 분석(trading_score_system_analysis)이 제안한
+    V9 구조 중 '최근 누적 변화' 슬롯을 검증한 결과: 처음엔 모멘텀추종(많이 올랐으면 가산)으로
+    설계했더니 24h corr -0.075로 역신호였음. 반전(평균회귀, 많이 떨어졌으면 가산)으로
+    재설계하니 9/19~10/2 워크포워드 3개 폴드(시간순 분리)에서 fold2/3는 개선(24h 0.093→0.112,
+    0.086→0.234 등)했지만 fold1(초기 구간)은 원배점(15/10/6/3)에서 소폭 하락(0.127→0.122).
+    배점을 절반(8/5/3/2)로 낮추니 fold1이 거의 원점수 수준으로 회복(0.126)되면서 fold2/3
+    개선분은 대부분 유지됨(0.163~0.200대) — 그래서 절반 배점으로 확정.
+    학습가중치/로지스틱모델/등위보정 체계를 안 건드리려고 기존 raw 가산식 안에 넣지 않고
+    최종점수에 보너스로만 얹는다(그래서 calibration/logistic 재학습 없이도 안전)."""
+    try:
+        rp = recent_pct_3d
+        if rp <= -10: return 8
+        elif rp <= -5: return 5
+        elif rp <= -2: return 3
+        elif rp <= 0: return 2
+        return 0
+    except Exception:
+        return 0
+
+def score_cv_long_bonus(price_cv_24h):
+    """[2026-10-02 신설] 매집/분산(price_cv_24h)에 쓰던 궤적지표를 롱/숏 점수에도 적용.
+    9/19~10/2 데이터로 10분위 분석한 결과 fwd_24h/48h가 비단조(역U자) 관계 — 너무 조용하거나
+    (죽은 코인) 너무 날뛴(이미 과열) 구간은 나쁘고 중간상단(0.0152~0.025)이 최적(fwd_24h
+    +1.5%, fwd_48h +2.0~2.5%, 전체평균 대비 2~3배). prepump의 score_price_cv와 버킷경계가
+    거의 동일(같은 지표라 당연) — 다만 여긴 보조 보너스라 배점은 축소."""
+    try:
+        cv = price_cv_24h
+        if cv < 0.00723: return 0
+        elif cv < 0.00857: return 3
+        elif cv < 0.0113: return 4
+        elif cv < 0.0152: return 5
+        elif cv < 0.0188: return 10
+        elif cv < 0.025: return 8
+        return 0
+    except Exception:
+        return 0
+
+def score_cv_short_bonus(price_cv_24h):
+    """[2026-10-02 신설] 같은 지표를 숏 방향으로 — 10분위 분석에서 fwd가 일관되게 음수로
+    나온 구간은 '이미 과열된 최상단'(cv>=0.025, fwd_24h -0.79%/fwd_48h -0.41%) 하나뿐이라
+    그 구간만 보너스. 나머지 구간은 숏에 유리하다는 근거가 약해 0점."""
+    try:
+        if price_cv_24h >= 0.025: return 8
+        return 0
+    except Exception:
+        return 0
+
+CANDLE_HOURS = {"1h": 1, "2h": 2, "6h": 6, "12h": 12}
+
+def _dwell_hours(bool_series):
+    """[2026-10-02 신설] PP(RSI/BB)도 결국 스냅샷 하나라는 지적 반영 — 캔들 시리즈 끝에서부터
+    조건이 연속으로 유지된 캔들 개수를 세고 CANDLE_INTERVAL로 환산해 '체류시간(시간)'을 구한다.
+    추가 API호출 없이 이미 fetch된 df['RSI']/BB 시리즈만 사용."""
+    try:
+        count = 0
+        for v in reversed(list(bool_series)):
+            if v:
+                count += 1
+            else:
+                break
+        return count * CANDLE_HOURS.get(CANDLE_INTERVAL, 1)
+    except Exception:
+        return 0.0
+
+def score_dwell_long_bonus(rsi_dwell_os_h, bb_dwell_low_h):
+    """[2026-10-02 신설] RSI 과매도(<40)/BB하단(<30) 체류시간 — 9/19~10/2 데이터 8분위 분석
+    결과 RSI과매도는 체류시간 늘어날수록 fwd_24h가 대체로 우상향(1.09%→1.52%), BB하단은
+    평소엔 평평하다가 최상위 구간(7h+)에서만 급등(1.99%) — 그래서 RSI는 완만한 계단식,
+    BB는 극단구간 한정 보너스로 설계."""
+    try:
+        s = 0
+        if rsi_dwell_os_h >= 6.9: s += 6
+        elif rsi_dwell_os_h >= 4.6: s += 4
+        elif rsi_dwell_os_h >= 3.0: s += 3
+        elif rsi_dwell_os_h >= 1.0: s += 2
+        if bb_dwell_low_h >= 7.3: s += 4
+        return s
+    except Exception:
+        return 0
+
+def score_dwell_short_bonus(rsi_dwell_ob_h, bb_dwell_high_h):
+    """[2026-10-02 신설] RSI 과매수(>60)/BB상단(>70) 체류시간 — 같은 분석에서 RSI과매수는
+    체류시간 2.5~7.6h 구간에서 fwd_24h가 가장 깊게(-1.3%대) 음전, 그 이상(7.6h+)은 살짝
+    되돌아와서(-0.41%) 종모양 상단 제한을 둠. BB상단은 2.5h부터 꾸준히 음전(-0.43~-0.49%)
+    이라 단순 계단식."""
+    try:
+        s = 0
+        if 2.5 <= rsi_dwell_ob_h < 7.6: s += 6
+        elif 4.2 <= rsi_dwell_ob_h: s += 2  # 위 분기와 안 겹치는 7.6h+ 꼬리만 적용
+        elif 1.5 <= rsi_dwell_ob_h < 2.5: s += 3
+        elif 0.86 <= rsi_dwell_ob_h < 1.5: s += 1
+        if bb_dwell_high_h >= 2.5: s += 4
+        return s
+    except Exception:
+        return 0
+
 def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, chg_30m,
                           price_chg, extension_pct, vol_z=0.0, rsi_delta=0.0,
                           atr_pct=0.0, ema20=None, ema60=None, oi_notional_usd=None,
                           funding_rate=0.0, trade_value_usd=None,
                           price=None, ema120=None, vol_24h_m=0, regime='normal', exchange='bithumb',
-                          ema20_slope_pct=0.0):
+                          ema20_slope_pct=0.0, recent_pct_3d=0.0, price_cv_24h=0.0,
+                          rsi_dwell_os_h=0.0, bb_dwell_low_h=0.0):
     """
     [2026-07-19 전면재조정] 실질 최대 79점(89점 만점 배점 중 EMA10+가격위치(RSI중심)40+
     CVD8+VolZ8+모멘텀8+유동성5) 롱 점수. OI(oi_sc)는 일부러 뺐다 — 59시간 실측으로 OI
@@ -1462,6 +1586,13 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
             final = int(round(calib_table[final]))
         except Exception:
             pass
+    # [2026-10-02 추가] 반전형 '최근 누적 변화' + price_cv 궤적보너스 — 각 함수 주석 참고.
+    # 학습가중치/로지스틱/등위보정 파이프라인 전부 거친 뒤 마지막에 얹어서 기존 체계는 안 건드림.
+    try:
+        final = (final + score_recent_reversal_bonus(recent_pct_3d) + score_cv_long_bonus(price_cv_24h)
+                 + score_dwell_long_bonus(rsi_dwell_os_h, bb_dwell_low_h))
+    except Exception:
+        pass
     return max(0, min(final, 100))
 
 def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, chg_30m,
@@ -1469,7 +1600,8 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
                            atr_pct=0.0, ema20=None, ema60=None, oi_notional_usd=None,
                            funding_rate=0.0, trade_value_usd=None,
                            price=None, ema120=None, vol_24h_m=0, regime='normal', exchange='bithumb',
-                           ema20_slope_pct=0.0):
+                           ema20_slope_pct=0.0, price_cv_24h=0.0,
+                           rsi_dwell_ob_h=0.0, bb_dwell_high_h=0.0, recent_pct=0.0):
     """69점 만점 숏 점수([2026-07-21 재조정] — 89점 만점이던 걸 가격위치 위주로 재구성).
     최종 /89×100 환산(롱과 분모 통일 유지, 실질 상한은 69/89≈77.5%).
 
@@ -1487,7 +1619,12 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
     mult = REGIME_WEIGHT_MULTIPLIERS.get(regime, REGIME_WEIGHT_MULTIPLIERS['normal'])
     lw = learned_component_weights.get(exchange, learned_component_weights['bithumb'])['short']
     try:
-        raw_pp = score_price_position_short(rsi, bb_percent, rsi_delta)  # 조합보정 임계값은 이 원점수 기준
+        # [2026-10-04 추가] 횡보장에서는 score_price_position_short_range_bear와 같은 이유로
+        # 전용 대체함수 사용(주석 참고 — 기존 로직이 횡보장에서 부호 반전됨을 확인).
+        if regime == '횡보장':
+            raw_pp = score_price_position_short_range(rsi, bb_percent, rsi_delta, recent_pct)
+        else:
+            raw_pp = score_price_position_short(rsi, bb_percent, rsi_delta)  # 조합보정 임계값은 이 원점수 기준
         raw_cvd = score_cvd_trend(cvd_diff, vol_window_sum, 'short')
         raw_ema_l = score_ema_trend(price, ema20, ema60, ema120, 'long', ema20_slope_pct)  # 콤보(현재 비활성) 참고용
         p_ema = score_ema_trend(price, ema20, ema60, ema120, 'short', ema20_slope_pct)
@@ -1543,6 +1680,11 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
             final = int(round(calib_table[final]))
         except Exception:
             pass
+    # [2026-10-02 추가] price_cv 궤적보너스 — score_cv_short_bonus 주석 참고.
+    try:
+        final = final + score_cv_short_bonus(price_cv_24h) + score_dwell_short_bonus(rsi_dwell_ob_h, bb_dwell_high_h)
+    except Exception:
+        pass
     return max(0, min(final, 100))
 
 
@@ -1878,6 +2020,33 @@ REGIME_WEIGHT_MULTIPLIERS = {
 }
 current_market_regime = 'normal'  # score_updater가 매 사이클 끝에 갱신, 다음 사이클 점수계산에 반영(1사이클 지연)
 current_market_regime_upbit = 'normal'  # 업비트 전용
+
+# [2026-10-02 추가] 레짐 디바운스 — SCORE_INTERVAL(10초)마다 그 순간 스냅샷(전종목 평균
+# ATR%/EMA배열비율)만으로 바로바로 레짐이 바뀌던 걸 완화. trading_client.py의 "연결끊김"
+# 깜빡임을 _stale_strike로 잡았던 것과 같은 패턴 — 후보 레짐이 REGIME_CONFIRM_CYCLES번
+# 연속으로 나와야 실제 전환 확정, 아니면 직전 확정 레짐 유지.
+REGIME_CONFIRM_CYCLES = 18  # 10초×18 ≈ 3분 연속 동일 판정일 때만 전환
+_regime_streak = {'bithumb': {'candidate': None, 'count': 0}, 'upbit': {'candidate': None, 'count': 0}}
+
+def _debounce_regime(exchange, candidate):
+    """candidate가 REGIME_CONFIRM_CYCLES번 연속 나와야 확정 레짐을 바꾼다. 그 전엔 직전
+    확정값을 그대로 반환(1틱짜리 노이즈로 레짐이 튀는 걸 방지)."""
+    confirmed = current_market_regime if exchange == 'bithumb' else current_market_regime_upbit
+    state = _regime_streak[exchange]
+    if candidate == confirmed:
+        state['candidate'] = None
+        state['count'] = 0
+        return confirmed
+    if candidate == state['candidate']:
+        state['count'] += 1
+    else:
+        state['candidate'] = candidate
+        state['count'] = 1
+    if state['count'] >= REGIME_CONFIRM_CYCLES:
+        state['candidate'] = None
+        state['count'] = 0
+        return candidate
+    return confirmed
 
 def detect_market_regime(results):
     """
@@ -2854,18 +3023,6 @@ def process_ticker(ticker):
         except Exception:
             trade_value_usd = None
 
-        long_score = calculate_long_score(
-            rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, momentum_blend,
-            price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
-            funding_rate, trade_value_usd, current_price, ema120, vol_million, current_market_regime,
-            exchange='bithumb', ema20_slope_pct=ema20_slope_pct
-        )
-        short_score = calculate_short_score(
-            rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, momentum_blend,
-            price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
-            funding_rate, trade_value_usd, current_price, ema120, vol_million, current_market_regime,
-            exchange='bithumb', ema20_slope_pct=ema20_slope_pct
-        )
         # Pre-Pump/Pre-Short (매집/분산 v3 — 장기 매집 사이클 탐지). cvd_1h는 별도 API가
         # 없어 위에서 이미 구한 cvd_diff(최근 CVD_WINDOW_CANDLES 캔들 변화량)를 근사치로
         # 재사용한다.
@@ -2899,6 +3056,33 @@ def process_ticker(ticker):
             hl_flag = _zigzag_hl_flag(df['close'].values)
         except Exception:
             hl_flag = 0
+        try:
+            # [2026-10-02 추가] RSI/BB 체류시간(시간 단위) — score_dwell_long/short_bonus 주석 참고.
+            # 이미 fetch된 df['RSI']/BB_UPPER/BB_LOWER 시리즈만 쓰고 추가 API호출 없음.
+            bb_pct_series = (df['close'] - df['BB_LOWER']) / (df['BB_UPPER'] - df['BB_LOWER']) * 100
+            rsi_dwell_os_h = _dwell_hours(df['RSI'] < 40)
+            rsi_dwell_ob_h = _dwell_hours(df['RSI'] > 60)
+            bb_dwell_low_h = _dwell_hours(bb_pct_series < 30)
+            bb_dwell_high_h = _dwell_hours(bb_pct_series > 70)
+        except Exception:
+            rsi_dwell_os_h = rsi_dwell_ob_h = bb_dwell_low_h = bb_dwell_high_h = 0.0
+        # [2026-10-02 수정] long_score/short_score 계산을 여기(recent_pct/price_cv_24h 확정 이후)로
+        # 이동 — 원래 위치(이 블록 앞)에선 이번 틱의 recent_pct/price_cv_24h가 아직 안 만들어진
+        # 상태라 직전 티커의 값을 그대로 참조하는 버그가 있었음(보너스 2개 추가하면서 발견).
+        long_score = calculate_long_score(
+            rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, momentum_blend,
+            price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
+            funding_rate, trade_value_usd, current_price, ema120, vol_million, current_market_regime,
+            exchange='bithumb', ema20_slope_pct=ema20_slope_pct, recent_pct_3d=recent_pct,
+            price_cv_24h=price_cv_24h, rsi_dwell_os_h=rsi_dwell_os_h, bb_dwell_low_h=bb_dwell_low_h
+        )
+        short_score = calculate_short_score(
+            rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, momentum_blend,
+            price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
+            funding_rate, trade_value_usd, current_price, ema120, vol_million, current_market_regime,
+            exchange='bithumb', ema20_slope_pct=ema20_slope_pct, price_cv_24h=price_cv_24h,
+            rsi_dwell_ob_h=rsi_dwell_ob_h, bb_dwell_high_h=bb_dwell_high_h, recent_pct=recent_pct
+        )
         prepump_score = calculate_prepump_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
                                                  atr_pct, vz, current_price, box_high, box_low,
                                                  rsi_val, recent_pct, chg_30m, regime=current_market_regime,
@@ -3046,18 +3230,6 @@ def process_ticker_upbit(ticker):
         except Exception:
             trade_value_usd = None
 
-        long_score = calculate_long_score(
-            rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, momentum_blend,
-            price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
-            funding_rate, trade_value_usd, current_price, ema120, vol_million, current_market_regime_upbit,
-            exchange='upbit', ema20_slope_pct=ema20_slope_pct
-        )
-        short_score = calculate_short_score(
-            rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, momentum_blend,
-            price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
-            funding_rate, trade_value_usd, current_price, ema120, vol_million, current_market_regime_upbit,
-            exchange='upbit', ema20_slope_pct=ema20_slope_pct
-        )
         try:
             box_lookback = df.iloc[-20:] if len(df) >= 20 else df
             box_high = float(box_lookback['high'].max())
@@ -3081,6 +3253,30 @@ def process_ticker_upbit(ticker):
             hl_flag = _zigzag_hl_flag(df['close'].values)
         except Exception:
             hl_flag = 0
+        try:
+            bb_pct_series = (df['close'] - df['BB_LOWER']) / (df['BB_UPPER'] - df['BB_LOWER']) * 100
+            rsi_dwell_os_h = _dwell_hours(df['RSI'] < 40)
+            rsi_dwell_ob_h = _dwell_hours(df['RSI'] > 60)
+            bb_dwell_low_h = _dwell_hours(bb_pct_series < 30)
+            bb_dwell_high_h = _dwell_hours(bb_pct_series > 70)
+        except Exception:
+            rsi_dwell_os_h = rsi_dwell_ob_h = bb_dwell_low_h = bb_dwell_high_h = 0.0
+        # [2026-10-02 수정] long_score/short_score 계산을 recent_pct/price_cv_24h 확정 이후로 이동
+        # (bithumb 블록과 동일한 이유 — 주석 참고)
+        long_score = calculate_long_score(
+            rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, momentum_blend,
+            price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
+            funding_rate, trade_value_usd, current_price, ema120, vol_million, current_market_regime_upbit,
+            exchange='upbit', ema20_slope_pct=ema20_slope_pct, recent_pct_3d=recent_pct,
+            price_cv_24h=price_cv_24h, rsi_dwell_os_h=rsi_dwell_os_h, bb_dwell_low_h=bb_dwell_low_h
+        )
+        short_score = calculate_short_score(
+            rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, momentum_blend,
+            price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
+            funding_rate, trade_value_usd, current_price, ema120, vol_million, current_market_regime_upbit,
+            exchange='upbit', ema20_slope_pct=ema20_slope_pct, price_cv_24h=price_cv_24h,
+            rsi_dwell_ob_h=rsi_dwell_ob_h, bb_dwell_high_h=bb_dwell_high_h, recent_pct=recent_pct
+        )
         # 매집/분산(prepump/preshort)은 거래소 학습가중치가 없는 정적 배점이라 그대로 재사용
         prepump_score = calculate_prepump_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
                                                  atr_pct, vz, current_price, box_high, box_low,
@@ -3246,7 +3442,7 @@ def score_updater(tickers_ref, exchange='bithumb'):
             if exchange == 'bithumb':
                 global current_min_score, current_market_regime
                 current_min_score = compute_dynamic_min_score(results)
-                current_market_regime = detect_market_regime(results)
+                current_market_regime = _debounce_regime('bithumb', detect_market_regime(results))
                 with score_lock:
                     score_cache.clear()
                     for r in results:
@@ -3259,7 +3455,7 @@ def score_updater(tickers_ref, exchange='bithumb'):
             else:
                 global current_min_score_upbit, current_market_regime_upbit
                 current_min_score_upbit = compute_dynamic_min_score(results)
-                current_market_regime_upbit = detect_market_regime(results)
+                current_market_regime_upbit = _debounce_regime('upbit', detect_market_regime(results))
                 with score_lock:
                     score_cache_upbit.clear()
                     for r in results:
