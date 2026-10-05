@@ -668,6 +668,7 @@ class TradingClient:
         self._card_drag_state = {"y": 0, "view_top": 0.0, "dragged": False}
         self.card_canvas.bind("<MouseWheel>", lambda e: self.card_canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"), add="+")
         self.card_widgets = {}
+        self._latest_rows = {}  # [2026-10-05 추가] 정보 모달용 — 티커별 최신 row dict 캐시
         self._last_table_order = []
         self._last_reorder_time = 0.0
         self._reorder_interval = 3.0  # 순서 재배치는 3초마다만 (매 폴링마다 하면 깜빡임 심함)
@@ -1463,6 +1464,7 @@ class TradingClient:
                 ticker = row['ticker']
                 seen.add(ticker)
                 new_order.append(ticker)
+                self._latest_rows[ticker] = row  # [2026-10-05 추가] 정보 모달에서 재사용
                 price = row['price']
                 price_usd = row.get('price_usd')
 
@@ -1535,25 +1537,38 @@ class TradingClient:
                 is_new = card is None
                 if is_new:
                     card = tk.Frame(self.card_inner, bd=1, relief="solid")
-                    lbl1 = tk.Label(card, font=("Arial", self.ui_font_base, "bold"), anchor="w",
+                    # [2026-10-05 추가] 카드 측면 "정보" 버튼 — 누르면 차트+코인정보 모달.
+                    # 드래그/탭(핀고정) 바인딩은 text_frame 쪽에만 걸고 버튼은 별도로 둬서
+                    # 버튼 클릭이 카드 탭(티커입력)이나 더블탭(핀고정)으로 새지 않게 한다.
+                    info_btn = tk.Label(card, text="정보", font=("Arial", max(self.ui_font_base - 1, 8), "bold"),
+                                         bg="#2b2f36", fg="white", cursor="hand2", relief="raised", bd=1,
+                                         padx=6, width=3)
+                    info_btn.pack(side="right", fill="y", padx=(2, 4), pady=2)
+                    info_btn.bind("<ButtonRelease-1>", lambda e, t=ticker: self.show_chart_popup(t))
+                    text_frame = tk.Frame(card)
+                    text_frame.pack(side="left", fill="both", expand=True)
+                    lbl1 = tk.Label(text_frame, font=("Arial", self.ui_font_base, "bold"), anchor="w",
                                     justify="left", wraplength=self.card_wraplength)
-                    lbl2 = tk.Label(card, font=("Arial", max(round((self.ui_font_base - 1) * 1.5), 4)), anchor="w",
+                    lbl2 = tk.Label(text_frame, font=("Arial", max(round((self.ui_font_base - 1) * 1.5), 4)), anchor="w",
                                     justify="left", fg="#444444", wraplength=self.card_wraplength)
                     # [2026-10-05 추가] 조건식↔점수 충돌 뱃지용 3번째 줄. 평소엔 숨김(pack 안 함).
-                    lbl3 = tk.Label(card, font=("Arial", self.ui_font_base, "bold"), anchor="w",
+                    lbl3 = tk.Label(text_frame, font=("Arial", self.ui_font_base, "bold"), anchor="w",
                                      justify="left", fg="#b35c00", wraplength=self.card_wraplength)
                     lbl1.pack(fill="x", padx=4, pady=(2, 0))
                     lbl2.pack(fill="x", padx=4, pady=(0, 2))
+                    card._text_frame = text_frame
+                    card._info_btn = info_btn
                     card._lbl1 = lbl1
                     card._lbl2 = lbl2
                     card._lbl3 = lbl3
-                    for wd in (card, lbl1, lbl2, lbl3):
+                    for wd in (card, text_frame, lbl1, lbl2, lbl3):
                         wd.bind("<ButtonPress-1>", lambda e, t=ticker: self._card_press(e, t), add="+")
                         wd.bind("<B1-Motion>", self._card_motion, add="+")
                         wd.bind("<ButtonRelease-1>", lambda e, t=ticker: self._card_release(e, t), add="+")
                     self.card_widgets[ticker] = card
                 self._cfg(card._lbl1, text=line1, bg=bg)
                 self._cfg(card._lbl2, text=line2, bg=bg)
+                self._cfg(card._text_frame, bg=bg)
                 if conflict_badge:
                     self._cfg(card._lbl3, text=conflict_badge, bg=bg)
                     if not card._lbl3.winfo_ismapped():
@@ -1705,6 +1720,33 @@ class TradingClient:
             return
         self.root.after(500, lambda: self._wait_result_callback(cmd_id, label, tries - 1, on_success))
 
+    def _build_info_text(self, ticker):
+        """[2026-10-05 추가] 코인정보 카드의 "정보" 버튼 → 차트 모달 하단에 들어가는
+        텍스트 패널. 메인 카드 렌더링 때 캐싱해둔 _latest_rows[ticker]를 섹션별로
+        정리해서 보여준다(모달이 뜰 때 서버에 새로 요청하지 않고 마지막 스냅샷 재사용)."""
+        row = self._latest_rows.get(ticker)
+        if not row:
+            return "(최신 데이터 없음 — 코인 목록이 갱신된 후 다시 열어보세요)"
+        ls, ss = row.get('long_score', 0), row.get('short_score', 0)
+        pp, ps = row.get('prepump_score', 0), row.get('preshort_score', 0)
+        price = row.get('price', 0)
+        price_usd = row.get('price_usd')
+        krw_str = format_price_adaptive(price, "원")
+        usd_str = (f"USD {price_usd:,.4f}" if price_usd < 1 else f"USD {price_usd:,.2f}") if price_usd else "N/A"
+        cvd_val = row.get('cvd', 0)
+        cvd_str = f"{cvd_val:+,.0f}" if abs(cvd_val) >= 100 else f"{cvd_val:+.2f}"
+        lsr = row.get('ls_ratio')
+        ls_str = f"{lsr:.2f}" if lsr is not None else "N/A"
+        lines = [
+            f"[가격]  {krw_str}  ({usd_str})   24h {row.get('chg_24h', 0):+.2f}%   30m {row.get('chg_30m', 0):+.2f}%",
+            f"[점수]  롱 {ls}   숏 {ss}   매집 {pp}   분산 {ps}",
+            f"[가격위치] RSI {row.get('rsi')}({row.get('rsi_delta', 0):+})   BB% {row.get('bb_percent', 0):.0f}%",
+            f"[수급]  VolZ {row.get('vol_z', 0):+.1f}   CVD {cvd_str}   OI {row.get('oi_change_pct', 0):+.2f}%   "
+            f"L/S {ls_str}   Fund {row.get('funding', 0):+.3f}%",
+            f"[변동성] ATR {row.get('atr_pct', 0):.2f}%   거래량 {row.get('vol_24h_m', 0):,}M",
+        ]
+        return "\n".join(lines)
+
     def show_chart_popup(self, ticker, interval="1h"):
         """포지션 카드의 티커 이름을 클릭하면 캔들차트 팝업을 띄운다."""
         def on_success(msg):
@@ -1782,8 +1824,15 @@ class TradingClient:
             rsi_canvas = tk.Canvas(win, bg="#111111", highlightthickness=0, height=110)
             rsi_canvas.pack(fill="x", padx=4, pady=(4, 0))
             rd_canvas = tk.Canvas(win, bg="#111111", highlightthickness=0, height=90)
-            rd_canvas.pack(fill="x", padx=4, pady=(4, 8))
+            rd_canvas.pack(fill="x", padx=4, pady=(4, 4))
             win._price_canvas, win._rsi_canvas, win._rd_canvas = price_canvas, rsi_canvas, rd_canvas
+            # [2026-10-05 추가] 차트 아래 코인정보 텍스트 정리 패널(카드 측면 "정보" 버튼으로 진입).
+            info_frame = tk.Frame(win, bg="#1a1d21", bd=1, relief="solid")
+            info_frame.pack(fill="x", padx=4, pady=(0, 8))
+            info_label = tk.Label(info_frame, font=("Consolas", 10), bg="#1a1d21", fg="#e8e8e8",
+                                   justify="left", anchor="w", wraplength=870)
+            info_label.pack(fill="x", padx=8, pady=6)
+            win._info_label = info_label
         else:
             win.lift()
 
@@ -1792,6 +1841,7 @@ class TradingClient:
         for iv, b in win._tf_buttons.items():
             active = (iv == interval)
             b.config(bg="#1a7abf" if active else "#2b2f36", fg="white" if active else "#9aa0a6")
+        win._info_label.config(text=self._build_info_text(ticker))
 
         def draw_price(_event=None):
             canvas = win._price_canvas
