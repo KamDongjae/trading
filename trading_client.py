@@ -1504,6 +1504,24 @@ class TradingClient:
                     if evaluate_condition(cond["expr"], row):
                         bg = cond["color"]
                         break
+                # [2026-10-05 추가] 조건식(배경)과 점수(테두리)가 서로 반대방향을 가리키는
+                # 충돌 뱃지. 실측(325,107행, 연두배경+빨간테두리 n=168) 결과: 4~12h엔
+                # 조건식(단기 모멘텀)쪽이 맞고(승률65~67%), 24h 넘어가면 완전히 꺾여서
+                # 점수(장기 평균회귀)쪽이 맞음(승률상승 20.8%/17.9% — 즉 숏이 맞음).
+                # 반대조합(빨강배경+초록테두리)은 실측 표본이 0건이라 대칭 가정으로만 적용.
+                # bg 색상이 커스텀 조건식 내보내기 관례(장:#2eaa4a계열 초록, 숏:#d13a3a계열
+                # 빨강)를 따른다는 전제로 RGB 우세채널만 보고 롱/숏 조건식 매칭을 판별한다.
+                conflict_badge = None
+                if bg != "white":
+                    try:
+                        r = int(bg[1:3], 16); g = int(bg[3:5], 16); b = int(bg[5:7], 16)
+                        cond_dir = 'long' if (g > r and g > b) else ('short' if (r > g and r > b) else None)
+                    except Exception:
+                        cond_dir = None
+                    if cond_dir == 'long' and border_color == "#e04040":
+                        conflict_badge = "⚠충돌: 단기(4~12h) 롱 / 24h+ 숏전환 권장"
+                    elif cond_dir == 'short' and border_color == "#2fa84f":
+                        conflict_badge = "⚠충돌: 단기(4~12h) 숏 / 24h+ 롱전환 권장(미검증·대칭추정)"
                 display_ticker = f"[{ticker}]" if ticker in self.pinned_tickers else ticker
                 line1 = f"{display_ticker}  {chg24h_str} ({krw_str})  {usd_str}  롱{ls} 숏{ss}  매집{pp} 분산{ps}"
                 lsr = row.get('ls_ratio')
@@ -1521,17 +1539,28 @@ class TradingClient:
                                     justify="left", wraplength=self.card_wraplength)
                     lbl2 = tk.Label(card, font=("Arial", max(round((self.ui_font_base - 1) * 1.5), 4)), anchor="w",
                                     justify="left", fg="#444444", wraplength=self.card_wraplength)
+                    # [2026-10-05 추가] 조건식↔점수 충돌 뱃지용 3번째 줄. 평소엔 숨김(pack 안 함).
+                    lbl3 = tk.Label(card, font=("Arial", self.ui_font_base, "bold"), anchor="w",
+                                     justify="left", fg="#b35c00", wraplength=self.card_wraplength)
                     lbl1.pack(fill="x", padx=4, pady=(2, 0))
                     lbl2.pack(fill="x", padx=4, pady=(0, 2))
                     card._lbl1 = lbl1
                     card._lbl2 = lbl2
-                    for wd in (card, lbl1, lbl2):
+                    card._lbl3 = lbl3
+                    for wd in (card, lbl1, lbl2, lbl3):
                         wd.bind("<ButtonPress-1>", lambda e, t=ticker: self._card_press(e, t), add="+")
                         wd.bind("<B1-Motion>", self._card_motion, add="+")
                         wd.bind("<ButtonRelease-1>", lambda e, t=ticker: self._card_release(e, t), add="+")
                     self.card_widgets[ticker] = card
                 self._cfg(card._lbl1, text=line1, bg=bg)
                 self._cfg(card._lbl2, text=line2, bg=bg)
+                if conflict_badge:
+                    self._cfg(card._lbl3, text=conflict_badge, bg=bg)
+                    if not card._lbl3.winfo_ismapped():
+                        card._lbl3.pack(fill="x", padx=4, pady=(0, 2), after=card._lbl2)
+                else:
+                    if card._lbl3.winfo_ismapped():
+                        card._lbl3.pack_forget()
                 self._cfg(card, bg=bg)
                 if border_color:
                     self._cfg(card, highlightbackground=border_color, highlightcolor=border_color,
