@@ -91,6 +91,11 @@ def get_usd_krw_rate():
 # 뜨는 값)와 체감 청산거리가 크게 벌어지는 문제가 있었다(실측 비교: 20배 기준 실제 바이낸스
 # 갭 5.12%인데 크로스모드 시뮬레이션은 여유잔고 때문에 훨씬 넓게 나옴). 포지션별로 바이낸스
 # 화면 속 Liq. Price와 비슷한 거리에서 청산되게 격리마진으로 전환.
+# [2026-10-08] 신호 품질 필터(12h 내내 수익권 미도달 케이스 분석 기반)
+LONG_LOW_ATR_THRESHOLD = 0.9   # 이 ATR% 미만 코인의 롱 점수는 감산
+LONG_LOW_ATR_FACTOR = 0.7
+PREPUMP_BB_MAX = 40            # BB% 가 이 값 초과면 매집 점수 감산
+PREPUMP_BB_FACTOR = 0.85
 CROSS_MARGIN_MODE = False
 CROSS_MARGIN_MAINTENANCE_RATIO = 0.005  # 유지증거금 비율(0.5%). 열려있는 모든 포지션 명목가치(증거금×레버리지) 합의
                                           # 이 비율만큼을 총자산이 못 채우면 청산 시작. 실거래소 유지증거금율(대략 0.4~1%)을 참고한 값.
@@ -3120,6 +3125,14 @@ def process_ticker(ticker):
                                                    atr_pct, vz, current_price, box_high, box_low,
                                                    rsi_val, recent_pct, chg_30m, regime=current_market_regime,
                                                    price_cv_24h=price_cv_24h)
+        # [2026-10-08] 신호 후 12h 내내 수익권에 못 가는 케이스 분석 결과 반영(전/후반 모두 재현):
+        #  - 롱 점수: ATR<0.9% 저변동 코인은 12h 내 수익권 미도달 17% (ATR>=0.9는 3%), 12h 평균 +0.14% vs +1.01%
+        #  - 매집: BB%>40(이미 밴드 중상단)에서 뜬 신호는 12h 종료 손실 53% (BB<=40은 38%)
+        #  숏 점수/숏 조건식은 뚜렷한 분리 변수가 없어 건드리지 않음(AUC≈0.5).
+        if atr_pct < LONG_LOW_ATR_THRESHOLD:
+            long_score = int(long_score * LONG_LOW_ATR_FACTOR)
+        if bb_percent > PREPUMP_BB_MAX:
+            prepump_score = int(prepump_score * PREPUMP_BB_FACTOR)
         # 항목별 세부점수 (로그 분석/배점 튜닝용 — 총점과 동일한 함수로 계산, 105점 원점수 기준)
         components = {
             "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long', ema20_slope_pct),
@@ -3315,6 +3328,14 @@ def process_ticker_upbit(ticker):
                                                    atr_pct, vz, current_price, box_high, box_low,
                                                    rsi_val, recent_pct, chg_30m, regime=current_market_regime_upbit,
                                                    price_cv_24h=price_cv_24h)
+        # [2026-10-08] 신호 후 12h 내내 수익권에 못 가는 케이스 분석 결과 반영(전/후반 모두 재현):
+        #  - 롱 점수: ATR<0.9% 저변동 코인은 12h 내 수익권 미도달 17% (ATR>=0.9는 3%), 12h 평균 +0.14% vs +1.01%
+        #  - 매집: BB%>40(이미 밴드 중상단)에서 뜬 신호는 12h 종료 손실 53% (BB<=40은 38%)
+        #  숏 점수/숏 조건식은 뚜렷한 분리 변수가 없어 건드리지 않음(AUC≈0.5).
+        if atr_pct < LONG_LOW_ATR_THRESHOLD:
+            long_score = int(long_score * LONG_LOW_ATR_FACTOR)
+        if bb_percent > PREPUMP_BB_MAX:
+            prepump_score = int(prepump_score * PREPUMP_BB_FACTOR)
         components = {
             "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long', ema20_slope_pct),
             "ema_s": score_ema_trend(current_price, ema20, ema60, ema120, 'short', ema20_slope_pct),
@@ -4503,7 +4524,7 @@ def _pos_current_price_with_fallback(t, pos):
         return fallback, True
     return 0, False
 
-def _liquidate_position(t, pos, cur_price, tag="강제청산"):
+def _liquidate_position(t, pos, cur_price, tag="강제청산", cap_loss_at_margin=False):
     """포지션 하나를 강제청산 처리하고 거래 기록에 남긴다. balance는 호출부에서 반영."""
     ptype = pos.get('position_type')
     amt = pos.get('amount', 0)
@@ -4512,6 +4533,11 @@ def _liquidate_position(t, pos, cur_price, tag="강제청산"):
     pnl = _pos_pnl(pos, cur_price)
     exit_fee = amt * lev * FEE_RATE
     pnl_after_fee = pnl - exit_fee
+    if cap_loss_at_margin:
+        # [2026-10-08] 격리마진은 손실이 배정 증거금(amt)을 넘을 수 없다. 서버 재시작/시세 공백으로
+        # 감시가 늦어 가격이 청산선(-90%)을 훌쩍 넘어간 뒤 처리되면 기록상 -425% 같은 값이 남았다
+        # (잔고는 아래 max(0, ...)로 이미 보호되고 있었고 거래기록 표시만 왜곡). 기록도 -amt로 제한.
+        pnl_after_fee = max(pnl_after_fee, -amt)
     direction = "롱" if ptype == "long" else "숏"
     et = pos.get('entry_time', datetime.now())
     record = {'type': tag, 'ticker': t, 'direction': direction,
@@ -4601,7 +4627,17 @@ def _check_isolated_liquidation():
         amt = pos.get('amount', 0)
         pnl = _pos_pnl(pos, cur)
         if pnl <= -amt * LIQ_RATIO and t in positions:
-            pnl_after_fee = _liquidate_position(t, pos, cur, tag="강제청산")
+            # [2026-10-08] 서버를 껐다 켜거나 시세가 끊겼다 복구되면 첫 감시 때 가격이 이미 청산선을
+            # 훌쩍 넘어가 있다(-425% 사례). 실제 거래소는 공백 동안에도 청산선에서 청산하므로,
+            # 정산가를 현재가가 아니라 청산가(진입가 ∓ 90%/레버리지)로 고정한다.
+            entry = pos.get('entry_price', 0)
+            lev = max(pos.get('leverage', 1), 1)
+            if entry > 0:
+                liq_move = LIQ_RATIO / lev
+                liq_price = entry * (1 - liq_move) if pos.get('position_type') == 'long' else entry * (1 + liq_move)
+            else:
+                liq_price = cur
+            pnl_after_fee = _liquidate_position(t, pos, liq_price, tag="강제청산", cap_loss_at_margin=True)
             balance += max(0, amt + pnl_after_fee)
             del positions[t]
             save_to_csv()

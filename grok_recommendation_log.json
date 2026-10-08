@@ -98,6 +98,14 @@
     "entry_price": 19510.0,
     "confidence": 0.53,
     "regime": "UPTREND",
-    "status": "pending"
+    "status": "lost",
+    "pnl_by_h": {
+      "6": -0.103,
+      "24": -0.103,
+      "48": -0.103
+    },
+    "exit_price": 19490.0,
+    "pnl_pct": -0.103,
+    "evaluated_at": "2026-10-08T21:12:55.340244"
   }
 ]

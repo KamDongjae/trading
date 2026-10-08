@@ -1506,12 +1506,17 @@ class TradingClient:
                     if evaluate_condition(cond["expr"], row):
                         bg = cond["color"]
                         break
-                # [2026-10-05 추가] 조건식(배경)과 점수(테두리)가 서로 반대방향을 가리키는
-                # 충돌 뱃지. 실측(325,107행, 연두배경+빨간테두리 n=168) 결과: 4~12h엔
-                # 조건식(단기 모멘텀)쪽이 맞고(승률65~67%), 24h 넘어가면 완전히 꺾여서
-                # 점수(장기 평균회귀)쪽이 맞음(승률상승 20.8%/17.9% — 즉 숏이 맞음).
-                # 반대조합(빨강배경+초록테두리)은 실측 표본이 0건이라 대칭 가정으로만 적용.
-                # bg 색상이 커스텀 조건식 내보내기 관례(장:#2eaa4a계열 초록, 숏:#d13a3a계열
+                        # [2026-10-05 추가] 조건식(배경)과 점수/신호(테두리)가 서로 반대방향을 가리키는
+                # 충돌 뱃지. 두 그룹으로 나뉨:
+                #  1) 롱숏 점수 충돌(검증됨, 325,107행 실측 n=168) — 4~12h엔 조건식(단기
+                #     모멘텀)쪽이 맞고(승률65~67%), 24h 넘어가면 점수(장기 평균회귀)쪽이
+                #     맞음(승률상승 20.8%/17.9%). 반대조합(빨강배경+초록테두리)은 실측
+                #     표본 0건이라 대칭 가정.
+                #  2) 매집/분산 충돌 — 분산(보라)+롱조건식(초록)은 n=38 실측 결과 12h/24h
+                #     승률(상승) 0.0%로 확정적 반전신호. 반대조합(매집+숏조건식)은 실측
+                #     표본 0건(이 조건식 export본 기준으로는 이 조합 자체가 안 나옴)이라
+                #     대칭 가정으로만 적용 — "미검증" 명시.
+                # bg 색상이 커스텀 조건식 내보내기 관례(롱:#2eaa4a계열 초록, 숏:#d13a3a계열
                 # 빨강)를 따른다는 전제로 RGB 우세채널만 보고 롱/숏 조건식 매칭을 판별한다.
                 conflict_badge = None
                 if bg != "white":
@@ -1524,6 +1529,10 @@ class TradingClient:
                         conflict_badge = "⚠충돌: 단기(4~12h) 롱 / 24h+ 숏전환 권장"
                     elif cond_dir == 'short' and border_color == "#2fa84f":
                         conflict_badge = "⚠충돌: 단기(4~12h) 숏 / 24h+ 롱전환 권장(미검증·대칭추정)"
+                    elif cond_dir == 'long' and border_color == "#9a4fd0":
+                        conflict_badge = "⚠충돌: 분산신호+롱조건식 — 검증됨, 12h/24h 거의 전부 하락(n=38)"
+                    elif cond_dir == 'short' and border_color == "#3a7fd0":
+                        conflict_badge = "⚠충돌: 매집신호+숏조건식(미검증·대칭추정)"
                 display_ticker = f"[{ticker}]" if ticker in self.pinned_tickers else ticker
                 line1 = f"{display_ticker}  {chg24h_str} ({krw_str})  {usd_str}  롱{ls} 숏{ss}  매집{pp} 분산{ps}"
                 lsr = row.get('ls_ratio')
@@ -2548,6 +2557,18 @@ class TradingClient:
         tk.Button(io_row, text="📥 가져오기(txt)", command=import_conditions,
                   font=("Arial", 9), padx=8).pack(side="left")
 
+        def delete_all_conditions():
+            if not self.custom_conditions:
+                return
+            if not messagebox.askyesno("전체 삭제", f"등록된 조건식 {len(self.custom_conditions)}개를 전부 삭제할까요?", parent=win):
+                return
+            self.custom_conditions.clear()
+            save_custom_conditions(self.custom_conditions)
+            refresh_list()
+
+        tk.Button(io_row, text="🗑 전체 삭제", command=delete_all_conditions, fg="white", bg="#cc4444",
+                  font=("Arial", 9), padx=8).pack(side="right")
+
         tk.Label(win, text="등록된 조건식", font=("Arial", 11, "bold")).pack(
             anchor="w", padx=10, pady=(4, 2))
 
@@ -2573,9 +2594,6 @@ class TradingClient:
                 row.pack(fill="x", pady=3, padx=2)
                 swatch = tk.Label(row, text="  ", bg=cond["color"], width=2)
                 swatch.pack(side="left", padx=4, pady=4)
-                tk.Label(row, text=f"#{idx+1} {cond['expr']}", font=("Consolas", 9),
-                         bg="#f7f7f7", anchor="w", wraplength=win_w-160, justify="left").pack(
-                    side="left", fill="x", expand=True, padx=4)
 
                 en_var = tk.BooleanVar(value=cond.get("enabled", True))
                 al_var = tk.BooleanVar(value=cond.get("alert", False))
@@ -2588,20 +2606,29 @@ class TradingClient:
                     c["alert"] = v.get()
                     save_custom_conditions(self.custom_conditions)
 
-                tk.Checkbutton(row, text="사용", variable=en_var, bg="#f7f7f7",
-                               command=on_toggle_enabled, font=("Arial", 9)).pack(side="left")
-                tk.Checkbutton(row, text="알림", variable=al_var, bg="#f7f7f7",
-                               command=on_toggle_alert, font=("Arial", 9)).pack(side="left")
-
                 def on_delete(c=cond):
-                    if not messagebox.askyesno("삭제 확인", f"조건식을 삭제할까요?\n{c['expr']}", parent=win):
+                    # [2026-10-08] 조건식이 수천 자(OR 17개 등)일 때 확인창이 화면 밖으로 커져서 버튼이
+                    # 안 보여 삭제가 안 되던 문제 → 확인창엔 앞부분만 표시. 또 긴 수식 라벨이 옆 버튼을
+                    # 화면 밖으로 밀어내던 문제 → 아래에서 버튼을 먼저 오른쪽에 고정(pack 순서).
+                    short = c['expr'] if len(c['expr']) <= 150 else c['expr'][:150] + f"... (총 {len(c['expr'])}자)"
+                    if not messagebox.askyesno("삭제 확인", f"조건식을 삭제할까요?\n{short}", parent=win):
                         return
-                    self.custom_conditions.remove(c)
+                    if c in self.custom_conditions:
+                        self.custom_conditions.remove(c)
                     save_custom_conditions(self.custom_conditions)
                     refresh_list()
 
+                # 버튼류를 먼저 오른쪽에 고정 → 수식이 아무리 길어도 삭제 버튼이 밀려나지 않는다
                 tk.Button(row, text="삭제", command=on_delete, fg="white", bg="#cc4444",
-                          font=("Arial", 9), padx=6).pack(side="left", padx=4)
+                          font=("Arial", 9), padx=6).pack(side="right", padx=4)
+                tk.Checkbutton(row, text="알림", variable=al_var, bg="#f7f7f7",
+                               command=on_toggle_alert, font=("Arial", 9)).pack(side="right")
+                tk.Checkbutton(row, text="사용", variable=en_var, bg="#f7f7f7",
+                               command=on_toggle_enabled, font=("Arial", 9)).pack(side="right")
+                expr_txt = cond['expr'] if len(cond['expr']) <= 400 else cond['expr'][:400] + f"... (총 {len(cond['expr'])}자)"
+                tk.Label(row, text=f"#{idx+1} {expr_txt}", font=("Consolas", 9),
+                         bg="#f7f7f7", anchor="w", wraplength=max(120, win_w-230), justify="left").pack(
+                    side="left", fill="x", expand=True, padx=4)
 
         refresh_list()
 

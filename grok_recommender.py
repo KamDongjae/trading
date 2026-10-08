@@ -207,7 +207,11 @@ CONFIDENCE_MIN_DEFAULT = 0.45
 #    "우리가 낸 추천이 다 맞았는가"만 볼 수 있고 비교할 음성(negative) 후보군이 없어서
 #    엄밀한 의미로는 계산 불가 — win_rate로 갈음하고 그렇게 로그에 명시한다(정직한 한계).
 RECOMMENDATION_LOG_PATH = os.path.join(SCRIPT_DIR, "grok_recommendation_log.json")
-EVAL_HORIZON_HOURS = 6          # BACKTEST_HOLD_BARS(6시간봉)와 맞춤
+# [2026-10-08 개편] 실측 결과 점수 계열은 24~48h에서 가장 잘 맞고 6h는 노이즈가 커서,
+#    추천마다 6/24/48h 수익률을 전부 기록하고 승/패·히트레이트·confidence_min 재보정은
+#    EVAL_HORIZON_HOURS(=24h, 대표 호라이즌) 기준으로 한다. 6h/48h는 참고용 통계로만 출력.
+EVAL_HORIZONS_HOURS = (6, 24, 48)
+EVAL_HORIZON_HOURS = 24
 HIT_RATE_LOOKBACK = 20          # 최근 몇 건으로 히트레이트/성과지표를 계산할지
 
 # [2차 리뷰 #8] 코인별 데이터 fetch(캔들/HTF/펀딩·OI) 병렬화 — 네트워크 I/O 대기가 대부분
@@ -1215,6 +1219,65 @@ def _low_liquidity_tickers(all_rows, bottom_pct=LIQUIDITY_BOTTOM_PCT):
     return [t for _, t in vols[:cutoff]]
 
 
+# ------------------------------------------------------------
+# [2026-10-08 개편] 서버 점수/레짐 신호 → Grok 스냅샷 (실측 검증된 것만 플래그로)
+#  - 서버 점수(long/short/매집/분산)는 24~48h에서 가장 잘 맞고 1h는 무의미.
+#  - 이 스크립트는 서버를 새로 켠 상태라 점수가 레짐 보정 없이('normal') 계산된다 →
+#    횡보장 검증 규칙은 점수가 아니라 components(pp_l/pp_s 원점수)+recent_pct로 직접 판정.
+#  - 커스텀 조건식은 4~12h 모멘텀용: 24~48h엔 반전. 점수와 충돌하는 조합은 실측 결과를 붙인다.
+# ------------------------------------------------------------
+_LAST_SIGNAL_FLAGS = {}
+
+
+def _cond_direction(colors):
+    """클라이언트와 동일 규약: 초록계열=롱, 빨강계열=숏."""
+    dirs = set()
+    for c in colors or []:
+        try:
+            r, g, b = int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
+        except Exception:
+            continue
+        if g > r and g > b:
+            dirs.add("long")
+        elif r > g and r > b:
+            dirs.add("short")
+    return dirs.pop() if len(dirs) == 1 else None
+
+
+def build_server_signals(all_rows):
+    """label -> {fields..., flags:[...]} 와 거래소별 서버 레짐 dict 반환."""
+    by_ex = {}
+    for r in all_rows or []:
+        by_ex.setdefault(r.get("exchange", "bithumb"), []).append(r)
+    regimes = {}
+    for ex, rs in by_ex.items():
+        try:
+            regimes[ex] = srv.detect_market_regime(rs)
+        except Exception:
+            regimes[ex] = "normal"
+    cut = getattr(srv, "MIN_SCORE", 50)
+    out = {}
+    for r in all_rows or []:
+        label = r.get("label", r.get("ticker"))
+        ex = r.get("exchange", "bithumb")
+        regime_s = regimes.get(ex, "normal")
+        comp = r.get("components") or {}
+        rp = r.get("recent_pct")
+        flags = []
+        if regime_s == "횡보장" and rp is not None:
+            if (comp.get("pp_s") or 0) >= 20 and rp >= 15:
+                flags.append("SHORT_CONFIRMED_RANGE")   # 24h 평균 -4.66%, 91% 하락(n=1353, 전/후반 모두 유지)
+            if (comp.get("pp_l") or 0) >= 10 and rp <= -5:
+                flags.append("LONG_CONFIRMED_RANGE")    # 24h 승률 ~59-61%(약한 우위, 48h 불안정)
+        out[label] = {
+            "srv_long": r.get("long_score"), "srv_short": r.get("short_score"),
+            "accum": r.get("prepump_score"), "distrib": r.get("preshort_score"),
+            "recent_pct_3d": rp, "srv_regime": regime_s, "flags": flags,
+            "_cut": cut,
+        }
+    return out, regimes
+
+
 def ask_grok(indicator_pdf_path, combined_csv_path, chart_images_b64, all_tickers,
              regime, regime_detail, all_rows=None, dominance=None):
     if not XAI_API_KEY:
@@ -1277,18 +1340,68 @@ def ask_grok(indicator_pdf_path, combined_csv_path, chart_images_b64, all_ticker
                     n_matched += 1
             if n_matched:
                 condition_note = (
-                    f" {n_matched} of these coins matched at least one of the user's own backtested "
-                    f"custom conditions (see custom_condition_match field per ticker in the JSON snapshot, "
-                    f"listing the hex color(s) of the matched condition(s) — by this user's convention, "
-                    f"green-ish colors were registered as LONG setups and red-ish colors as SHORT setups, "
-                    f"each independently backtested on this exchange's own historical data with real "
-                    f"win-rate/return numbers, not just theory. Treat a custom_condition_match as a strong "
-                    f"positive signal for that ticker in the corresponding direction — stronger than "
-                    f"rule_score alone, since it's grounded in this user's own historical backtests rather "
-                    f"than a generic ensemble formula."
+                    f" {n_matched} of these coins matched at least one of the user's custom conditions "
+                    f"(custom_condition_match = hex colors; by the user's convention green-ish = LONG setup, "
+                    f"red-ish = SHORT setup; cond_dir gives the resolved direction). IMPORTANT: these are "
+                    f"SHORT-HORIZON momentum conditions. Backtests show their edge peaks at about 4-12h and "
+                    f"FADES OR REVERSES by 24-48h; at 1h they are unreliable. So a match is only a mild, "
+                    f"short-lived positive — NOT a strong signal for a 24h hold, and it must never override a "
+                    f"conflicting server flag (see the SERVER SCORE LAYER note). When condition and score agree "
+                    f"on direction it is a good confluence; when they disagree, follow the validated flag."
                 )
     except Exception as e:
         print(f"   ⚠️ 커스텀 조건식 매칭 계산 실패(무시하고 진행): {e}")
+
+    # [2026-10-08] 서버 점수/매집·분산/레짐 플래그 + 조건식 vs 점수 충돌 플래그 주입
+    server_note = ""
+    global _LAST_SIGNAL_FLAGS
+    _LAST_SIGNAL_FLAGS = {}
+    try:
+        sig_map, srv_regimes = build_server_signals(all_rows)
+        for label, sg in sig_map.items():
+            if label not in snapshot:
+                continue
+            cut = sg.pop("_cut")
+            flags = list(sg.pop("flags"))
+            cdir = _cond_direction(snapshot[label].get("custom_condition_match"))
+            if cdir:
+                snapshot[label]["cond_dir"] = cdir
+                if cdir == "long" and (sg["distrib"] or 0) >= 80:
+                    flags.append("DISTRIBUTION_VS_LONG_COND")   # 실측 n=38, 12h/24h 상승 0%
+                elif cdir == "long" and (sg["srv_short"] or 0) >= cut:
+                    flags.append("LONG_COND_VS_SHORT_SCORE")    # 단기 롱 / 24h+ 숏 쪽
+                elif cdir == "short" and (sg["srv_long"] or 0) >= cut:
+                    flags.append("SHORT_COND_VS_LONG_SCORE")    # 단기 숏 / 24h+ 롱 쪽(대칭 추정, 미검증)
+                elif cdir == "short" and (sg["accum"] or 0) >= 80:
+                    flags.append("ACCUM_VS_SHORT_COND")         # 미검증
+            sg["flags"] = flags
+            snapshot[label].update(sg)
+            if flags:
+                _LAST_SIGNAL_FLAGS[label] = flags
+        reg_txt = ", ".join(f"{ex}={rg}" for ex, rg in srv_regimes.items())
+        server_note = (
+            f"SERVER SCORE LAYER (per-ticker fields srv_long/srv_short = 0-100 scores of the user's own scoring "
+            f"engine, accum = pre-pump/accumulation score, distrib = pre-short/distribution score, "
+            f"recent_pct_3d = 3-day % change, srv_regime = that engine's 3-state regime: 상승장/하락장/횡보장). "
+            f"Server regime now: {reg_txt}. Measured on ~335k historical rows: these scores predict best at "
+            f"24-48h and are close to noise at 1h. They are computed WITHOUT regime adjustment here, so only "
+            f"trust the validated flags below for 횡보장 (sideways) calls. In 횡보장, high srv_long alone is NOT "
+            f"reliable (the long side is weak there); the SHORT side is the reliable one. "
+            f"Flags: SHORT_CONFIRMED_RANGE = sideways market + overheated price position + already up >=15% in 3d "
+            f"-> historically 91% fell over 24h (mean -4.7%): strong SHORT candidate. "
+            f"LONG_CONFIRMED_RANGE = sideways market + oversold + down >=5% in 3d -> only a modest edge (~60% up at "
+            f"24h): weak LONG candidate, lower confidence (<=0.6). "
+            f"DISTRIBUTION_VS_LONG_COND = distribution score >=80 while a long custom condition fires -> 0 of 38 "
+            f"historical cases rose at 12h/24h: do NOT pick LONG, lean SHORT. "
+            f"LONG_COND_VS_SHORT_SCORE = long condition but short score high -> the condition's edge is a 4-12h "
+            f"bounce, the score points down at 24h+: prefer SHORT or skip (this system is judged at 24h). "
+            f"SHORT_COND_VS_LONG_SCORE / ACCUM_VS_SHORT_COND = mirror cases, NOT validated (symmetry guess): "
+            f"treat as 'conflicted' and lower confidence, do not act strongly. "
+            f"This recommender's picks are scored on the 24h return (6h/48h tracked as reference), so think in a "
+            f"24h holding horizon, not minutes."
+        )
+    except Exception as e:
+        print(f"   ⚠️ 서버 점수/플래그 주입 실패(무시하고 진행): {e}")
 
     csv_text = json.dumps(snapshot, ensure_ascii=False, separators=(',', ':'))
     if len(csv_text) > CONDENSED_JSON_MAX_CHARS:
@@ -1396,6 +1509,7 @@ def ask_grok(indicator_pdf_path, combined_csv_path, chart_images_b64, all_ticker
         "When they clearly disagree, lower your confidence for that ticker rather than ignoring the "
         "disagreement.\n"
         f"7) User-Backtested Conditions:{condition_note if condition_note else ' No custom conditions matched any coin this run (or none are configured).'}\n"
+        f"7b) {server_note if server_note else 'Server score layer unavailable this run.'}\n"
         "8) Confidence Score: for every ticker you pick, output your own confidence from 0.00 to 1.00 "
         "(how sure you are of that direction, not how big a mover you expect). Do not pick a ticker "
         "with confidence below 0.40 — leave it out instead.\n"
@@ -1463,52 +1577,99 @@ def _parse_side_picks(side_str):
     return picks
 
 
+_EVAL_CANDLE_CACHE = {}
+
+
+def _hourly_candles_for(exchange, raw_ticker):
+    key = (exchange, raw_ticker)
+    if key not in _EVAL_CANDLE_CACHE:
+        try:
+            _EVAL_CANDLE_CACHE[key] = fetch_ohlcv_any(raw_ticker, exchange, "minute60", count=200)
+        except Exception:
+            _EVAL_CANDLE_CACHE[key] = None
+    return _EVAL_CANDLE_CACHE[key]
+
+
+def _price_at(df, target_ts):
+    """target_ts 시각 이후 첫 1시간봉의 시가(≈그 시각 가격). 아직 그 봉이 없으면 None.
+    예전엔 '평가 시점 현재가'를 썼는데, 실행 간격이 불규칙하면 호라이즌이 제멋대로 늘어나
+    (6h → 실제 30h 등) 승/패가 왜곡되므로 캔들로 정확한 시각의 가격을 쓴다."""
+    if df is None or len(df) == 0:
+        return None
+    try:
+        idx = df.index
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_localize(None)
+        mask = idx >= pd.Timestamp(target_ts)
+        if not mask.any():
+            return None
+        return float(df["open"].iloc[mask.argmax()])
+    except Exception:
+        return None
+
+
 def evaluate_pending_recommendations(log):
-    """[정확도 개선 ⑩] EVAL_HORIZON_HOURS가 지난 pending 추천을 현재가로 승/패 판정.
-    [2026-07-25] entry에 exchange/raw_ticker가 있으면(신규 로그) 그 거래소에서 정확히
-    조회하고, 없으면(구버전 로그, 업비트 지원 전에 기록된 것) 빗썸으로 폴백한다."""
+    """[2026-10-08 개편] 추천마다 EVAL_HORIZONS_HOURS(6/24/48h) 각각의 수익률을 pnl_by_h에
+    채운다. 대표 호라이즌(EVAL_HORIZON_HOURS) 값이 채워지는 순간 status(won/lost)와 pnl_pct를
+    확정한다 — 이후 히트레이트/재보정은 이 값을 쓴다. 구버전 로그(이미 won/lost인 6h 기준
+    항목)는 건드리지 않는다."""
     now = datetime.now()
-    price_cache = {}
     updated = False
     for entry in log:
-        if entry.get("status") != "pending":
+        legacy_resolved = entry.get("status") in ("won", "lost") and "pnl_by_h" not in entry
+        if legacy_resolved:
             continue
         try:
             ts = datetime.fromisoformat(entry["timestamp"])
         except Exception:
             continue
-        if now - ts < timedelta(hours=EVAL_HORIZON_HOURS):
+        pnl_by_h = entry.setdefault("pnl_by_h", {})
+        due = [h for h in EVAL_HORIZONS_HOURS
+               if str(h) not in pnl_by_h and now - ts >= timedelta(hours=h)]
+        if not due:
             continue
         raw_ticker = entry.get("raw_ticker", entry["ticker"])
         exchange = entry.get("exchange", "bithumb")
-        cache_key = (exchange, raw_ticker)
-        if cache_key not in price_cache:
-            try:
-                if exchange == "upbit":
-                    resp = requests.get("https://api.upbit.com/v1/ticker",
-                                         params={"markets": f"KRW-{raw_ticker}"}, timeout=8)
-                    data = resp.json()
-                    price_cache[cache_key] = data[0]["trade_price"] if data else None
-                else:
-                    price_cache[cache_key] = python_bithumb.get_current_price(f"KRW-{raw_ticker}")
-            except Exception:
-                price_cache[cache_key] = None
-        cur_price = price_cache[cache_key]
-        if not cur_price:
+        df = _hourly_candles_for(exchange, raw_ticker)
+        entry_price = entry.get("entry_price")
+        if df is None or not entry_price:
             continue
-        entry_price = entry["entry_price"]
-        pnl_pct = ((cur_price - entry_price) / entry_price * 100 if entry["side"] == "long"
-                   else (entry_price - cur_price) / entry_price * 100)
-        entry["exit_price"] = cur_price
-        entry["pnl_pct"] = round(pnl_pct, 3)
-        entry["status"] = "won" if pnl_pct > 0 else "lost"
-        entry["evaluated_at"] = now.isoformat()
-        updated = True
+        for h in due:
+            px = _price_at(df, ts + timedelta(hours=h))
+            if px is None:
+                continue
+            pnl = ((px - entry_price) / entry_price * 100 if entry["side"] == "long"
+                   else (entry_price - px) / entry_price * 100)
+            pnl_by_h[str(h)] = round(pnl, 3)
+            updated = True
+            if h == EVAL_HORIZON_HOURS and entry.get("status") == "pending":
+                entry["exit_price"] = px
+                entry["pnl_pct"] = round(pnl, 3)
+                entry["status"] = "won" if pnl > 0 else "lost"
+                entry["evaluated_at"] = now.isoformat()
     return updated
 
 
+def compute_horizon_stats(log, lookback=60):
+    """호라이즌(6/24/48h)·방향(long/short)별 표본수/승률/평균수익. 어떤 호라이즌에서 이
+    추천 시스템이 실제로 돈이 되는지(점수 계열은 24~48h 가설) 로그가 쌓일수록 확인용."""
+    rows = [e for e in log if e.get("pnl_by_h")][-lookback:]
+    out = {}
+    for h in EVAL_HORIZONS_HOURS:
+        for side in ("long", "short", "all"):
+            vals = [e["pnl_by_h"][str(h)] for e in rows
+                    if str(h) in e["pnl_by_h"] and (side == "all" or e.get("side") == side)]
+            if vals:
+                out[(h, side)] = (len(vals), sum(1 for v in vals if v > 0) / len(vals),
+                                  sum(vals) / len(vals))
+    return out
+
+
 def compute_hit_rate(log, lookback=HIT_RATE_LOOKBACK):
-    resolved = [e for e in log if e.get("status") in ("won", "lost")][-lookback:]
+    resolved = [e for e in log if e.get("status") in ("won", "lost")]
+    # 신규(24h 기준) 항목이 5건 이상이면 그것만 사용, 아니면 구버전(6h 기준) 포함 — 호라이즌 혼합 방지
+    new_only = [e for e in resolved if "pnl_by_h" in e]
+    resolved = (new_only if len(new_only) >= 5 else resolved)[-lookback:]
     if not resolved:
         return None, 0
     wins = sum(1 for e in resolved if e["status"] == "won")
@@ -1581,6 +1742,11 @@ def main():
                   f"손익비(PF) {pf_txt}, 평균수익 {stats['avg_pnl_pct']:+.2f}%, "
                   f"Sharpe유사 {stats['sharpe_like']:+.2f}, 최대낙폭(MDD) {stats['max_drawdown_pct']:.2f}%p "
                   f"(Precision/Recall은 비교할 음성 후보군이 없어 win_rate로 갈음 — 정직한 한계)")
+        hs = compute_horizon_stats(reco_log)
+        if hs:
+            print("   호라이즌별 성과(참고 · 최근 60건): " + " | ".join(
+                f"{h}h {side}: n={n} 승률{wr*100:.0f}% 평균{avg:+.2f}%"
+                for (h, side), (n, wr, avg) in sorted(hs.items()) if side != "all"))
     else:
         print(f"⓪ 과거 추천 기록 없음 → 기본 신뢰도 기준선 {confidence_min:.2f}")
 
@@ -1684,7 +1850,8 @@ def main():
             reco_log.append({
                 "timestamp": now_iso, "ticker": ticker, "raw_ticker": raw_ticker, "exchange": exchange,
                 "side": side, "entry_price": entry_price, "confidence": conf,
-                "regime": regime, "status": "pending",
+                "regime": regime, "status": "pending", "pnl_by_h": {},
+                "flags": _LAST_SIGNAL_FLAGS.get(ticker, []),
             })
     save_recommendation_log(reco_log)
 
