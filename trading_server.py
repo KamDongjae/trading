@@ -1098,6 +1098,31 @@ def score_price_position_long(rsi, bb_percent, rsi_delta=0.0):
     except Exception:
         return 0
 
+def score_price_position_long_range(rsi, bb_percent, rsi_delta, recent_pct):
+    """[2026-10-07 추가] 가격위치 롱 점수 — 횡보장 전용 대체판.
+    score_price_position_short_range(횡보장 전용 숏판)와 같은 방법으로 발견: 횡보장
+    표본(116,196건) 실측 결과, 기존 score_price_position_long의 raw_pp가 24h에서
+    버킷별로 뒤죽박죽(0:-1.57%, 5:+0.62%, 10:+0.10%, 20:-0.29%, 30:+1.29%, 40:+0.67%) —
+    숏 때처럼 완전히 반대방향은 아니지만 과매도 정도만으로는 신호가 거의 없다(평균
+    +0.06%, 승률46.8%).
+
+    "이미 충분히 떨어진 뒤(recent_pct<=-5)" 확인조건을 추가하자 pp_l 임계값(5/10/20)에
+    거의 무관하게 일관된 개선을 보였고(모두 24h 평균 +1.0%대, 승률59~60%), 반기분할
+    검증(9/19~ vs ~10/6) 양쪽 모두 24h 승률 58~61%로 안정적임을 확인:
+      pp_l>=10 & recent_pct<=-5 → 전반 n=939 24h평균+0.41%/승률61.0%,
+                                   후반 n=1269 24h평균+1.58%/승률58.3%
+    48h는 반기별로 부호가 갈라져(전반 -0.36%/26% vs 후반 +2.35%/67%) 불안정함을 확인
+    (숏판 설계 때와 같은 과최적화 경계 패턴) — 그래서 24h 기준으로만 검증된 조합을
+    강신호로 쓰고, 나머지는 증폭하지 말고 10점 상한으로 눌러서 보수적으로 반영한다.
+    """
+    try:
+        raw_pp = score_price_position_long(rsi, bb_percent, rsi_delta)
+        if raw_pp >= 10 and recent_pct is not None and recent_pct <= -5:
+            return 40
+        return min(raw_pp, 10)
+    except Exception:
+        return 0
+
 def score_price_position_long_bear(rsi, bb_percent, rsi_delta, ls_ratio, recent_pct, funding):
     """
     [2026-09-26 신설] 하락장(detect_market_regime()=='하락장') 전용 롱 가격위치 점수
@@ -1527,6 +1552,10 @@ def calculate_long_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi
         # 주석 참고 — 기존 "과매도+반등" 철학이 하락장에서 상관계수 부호가 반대로 나왔음).
         if regime == '하락장':
             raw_pp = score_price_position_long_bear(rsi, bb_percent, rsi_delta, ls_ratio, extension_pct, funding_rate)
+        elif regime == '횡보장':
+            # [2026-10-07 추가] score_price_position_long_range 주석 참고 — 횡보장에서
+            # 과매도만으로는 신호가 약해 recent_pct_3d 확인조건을 추가한 전용판 사용.
+            raw_pp = score_price_position_long_range(rsi, bb_percent, rsi_delta, recent_pct_3d)
         else:
             raw_pp = score_price_position_long(rsi, bb_percent, rsi_delta)  # 조합보정 임계값은 이 원점수 기준
         raw_cvd = score_cvd_trend(cvd_diff, vol_window_sum, 'long')
