@@ -92,8 +92,11 @@ def get_usd_krw_rate():
 # 갭 5.12%인데 크로스모드 시뮬레이션은 여유잔고 때문에 훨씬 넓게 나옴). 포지션별로 바이낸스
 # 화면 속 Liq. Price와 비슷한 거리에서 청산되게 격리마진으로 전환.
 # [2026-10-08] 신호 품질 필터(12h 내내 수익권 미도달 케이스 분석 기반)
-LONG_LOW_ATR_THRESHOLD = 0.9   # 이 ATR% 미만 코인의 롱 점수는 감산
-LONG_LOW_ATR_FACTOR = 0.7
+# [2026-10-11 자동] 0.9/0.7 → 1.2/0.5. 근거(독립사건, 12h 쿨다운, 9/27~10/11 데이터):
+#   long>=50 24h 승률 학습 51%→57%(n=119, 초과 +0.42→+0.85%), 홀드아웃(10/8~) 60%→66%(n=38, +1.31→+2.68%),
+#   12h 학습 51→56% / 홀드 62→67%, 청산(9%역행) 비율 비악화. 되돌리기: backups\20261011\trading_server.py
+LONG_LOW_ATR_THRESHOLD = 1.2   # 이 ATR% 미만 코인의 롱 점수는 감산
+LONG_LOW_ATR_FACTOR = 0.5
 CROSS_MARGIN_MODE = False
 CROSS_MARGIN_MAINTENANCE_RATIO = 0.005  # 유지증거금 비율(0.5%). 열려있는 모든 포지션 명목가치(증거금×레버리지) 합의
                                           # 이 비율만큼을 총자산이 못 채우면 청산 시작. 실거래소 유지증거금율(대략 0.4~1%)을 참고한 값.
@@ -3011,6 +3014,48 @@ def _get_bithumb_all_cached(ttl=_BITHUMB_ALL_TTL):
             pass
         return _bithumb_all_cache["data"] or {}
 
+# [2026-10-11 추가] 청산 위험 지표 — 권장 최대 레버리지(max_lev) + 위험 플래그(liq_risk).
+# 9/19~10/11 전체 데이터(5분 스냅샷 23만행)에서 점수 컷 통과 후 6h 안에 청산선(증거금 95% 손실)까지
+# 간 진입을 뽑아 분석한 결과(독립 사건 = 같은 티커 1h/12h 쿨다운):
+#   - 롱(현행 ATR 감산 후 >=50): 10x 기준 6h 내 청산 사실상 0건. 15x 청산 16건 중 11건이 매집>=80 +
+#     바이낸스 선물 미상장 코인(EL/ICX/COS/FCT2 등, L/S비율 없음).
+#   - 숏(short>=50 또는 분산>=80): 10x 청산 학습 5.5% / 홀드아웃(10/8~) 17.4%. 위험 요인(구간별 15x 청산률):
+#       ATR 2~3% 36.5%, 3~5% 25.3%, 5%+ 40.5% (ATR<1.5%면 0~2.4%)
+#       가격이 EMA20보다 4~8% 위 27.0%, 8%+ 38.5% (2% 이내면 0~2.7%)
+#       선물 미상장 19.4% vs 상장 6.6%
+#   - 6h 최대 역행폭은 대부분 ATR%의 5배 안쪽(롱 99.3%, 숏 95.3%)이라, 청산선(0.95/레버리지)이
+#     5×ATR 밖에 있도록 레버리지를 제한하면(최대 10x, 선물 미상장은 절반) 숏 청산이
+#     학습 5.5%→2.3%, 홀드아웃 17.4%→4.3%, 롱은 0%로 줄었다(평균 수익은 레버리지가 낮아진 만큼만 감소).
+#   - 반대로 위험 숏의 점수를 깎는 방식은 청산은 더 줄지만(15x 6.9%→1.5%) 평균회귀 수익까지 같이
+#     잘려 초과수익이 +0.55→+0.04%로 떨어져서 채택 안 함. 신호는 그대로 두고 레버리지로 관리한다.
+LIQ_LEV_ATR_MULT = 5          # 청산선을 ATR의 몇 배 밖에 둘지
+LIQ_LEV_MAX = 10              # 권장 레버리지 상한
+SHORT_RISK_ATR = 2.0          # 숏 위험: ATR% 이상
+SHORT_RISK_EMA_DIST = 4.0     # 숏 위험: 가격이 EMA20보다 이 % 이상 위
+
+def calc_liq_risk(atr_pct, price, ema20, ls_ratio):
+    """권장 최대 레버리지와 위험 플래그 문자열을 돌려준다. 계산 실패 시 (LIQ_LEV_MAX, '')."""
+    try:
+        import math
+        nofut = ls_ratio is None or not math.isfinite(float(ls_ratio))
+        if atr_pct and atr_pct > 0:
+            lev = int(95.0 / (LIQ_LEV_ATR_MULT * float(atr_pct)))
+        else:
+            lev = LIQ_LEV_MAX
+        if nofut:
+            lev = lev // 2
+        lev = max(1, min(LIQ_LEV_MAX, lev))
+        flags = []
+        if atr_pct is not None and atr_pct >= SHORT_RISK_ATR:
+            flags.append("ATR")
+        if price and ema20 and ema20 > 0 and (price / ema20 - 1) * 100 >= SHORT_RISK_EMA_DIST:
+            flags.append("EMA")
+        if nofut:
+            flags.append("NOFUT")
+        return lev, "|".join(flags)
+    except Exception:
+        return LIQ_LEV_MAX, ""
+
 def process_ticker(ticker):
     try:
         df = fetch_candlestick(ticker, chart_intervals=CANDLE_INTERVAL)
@@ -3186,6 +3231,7 @@ def process_ticker(ticker):
         #  숏 점수/숏 조건식은 뚜렷한 분리 변수가 없어 건드리지 않음(AUC≈0.5).
         if atr_pct < LONG_LOW_ATR_THRESHOLD:
             long_score = int(long_score * LONG_LOW_ATR_FACTOR)
+        max_lev, liq_risk = calc_liq_risk(atr_pct, current_price, ema20, ls_ratio)
         # 항목별 세부점수 (로그 분석/배점 튜닝용 — 총점과 동일한 함수로 계산, 105점 원점수 기준)
         components = {
             "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long', ema20_slope_pct),
@@ -3231,6 +3277,8 @@ def process_ticker(ticker):
             "recent_pct": round(recent_pct, 3),
             "extension_pct": round(extension_pct, 3) if extension_pct is not None else None,
             "components": components,
+            "max_lev": max_lev,
+            "liq_risk": liq_risk,
             # [2026-10-11 추가] 점수 계산에 실제로 들어가는데 로그에 안 남던 입력값들 —
             # data_collector.py가 같이 기록해서 나중에 서버 점수를 오프라인에서 그대로
             # 재현/검증할 수 있게 한다(표시/주문 로직에는 영향 없음).
@@ -3400,6 +3448,7 @@ def process_ticker_upbit(ticker):
         #  숏 점수/숏 조건식은 뚜렷한 분리 변수가 없어 건드리지 않음(AUC≈0.5).
         if atr_pct < LONG_LOW_ATR_THRESHOLD:
             long_score = int(long_score * LONG_LOW_ATR_FACTOR)
+        max_lev, liq_risk = calc_liq_risk(atr_pct, current_price, ema20, ls_ratio)
         components = {
             "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long', ema20_slope_pct),
             "ema_s": score_ema_trend(current_price, ema20, ema60, ema120, 'short', ema20_slope_pct),
@@ -3445,6 +3494,8 @@ def process_ticker_upbit(ticker):
             "recent_pct": round(recent_pct, 3),
             "extension_pct": round(extension_pct, 3) if extension_pct is not None else None,
             "components": components,
+            "max_lev": max_lev,
+            "liq_risk": liq_risk,
         }
     except Exception as e:
         print(f"[업비트:{ticker}] 데이터 수집 실패: {e}")
@@ -3454,6 +3505,65 @@ def process_ticker_upbit(ticker):
 # ============================================================
 # 업데이터
 # ============================================================
+
+# ============================================================
+# [2026-10-11 추가] 단일 판정(verdict) — 롱/숏이 같이 뜨는 문제 해결
+# 기존 화면은 롱점수·숏점수·매집·분산·조건식 배경이 따로 떠서, 신호가 표시된 순간의 18%는
+# 롱과 숏이 동시에 떠 있었다. 9/19~10/11 데이터(독립 사건, 같은 티커 12h 쿨다운)로 조합별
+# 승률을 비교해서 아래 규칙으로 하나만 고른다(동시 판정 0건):
+#   롱 = 롱점수>=50(ATR 감산 후) 또는 (매집>=80 & 롱조건 v5), 단 숏 확인신호가 같이 있으면 제외
+#   숏 = (숏점수>=50 또는 분산>=80) & 숏조건(v1|v2), 단 롱점수>=50이면 제외
+#   그 외 = 판정 없음(대기)
+# 결과(3h/12h/24h 승률): 롱 판정 62/61/65% (301건, 최근 3일 67/70/76%, 49건)
+#                       숏 판정 64/64/71% (113건, 최근 3일 64/43/67%, 11건 — 표본 적음)
+#   비교: 기존 '아무 롱 표시' 49/51/54%, '아무 숏 표시' 47/46/46%
+# 근거: 롱은 점수가 핵심(롱조건식 단독 52%), 숏점수 단독은 12h부터 51%로 동전수준이라 숏조건식 확인 필수,
+#       매집 단독 42%라 롱조건식(v5) 확인 필수. v5/v2는 같은 기간에서 고른 조건이라 낙관 편향 가능 —
+#       매일 리포트에서 판정 승률을 계속 추적한다.
+VERDICT_CUT = 50
+VERDICT_PP_CUT = 80
+VERDICT_LONG_COND = "(bb_percent < 30 && rsi_delta > 0) || (rsi < 35) || (rsi < 40 && rsi_delta > 0) || (recent_pct < -5 && chg_30m < -1) || (bb_percent < 0 && atr_pct > 1 && oi_change_pct < -1)"
+VERDICT_SHORT_COND = "(rsi > 75 && vol_z < -0.5) || (rsi > 75 && oi_change_pct > 1) || (rsi > 75 && ls_ratio > 1.5) || (rsi > 75 && ls_ratio > 1.3) || (rsi > 75 && ls_ratio > 1.1) || (rsi > 75 && funding > 0) || (rsi > 75 && bb_percent > 70) || (rsi > 75 && atr_pct > 0.3) || (rsi > 70 && ls_ratio > 1.5 && recent_pct > 5) || (rsi > 70 && ls_ratio > 1.3 && recent_pct > 5) || (rsi > 70 && atr_pct > 1 && ls_ratio > 1.5) || (rsi > 70 && atr_pct > 1 && ls_ratio > 1.3) || (rsi > 70 && atr_pct > 1 && ls_ratio > 1.1) || (rsi > 70 && atr_pct > 1 && funding > 0) || (rsi > 70 && atr_pct > 0.5 && funding < 0) || (rsi > 70 && atr_pct > 0.3 && funding < 0) || (rsi > 60 && oi_change_pct > 1 && funding < 0) || (rsi > 60 && atr_pct > 1 && funding < 0) || (rsi > 60 && atr_pct > 1 && funding < -0.01) || (recent_pct > 10 && chg_30m > 1) || (bb_percent > 90 && recent_pct > 10) || (rsi > 60 && recent_pct > 10) || (recent_pct > 10 && rsi_delta > 2) || (vol_z > 0.5 && funding > 0 && recent_pct > 10)"
+VERDICT_STATS = {"LONG": "3h 62%·12h 61%·24h 65%", "SHORT": "3h 64%·12h 64%·24h 71%"}
+
+def calc_verdict(r):
+    """process_ticker 결과 dict로 ('LONG'|'SHORT'|'', 근거 문자열)을 돌려준다."""
+    try:
+        ls = r.get('long_score', 0) or 0
+        ss = r.get('short_score', 0) or 0
+        pp = r.get('prepump_score', 0) or 0
+        ps = r.get('preshort_score', 0) or 0
+        lc = _evaluate_condition_server(VERDICT_LONG_COND, r)
+        sc = _evaluate_condition_server(VERDICT_SHORT_COND, r)
+        l50, s50 = ls >= VERDICT_CUT, ss >= VERDICT_CUT
+        ppok, psok = pp >= VERDICT_PP_CUT, ps >= VERDICT_PP_CUT
+        short_confirm = (s50 or psok) and sc
+        if (l50 or (ppok and lc)) and not short_confirm:
+            why = f"롱점수 {ls}" if l50 else f"매집 {pp}+롱조건"
+            return "LONG", why
+        if short_confirm and not l50:
+            why = (f"숏점수 {ss}" if s50 else f"분산 {ps}") + "+숏조건"
+            return "SHORT", why
+        return "", ""
+    except Exception:
+        return "", ""
+
+_process_ticker_raw = process_ticker
+_process_ticker_upbit_raw = process_ticker_upbit
+
+def process_ticker(ticker):  # noqa: F811 — 판정 필드를 덧붙이는 래퍼
+    r = _process_ticker_raw(ticker)
+    if r:
+        r['verdict'], r['verdict_reason'] = calc_verdict(r)
+    return r
+
+def process_ticker_upbit(ticker):  # noqa: F811
+    r = _process_ticker_upbit_raw(ticker)
+    if r:
+        r['verdict'], r['verdict_reason'] = calc_verdict(r)
+    return r
+
+
 def price_updater(tickers_ref):
     global score_cache
     while running:
@@ -3661,7 +3771,9 @@ MARKET_COLS = ['ticker', 'price', 'price_usd', 'chg_24h', 'long_score', 'short_s
                'vol_24h_m', 'atr_pct', 'oi_change_pct', 'chg_30m', 'ls_ratio',
                'ema20', 'ema60', 'recent_pct',
                'min_cut', 'watch_cut', 'pp_min_cut', 'interval', 'score_time', 'price_time',
-               'regime']  # [2026-10-11 추가] 현재 확정된 시장 레짐(클라이언트 상단 표시용, 맨 뒤에 붙여 구버전 클라이언트와 호환)
+               'regime',  # [2026-10-11 추가] 현재 확정된 시장 레짐(클라이언트 상단 표시용, 맨 뒤에 붙여 구버전 클라이언트와 호환)
+               'max_lev', 'liq_risk',  # [2026-10-11 추가] 권장 최대 레버리지 / 청산위험 플래그(calc_liq_risk 참고)
+               'verdict', 'verdict_reason']  # [2026-10-11 추가] 단일 판정(calc_verdict 참고)
 
 _last_score_time = [""]
 _last_score_time_upbit = [""]
@@ -3712,6 +3824,8 @@ def write_market_snapshot(exchange='bithumb'):
             r.get('recent_pct', '') if r.get('recent_pct') is not None else '',
             min_score, WATCH_MIN_SCORE, PREPUMP_MIN_SCORE, CANDLE_INTERVAL, score_time, pt,
             regime_now,
+            r.get('max_lev', ''), r.get('liq_risk', ''),
+            r.get('verdict', ''), r.get('verdict_reason', ''),
         ])
         # [2026-07-21 추가] 커스텀 조건식 — CSV에 쓰는 것과 동일한 값으로 평가
         try:

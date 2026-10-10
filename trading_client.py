@@ -185,6 +185,7 @@ current_min_score = FALLBACK_MIN_SCORE
 pp_current_min_score = FALLBACK_PP_MIN_SCORE
 watch_current_min_score = FALLBACK_WATCH_MIN_SCORE
 current_interval = "1h"
+verdict_supported_flag = [False]  # [2026-10-11 추가] server_market.csv에 verdict 칸이 있으면 True
 current_regime = ""  # [2026-10-11 추가] 서버가 server_market.csv 맨 뒤 regime 칸에 써주는 현재 시장 레짐
 current_margin_mode = "cross"  # 서버 기본값과 동일. read_account_snapshot이 실제 값으로 갱신함
 bank_balance = 0.0
@@ -259,6 +260,11 @@ def read_market_snapshot(path=None):
                     'ema20': _f(r.get('ema20')) if r.get('ema20') not in (None, '',) else None,
                     'ema60': _f(r.get('ema60')) if r.get('ema60') not in (None, '',) else None,
                     'recent_pct': _f(r.get('recent_pct')) if r.get('recent_pct') not in (None, '',) else None,
+                    # [2026-10-11 추가] 서버 calc_liq_risk 결과(구버전 서버 CSV면 None/빈값)
+                    'max_lev': int(_f(r.get('max_lev'))) if r.get('max_lev') not in (None, '',) else None,
+                    'liq_risk': r.get('liq_risk', '') or '',
+                    'verdict': r.get('verdict', '') or '',
+                    'verdict_reason': r.get('verdict_reason', '') or '',
                 })
                 cut = r.get('min_cut')
                 if cut:
@@ -275,6 +281,7 @@ def read_market_snapshot(path=None):
                 rg = r.get('regime')
                 if rg:
                     current_regime = rg
+                verdict_supported_flag[0] = 'verdict' in r
                 score_time = r.get('score_time', '') or score_time
                 price_time = r.get('price_time', '') or price_time
         return rows, score_time, price_time
@@ -1556,6 +1563,47 @@ class TradingClient:
                         mr_badge += " · 롱 추격 주의"
                 if mr_badge:
                     conflict_badge = f"{conflict_badge}\n{mr_badge}" if conflict_badge else mr_badge
+                # [2026-10-11 추가] 청산위험 뱃지. 9/19~10/11 데이터에서 점수 통과 후 6h 내 청산선까지 간
+                # 진입 분석 결과(서버 calc_liq_risk 주석 참고): 숏은 ATR>=2% / EMA20보다 4%+ 위 /
+                # 선물 미상장일 때 15x 청산률이 19~40%로 뛰고, 롱 청산은 거의 전부 선물 미상장 코인이었다.
+                liq_risk = row.get('liq_risk') or ''
+                max_lev = row.get('max_lev')
+                liq_badge = None
+                if liq_risk:
+                    names = {"ATR": f"ATR {row.get('atr_pct', 0):.1f}%", "EMA": "EMA20 4%+ 위", "NOFUT": "선물 미상장"}
+                    parts = [names[k] for k in liq_risk.split("|") if k in names]
+                    lev_txt = f" · 권장 ≤{max_lev}x" if max_lev else ""
+                    if border_color in ("#e04040", "#9a4fd0") and parts:
+                        liq_badge = f"🔥숏 청산위험: {', '.join(parts)}{lev_txt}"
+                    elif border_color in ("#2fa84f", "#3a7fd0") and "NOFUT" in liq_risk:
+                        liq_badge = f"🔥선물 미상장 코인 — 급변동 청산위험{lev_txt}"
+                if liq_badge:
+                    conflict_badge = f"{conflict_badge}\n{liq_badge}" if conflict_badge else liq_badge
+                # [2026-10-11 추가] 단일 판정(서버 calc_verdict). 롱/숏이 동시에 뜨던 문제를 막으려고
+                # 진입 테두리(초록/빨강)는 판정이 난 경우에만 쓴다. 점수만 넘고 판정이 안 난 롱/숏
+                # 신호는 '관심'(노랑)으로 낮추고, 매집/분산 단독(판정 없음)은 기존 색을 유지하되
+                # 진입 근거가 아니라는 뜻으로 '대기' 문구를 붙인다. 서버가 구버전이라 verdict 칸이
+                # 없으면(None) 예전 표시를 그대로 쓴다.
+                verdict = row.get('verdict')
+                if 'verdict' in row and row.get('verdict') is not None and verdict_supported_flag[0]:
+                    if verdict == "LONG":
+                        border_color = "#2fa84f"
+                        v_badge = f"✅ 판정 롱 ({row.get('verdict_reason', '')}) · 과거 3h 62%·12h 61%·24h 65%"
+                    elif verdict == "SHORT":
+                        border_color = "#e04040"
+                        v_badge = f"✅ 판정 숏 ({row.get('verdict_reason', '')}) · 과거 3h 64%·12h 64%·24h 71%"
+                    else:
+                        v_badge = None
+                        if border_color in ("#2fa84f", "#e04040"):
+                            v_badge = "⏸ 대기: 점수는 넘었지만 반대 신호/확인 조건 부족"
+                            border_color = "#c9a800"
+                        elif border_color in ("#3a7fd0", "#9a4fd0"):
+                            v_badge = "⏸ 대기: 매집/분산 단독은 진입 근거 아님(조건식 확인 필요)"
+                    # 판정이 롱/숏 충돌을 이미 정리했으니 예전 '단기 롱/숏 충돌' 문구는 뺀다(혼란 방지)
+                    if conflict_badge:
+                        conflict_badge = "\n".join(x for x in conflict_badge.split("\n") if not x.startswith("⚠충돌: 단기")) or None
+                    if v_badge:
+                        conflict_badge = f"{v_badge}\n{conflict_badge}" if conflict_badge else v_badge
                 display_ticker = f"[{ticker}]" if ticker in self.pinned_tickers else ticker
                 line1 = f"{display_ticker}  {chg24h_str} ({krw_str})  {usd_str}  롱{ls} 숏{ss}  매집{pp} 분산{ps}"
                 lsr = row.get('ls_ratio')
@@ -1565,7 +1613,8 @@ class TradingClient:
                          f"CVD {cvd_str} 30m {row.get('chg_30m', 0):+.2f}% "
                          f"ATR {row.get('atr_pct', 0):.2f}% OI {row.get('oi_change_pct', 0):+.2f}% "
                          f"L/S {ls_str} Fund {row.get('funding', 0):+.3f}% Vol {row.get('vol_24h_m', 0):,}M"
-                         + (f" 3일 {row['recent_pct']:+.1f}%" if row.get('recent_pct') is not None else ""))
+                         + (f" 3일 {row['recent_pct']:+.1f}%" if row.get('recent_pct') is not None else "")
+                         + (f" 권장≤{row['max_lev']}x" if row.get('max_lev') else ""))
                 card = self.card_widgets.get(ticker)
                 is_new = card is None
                 if is_new:
@@ -2141,6 +2190,22 @@ class TradingClient:
             messagebox.showwarning("경고", "금액을 올바르게 입력하세요.")
             return
         direction = "롱" if position_type == "long" else "숏"
+        # [2026-10-11 추가] 권장 레버리지 초과 경고(서버 calc_liq_risk: 청산선이 ATR 5배 밖에 있도록,
+        # 최대 10x, 선물 미상장은 절반). 막지는 않고 확인만 받는다.
+        try:
+            info_row = self._latest_rows.get(ticker) or {}
+            max_lev = info_row.get('max_lev')
+            if max_lev and leverage > max_lev:
+                risk_txt = info_row.get('liq_risk') or ''
+                if not messagebox.askyesno(
+                        "청산 위험",
+                        f"{ticker} 권장 최대 레버리지는 {max_lev}x야 (지금 {leverage}x).\n"
+                        f"ATR {info_row.get('atr_pct', 0):.2f}% 기준으로 6시간 안에 청산선까지 갈 수 있는 폭이야."
+                        + (f"\n위험요인: {risk_txt}" if risk_txt else "")
+                        + "\n\n그래도 진입할까?"):
+                    return
+        except Exception:
+            pass
         self._send_and_wait('open', ticker=ticker, amount=amount_won, leverage=leverage,
                             position_type=position_type, label=f"{direction} 진입")
 

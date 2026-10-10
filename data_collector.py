@@ -66,6 +66,10 @@ CSV_HEADER = [
     "regime", "extension_pct", "ema20_slope_pct", "price_cv_24h",
     "chg_5m", "chg_15m", "momentum_blend",
     "rsi_dwell_os_h", "rsi_dwell_ob_h", "bb_dwell_low_h", "bb_dwell_high_h", "hl_flag",
+    # [2026-10-11 추가] 권장 최대 레버리지 / 청산위험 플래그(trading_server.calc_liq_risk)
+    "max_lev", "liq_risk",
+    # [2026-10-11 추가] 단일 판정(trading_server.calc_verdict)
+    "verdict", "verdict_reason",
 ]
 
 # 현재 로그 구간 상태 (get_output_path가 채워줌)
@@ -173,6 +177,8 @@ def _row_from_result(ts, r):
         r.get("momentum_blend", ""),
         r.get("rsi_dwell_os_h", ""), r.get("rsi_dwell_ob_h", ""),
         r.get("bb_dwell_low_h", ""), r.get("bb_dwell_high_h", ""), r.get("hl_flag", ""),
+        r.get("max_lev", ""), r.get("liq_risk", ""),
+        r.get("verdict", ""), r.get("verdict_reason", ""),
     ]
 
 
