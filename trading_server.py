@@ -94,8 +94,6 @@ def get_usd_krw_rate():
 # [2026-10-08] 신호 품질 필터(12h 내내 수익권 미도달 케이스 분석 기반)
 LONG_LOW_ATR_THRESHOLD = 0.9   # 이 ATR% 미만 코인의 롱 점수는 감산
 LONG_LOW_ATR_FACTOR = 0.7
-PREPUMP_BB_MAX = 40            # BB% 가 이 값 초과면 매집 점수 감산
-PREPUMP_BB_FACTOR = 0.85
 CROSS_MARGIN_MODE = False
 CROSS_MARGIN_MAINTENANCE_RATIO = 0.005  # 유지증거금 비율(0.5%). 열려있는 모든 포지션 명목가치(증거금×레버리지) 합의
                                           # 이 비율만큼을 총자산이 못 채우면 청산 시작. 실거래소 유지증거금율(대략 0.4~1%)을 참고한 값.
@@ -1473,6 +1471,34 @@ def score_cv_short_bonus(price_cv_24h):
     except Exception:
         return 0
 
+# [2026-10-11 추가] 3일 급등 후 숏 보너스 on/off — score_runup_short_bonus 주석 참고.
+# [2026-10-11 같은날 기본 OFF] 다른 쓰레드 홀드아웃(10/8~10/10) 검증과 합쳐 다시 보니, 독립
+# 에피소드 기준(같은 종목 12h 내 재발생은 1건)으로 10/8 이후 recent_pct>=10 첫 발생 8건은
+# 24h 평균 -0.47%(숏 기준 손실)/승률 38%로 재현이 안 됐고, 전체 46건 중 17%는 24h 안에 +7% 이상
+# 더 올라 10배 레버리지면 청산 구간이었다. 기간 전체 평균은 좋지만(초과수익 +2.4%) 최근에 깨지고
+# 스퀴즈 위험이 커서, 표본이 더 쌓여 재검증될 때까지 꺼둔다. 켜려면 True.
+USE_RUNUP_SHORT_BONUS = False
+
+def score_runup_short_bonus(recent_pct_3d):
+    """[2026-10-11 신설] 최근 3일(recent_pct, 72캔들) 급등 후 평균회귀 숏 보너스.
+    9/26~10/11 수집 데이터(14.8만행)를 시간순 반반(~10/4 12시 / 이후)으로 나눠 검증:
+      recent_pct>=10 → 24h 시장대비 초과수익(숏 기준) 전반 +3.68% / 후반 +3.11%
+      recent_pct>=15 → 전반 +7.51% / 후반 +8.45% (단, 5~9개 종목에 집중 — 표본 주의)
+    급등 상위 6종목(BAT/WAXP/ENJ/COS/EL/ICX)을 빼고 다시 봐도 >=10 구간이 전반 +3.49% /
+    후반 +1.53%로 방향 유지 — 특정 종목 효과만은 아님. 기존 숏 점수에 이 보너스를 얹으면
+    숏점수 >=55 구간 24h 초과수익이 후반 기준 +0.60% → +1.96%로 개선.
+    횡보장은 score_price_position_short_range가 이미 recent_pct>=15를 40점으로 반영하므로
+    중복 가산을 피하려고 calculate_short_score 쪽에서 횡보장일 땐 적용 안 함.
+    반대로 롱 쪽 '3일 급락 후 반등' 보너스(score_recent_reversal_bonus)는 같은 검증에서
+    상위 종목을 빼면 효과가 사라져서(+0.12% / -0.43%) 배점을 올리지 않았다."""
+    try:
+        rp = recent_pct_3d
+        if rp >= 15: return 8
+        elif rp >= 10: return 5
+        return 0
+    except Exception:
+        return 0
+
 CANDLE_HOURS = {"1h": 1, "2h": 2, "6h": 6, "12h": 12}
 
 def _dwell_hours(bool_series):
@@ -1717,6 +1743,12 @@ def calculate_short_score(rsi, bb_percent, cvd_diff, vol_window_sum, ls_ratio, o
     # [2026-10-02 추가] price_cv 궤적보너스 — score_cv_short_bonus 주석 참고.
     try:
         final = final + score_cv_short_bonus(price_cv_24h) + score_dwell_short_bonus(rsi_dwell_ob_h, bb_dwell_high_h)
+    except Exception:
+        pass
+    # [2026-10-11 추가] 3일 급등 후 평균회귀 보너스 — score_runup_short_bonus 주석 참고.
+    try:
+        if USE_RUNUP_SHORT_BONUS and regime != '횡보장':
+            final = final + score_runup_short_bonus(recent_pct)
     except Exception:
         pass
     return max(0, min(final, 100))
@@ -2957,6 +2989,28 @@ def fetch_upbit_ticker_bulk(markets):
     return out
 
 
+# [2026-10-11 추가] 빗썸 전체시세(ALL) 짧은 캐시. process_ticker가 티커마다
+# Bithumb.get_current_price("ALL")을 따로 불러서 한 사이클에 같은 요청이 40번씩 나가고 있었다
+# (응답은 전부 같은 전체시세). 몇 초 캐시로 사이클당 1~2번으로 줄여 API 부담과 간헐적
+# None 응답(수집기 로그의 'NoneType' 에러) 노출을 줄인다. 실패/None이면 직전 성공값을 쓴다.
+_BITHUMB_ALL_TTL = 5.0
+_bithumb_all_cache = {"t": 0.0, "data": {}}
+_bithumb_all_lock = threading.Lock()
+
+def _get_bithumb_all_cached(ttl=_BITHUMB_ALL_TTL):
+    with _bithumb_all_lock:
+        now = time.time()
+        if _bithumb_all_cache["data"] and now - _bithumb_all_cache["t"] < ttl:
+            return _bithumb_all_cache["data"]
+        try:
+            data = Bithumb.get_current_price("ALL")
+            if isinstance(data, dict) and data:
+                _bithumb_all_cache["data"] = data
+                _bithumb_all_cache["t"] = now
+        except Exception:
+            pass
+        return _bithumb_all_cache["data"] or {}
+
 def process_ticker(ticker):
     try:
         df = fetch_candlestick(ticker, chart_intervals=CANDLE_INTERVAL)
@@ -3039,7 +3093,7 @@ def process_ticker(ticker):
         # 점수 계산 전에 먼저 구해둔다.
         vol_million = 0
         try:
-            all_ticker = Bithumb.get_current_price("ALL")
+            all_ticker = _get_bithumb_all_cached()
             info = all_ticker.get(ticker)
             if isinstance(info, dict):
                 acc = info.get('acc_trade_value_24H') or info.get('acc_trade_price_24h') or 0
@@ -3127,12 +3181,11 @@ def process_ticker(ticker):
                                                    price_cv_24h=price_cv_24h)
         # [2026-10-08] 신호 후 12h 내내 수익권에 못 가는 케이스 분석 결과 반영(전/후반 모두 재현):
         #  - 롱 점수: ATR<0.9% 저변동 코인은 12h 내 수익권 미도달 17% (ATR>=0.9는 3%), 12h 평균 +0.14% vs +1.01%
-        #  - 매집: BB%>40(이미 밴드 중상단)에서 뜬 신호는 12h 종료 손실 53% (BB<=40은 38%)
+        #    → 홀드아웃(10/8~10/10)에서도 재현: 통과 12h평균 +1.92%/손실 26% vs 탈락 -1.07%/손실 69% (검증됨)
+        #  - 매집 BB%>40 감산은 학습구간에선 맞았으나 홀드아웃에서 반대 방향이라 되돌림(보류).
         #  숏 점수/숏 조건식은 뚜렷한 분리 변수가 없어 건드리지 않음(AUC≈0.5).
         if atr_pct < LONG_LOW_ATR_THRESHOLD:
             long_score = int(long_score * LONG_LOW_ATR_FACTOR)
-        if bb_percent > PREPUMP_BB_MAX:
-            prepump_score = int(prepump_score * PREPUMP_BB_FACTOR)
         # 항목별 세부점수 (로그 분석/배점 튜닝용 — 총점과 동일한 함수로 계산, 105점 원점수 기준)
         components = {
             "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long', ema20_slope_pct),
@@ -3178,6 +3231,18 @@ def process_ticker(ticker):
             "recent_pct": round(recent_pct, 3),
             "extension_pct": round(extension_pct, 3) if extension_pct is not None else None,
             "components": components,
+            # [2026-10-11 추가] 점수 계산에 실제로 들어가는데 로그에 안 남던 입력값들 —
+            # data_collector.py가 같이 기록해서 나중에 서버 점수를 오프라인에서 그대로
+            # 재현/검증할 수 있게 한다(표시/주문 로직에는 영향 없음).
+            "regime": current_market_regime,
+            "ema20_slope_pct": round(ema20_slope_pct, 4),
+            "price_cv_24h": round(price_cv_24h, 6),
+            "chg_5m": round(chg_5m, 3),
+            "chg_15m": round(chg_15m, 3),
+            "momentum_blend": round(momentum_blend, 3),
+            "rsi_dwell_os_h": rsi_dwell_os_h, "rsi_dwell_ob_h": rsi_dwell_ob_h,
+            "bb_dwell_low_h": bb_dwell_low_h, "bb_dwell_high_h": bb_dwell_high_h,
+            "hl_flag": hl_flag,
         }
     except Exception as e:
         print(f"[{ticker}] 데이터 수집 실패: {e}")
@@ -3330,12 +3395,11 @@ def process_ticker_upbit(ticker):
                                                    price_cv_24h=price_cv_24h)
         # [2026-10-08] 신호 후 12h 내내 수익권에 못 가는 케이스 분석 결과 반영(전/후반 모두 재현):
         #  - 롱 점수: ATR<0.9% 저변동 코인은 12h 내 수익권 미도달 17% (ATR>=0.9는 3%), 12h 평균 +0.14% vs +1.01%
-        #  - 매집: BB%>40(이미 밴드 중상단)에서 뜬 신호는 12h 종료 손실 53% (BB<=40은 38%)
+        #    → 홀드아웃(10/8~10/10)에서도 재현: 통과 12h평균 +1.92%/손실 26% vs 탈락 -1.07%/손실 69% (검증됨)
+        #  - 매집 BB%>40 감산은 학습구간에선 맞았으나 홀드아웃에서 반대 방향이라 되돌림(보류).
         #  숏 점수/숏 조건식은 뚜렷한 분리 변수가 없어 건드리지 않음(AUC≈0.5).
         if atr_pct < LONG_LOW_ATR_THRESHOLD:
             long_score = int(long_score * LONG_LOW_ATR_FACTOR)
-        if bb_percent > PREPUMP_BB_MAX:
-            prepump_score = int(prepump_score * PREPUMP_BB_FACTOR)
         components = {
             "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long', ema20_slope_pct),
             "ema_s": score_ema_trend(current_price, ema20, ema60, ema120, 'short', ema20_slope_pct),
@@ -3596,7 +3660,8 @@ MARKET_COLS = ['ticker', 'price', 'price_usd', 'chg_24h', 'long_score', 'short_s
                'rsi', 'rsi_delta', 'vol_z', 'bb_percent', 'cvd', 'cvd_diff', 'funding',
                'vol_24h_m', 'atr_pct', 'oi_change_pct', 'chg_30m', 'ls_ratio',
                'ema20', 'ema60', 'recent_pct',
-               'min_cut', 'watch_cut', 'pp_min_cut', 'interval', 'score_time', 'price_time']
+               'min_cut', 'watch_cut', 'pp_min_cut', 'interval', 'score_time', 'price_time',
+               'regime']  # [2026-10-11 추가] 현재 확정된 시장 레짐(클라이언트 상단 표시용, 맨 뒤에 붙여 구버전 클라이언트와 호환)
 
 _last_score_time = [""]
 _last_score_time_upbit = [""]
@@ -3607,8 +3672,10 @@ def write_market_snapshot(exchange='bithumb'):
     읽는 파서(read_market_snapshot)를 그대로 재사용할 수 있다."""
     if exchange == 'bithumb':
         cache, prices, path, min_score, score_time = score_cache, latest_prices, MARKET_SNAPSHOT, current_min_score, _last_score_time[0]
+        regime_now = current_market_regime
     else:
         cache, prices, path, min_score, score_time = score_cache_upbit, latest_prices_upbit, MARKET_SNAPSHOT_UPBIT, current_min_score_upbit, _last_score_time_upbit[0]
+        regime_now = current_market_regime_upbit
     with score_lock:
         snap = {t: dict(r) for t, r in cache.items()}
     if not snap:
@@ -3644,6 +3711,7 @@ def write_market_snapshot(exchange='bithumb'):
             r.get('ema60', '') if r.get('ema60') is not None else '',
             r.get('recent_pct', '') if r.get('recent_pct') is not None else '',
             min_score, WATCH_MIN_SCORE, PREPUMP_MIN_SCORE, CANDLE_INTERVAL, score_time, pt,
+            regime_now,
         ])
         # [2026-07-21 추가] 커스텀 조건식 — CSV에 쓰는 것과 동일한 값으로 평가
         try:

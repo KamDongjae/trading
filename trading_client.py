@@ -185,6 +185,7 @@ current_min_score = FALLBACK_MIN_SCORE
 pp_current_min_score = FALLBACK_PP_MIN_SCORE
 watch_current_min_score = FALLBACK_WATCH_MIN_SCORE
 current_interval = "1h"
+current_regime = ""  # [2026-10-11 추가] 서버가 server_market.csv 맨 뒤 regime 칸에 써주는 현재 시장 레짐
 current_margin_mode = "cross"  # 서버 기본값과 동일. read_account_snapshot이 실제 값으로 갱신함
 bank_balance = 0.0
 bank_total_deposit = 0.0
@@ -225,7 +226,7 @@ def format_price_adaptive(value, unit=""):
 
 
 def read_market_snapshot(path=None):
-    global current_min_score, pp_current_min_score, watch_current_min_score, current_interval
+    global current_min_score, pp_current_min_score, watch_current_min_score, current_interval, current_regime
     path = path or MARKET_SNAPSHOT
     try:
         with open(path, 'r', newline='', encoding='utf-8') as f:
@@ -271,6 +272,9 @@ def read_market_snapshot(path=None):
                 iv = r.get('interval')
                 if iv:
                     current_interval = iv
+                rg = r.get('regime')
+                if rg:
+                    current_regime = rg
                 score_time = r.get('score_time', '') or score_time
                 price_time = r.get('price_time', '') or price_time
         return rows, score_time, price_time
@@ -1304,7 +1308,8 @@ class TradingClient:
         if self._stale_strike >= 2:
             self.server_label.config(text=f"서버[{ex_label}]: 연결 끊김 (trading_server.py 실행 확인)", fg="red")
         else:
-            self.server_label.config(text=f"서버[{ex_label}]: 정상 (기준봉 {current_interval} / 관심 {watch_current_min_score}·컷 {current_min_score}점 / 매집·분산 컷 {pp_current_min_score}점, {age:.0f}초 전 갱신)", fg="gray")
+            regime_str = f" / 레짐 {current_regime}" if current_regime else ""
+            self.server_label.config(text=f"서버[{ex_label}]: 정상 (기준봉 {current_interval}{regime_str} / 관심 {watch_current_min_score}·컷 {current_min_score}점 / 매집·분산 컷 {pp_current_min_score}점, {age:.0f}초 전 갱신)", fg="gray")
         acc = read_account_snapshot()
         if acc:
             self._account = acc
@@ -1533,6 +1538,24 @@ class TradingClient:
                         conflict_badge = "⚠충돌: 분산신호+롱조건식 — 검증됨, 12h/24h 거의 전부 하락(n=38)"
                     elif cond_dir == 'short' and border_color == "#3a7fd0":
                         conflict_badge = "⚠충돌: 매집신호+숏조건식(미검증·대칭추정)"
+                # [2026-10-11 추가] 3일 등락(recent_pct) 평균회귀 뱃지. 9/26~10/11 수집 데이터를
+                # 시간순 반반으로 나눠 검증했을 때 양쪽 다 재현된 구간만 표시한다(24h 시장대비 초과수익):
+                #   3일 +15% 이상 → 전반 -7.5% / 후반 -8.5% (단, 5~9개 종목 집중 — 표본 주의)
+                #   3일 +10% 이상 → 전반 -3.7% / 후반 -3.1% (상위 급등 6종목 빼도 방향 유지)
+                # 반대쪽(3일 -10% 이하 반등)은 상위 종목을 빼면 효과가 사라져서 표시하지 않는다.
+                # [같은날 수정] 10/8 이후 홀드아웃에선 독립 에피소드 8건 기준 재현이 안 됐고, 24h 안에
+                # +7% 더 오른 경우도 17%라(10배면 청산) '검증' 표현을 빼고 경향+스퀴즈 주의로 낮췄다.
+                mr_badge = None
+                rp = row.get('recent_pct')
+                if rp is not None:
+                    if rp >= 15:
+                        mr_badge = f"📉 3일 {rp:+.1f}% 과열 — 되돌림 경향(최근 미재현·스퀴즈 주의)"
+                    elif rp >= 10:
+                        mr_badge = f"📉 3일 {rp:+.1f}% 급등 — 되돌림 경향(최근 미재현)"
+                    if mr_badge and border_color == "#2fa84f":
+                        mr_badge += " · 롱 추격 주의"
+                if mr_badge:
+                    conflict_badge = f"{conflict_badge}\n{mr_badge}" if conflict_badge else mr_badge
                 display_ticker = f"[{ticker}]" if ticker in self.pinned_tickers else ticker
                 line1 = f"{display_ticker}  {chg24h_str} ({krw_str})  {usd_str}  롱{ls} 숏{ss}  매집{pp} 분산{ps}"
                 lsr = row.get('ls_ratio')
@@ -1541,7 +1564,8 @@ class TradingClient:
                          f"VolZ {row.get('vol_z', 0):+.1f} "
                          f"CVD {cvd_str} 30m {row.get('chg_30m', 0):+.2f}% "
                          f"ATR {row.get('atr_pct', 0):.2f}% OI {row.get('oi_change_pct', 0):+.2f}% "
-                         f"L/S {ls_str} Fund {row.get('funding', 0):+.3f}% Vol {row.get('vol_24h_m', 0):,}M")
+                         f"L/S {ls_str} Fund {row.get('funding', 0):+.3f}% Vol {row.get('vol_24h_m', 0):,}M"
+                         + (f" 3일 {row['recent_pct']:+.1f}%" if row.get('recent_pct') is not None else ""))
                 card = self.card_widgets.get(ticker)
                 is_new = card is None
                 if is_new:

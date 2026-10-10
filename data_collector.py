@@ -60,6 +60,12 @@ CSV_HEADER = [
     # 어느 항목이 노이즈인지" 분석할 때 필요해서 같이 로깅한다.
     "ema_l", "ema_s", "pp_l", "pp_s", "cvd_l", "cvd_s",
     "oi_sc", "m30_l", "m30_s", "volz_sc", "liquidity_sc",
+    # [2026-10-11 추가] 서버 점수 계산에 실제로 들어가는데 로그에 없던 입력값들.
+    # 특히 regime: 예전 수집기는 시장 레짐을 한 번도 갱신하지 않아서(항상 'normal')
+    # 로그에 찍힌 long/short 점수가 서버 화면 점수(하락장/횡보장 전용 로직 적용)와 달랐다.
+    "regime", "extension_pct", "ema20_slope_pct", "price_cv_24h",
+    "chg_5m", "chg_15m", "momentum_blend",
+    "rsi_dwell_os_h", "rsi_dwell_ob_h", "bb_dwell_low_h", "bb_dwell_high_h", "hl_flag",
 ]
 
 # 현재 로그 구간 상태 (get_output_path가 채워줌)
@@ -110,6 +116,38 @@ def _ensure_header(path):
     if not os.path.exists(path):
         with open(path, "w", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(CSV_HEADER)
+        return
+    _migrate_header_if_needed(path)
+
+
+def _migrate_header_if_needed(path):
+    """[2026-10-11 추가] 컬럼이 늘어난 뒤 예전 헤더로 시작한 '진행 중' 파일에 이어쓰면
+    행마다 칸 수가 달라져서 pandas가 못 읽는다. 기존 헤더가 새 헤더의 앞부분과 같으면
+    기존 행 뒤에 빈 칸을 채워 새 헤더로 한 번만 다시 쓴다(데이터 손실 없음, 원본은 .bak로 보관)."""
+    try:
+        with open(path, "r", newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            old_header = next(reader, None)
+            if old_header == CSV_HEADER:
+                return
+            if old_header is None or old_header != CSV_HEADER[:len(old_header)]:
+                print(f"⚠️ {os.path.basename(path)} 헤더가 예상과 달라 마이그레이션 건너뜀")
+                return
+            rows = list(reader)
+        pad = [""] * (len(CSV_HEADER) - len(old_header))
+        backup = path + ".bak"
+        if not os.path.exists(backup):
+            os.replace(path, backup)
+        tmp = path + ".tmp"
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(CSV_HEADER)
+            for r in rows:
+                w.writerow(r + pad[: max(0, len(CSV_HEADER) - len(r))])
+        os.replace(tmp, path)
+        print(f"🔧 {os.path.basename(path)} 헤더를 새 컬럼 포함으로 갱신 ({len(rows)}행, 원본: {os.path.basename(backup)})")
+    except Exception as e:
+        print(f"⚠️ 헤더 마이그레이션 실패({path}): {e}")
 
 
 def _row_from_result(ts, r):
@@ -130,6 +168,11 @@ def _row_from_result(ts, r):
         comp.get("cvd_l", ""), comp.get("cvd_s", ""),
         comp.get("oi_sc", ""), comp.get("m30_l", ""), comp.get("m30_s", ""),
         comp.get("volz_sc", ""), comp.get("liquidity_sc", ""),
+        r.get("regime", ""), r.get("extension_pct", ""), r.get("ema20_slope_pct", ""),
+        r.get("price_cv_24h", ""), r.get("chg_5m", ""), r.get("chg_15m", ""),
+        r.get("momentum_blend", ""),
+        r.get("rsi_dwell_os_h", ""), r.get("rsi_dwell_ob_h", ""),
+        r.get("bb_dwell_low_h", ""), r.get("bb_dwell_high_h", ""), r.get("hl_flag", ""),
     ]
 
 
@@ -145,20 +188,66 @@ def load_tickers():
     return tickers_ref
 
 
-def collect_once(tickers):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    rows = []
+def _score_all(tickers):
+    results = []
     with ThreadPoolExecutor(max_workers=srv.MAX_WORKERS) as pool:
         futures = {pool.submit(srv.process_ticker, t): t for t in tickers}
         for fut in as_completed(futures):
-            r = fut.result()
+            try:
+                r = fut.result()
+            except Exception as e:
+                print(f"⚠️ {futures[fut]} 처리 실패: {e}")
+                continue
             if r:
-                rows.append(_row_from_result(ts, r))
+                results.append(r)
+    return results
+
+
+def collect_once(tickers):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    results = _score_all(tickers)
+    # [2026-10-11 추가] 시장 레짐 갱신. 서버는 score_updater가 매 사이클 레짐을 갱신하지만
+    # 수집기는 그 루프를 안 돌려서 srv.current_market_regime이 영원히 'normal'이었다.
+    # 이번 결과로 레짐을 판정하고, 점수 계산 때 쓴 레짐과 다르면(첫 사이클/레짐 전환 시점)
+    # 바뀐 레짐으로 한 번 더 계산해서 서버와 같은 로직의 점수가 로그에 남게 한다.
+    try:
+        if results:
+            new_regime = srv.detect_market_regime(results)
+            if new_regime != srv.current_market_regime:
+                print(f"🧭 레짐 전환: {srv.current_market_regime} → {new_regime} (점수 재계산)")
+                srv.current_market_regime = new_regime
+                rescored = _score_all(tickers)
+                if rescored:
+                    results = rescored
+    except Exception as e:
+        print(f"⚠️ 레짐 판정 실패: {e}")
+    rows = [_row_from_result(ts, r) for r in results]
     out_path = get_output_path()  # 구간이 바뀌었으면 여기서 자동으로 새 파일로 전환됨
     if rows:
         with open(out_path, "a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerows(rows)
-    print(f"[{ts}] {len(rows)}개 티커 로그 저장 → {out_path}")
+    print(f"[{ts}] {len(rows)}개 티커 로그 저장 (레짐 {srv.current_market_regime}) → {out_path}")
+
+
+# [2026-10-11 추가] 코드 자동 재적용. 매일 리포트 작업이 trading_server.py/data_collector.py를
+# 고치면, 수집기는 다음 사이클 시작 전에 그걸 감지하고 스스로 종료한다 — run_collector.bat의
+# 재시작 루프가 30초 뒤 새 코드로 다시 띄운다(bat 없이 직접 돌릴 땐 그냥 종료됨).
+_WATCH_FILES = [os.path.join(SCRIPT_DIR, 'trading_server.py'), os.path.abspath(__file__)]
+
+def _snapshot_mtimes():
+    out = {}
+    for pth in _WATCH_FILES:
+        try:
+            out[pth] = os.path.getmtime(pth)
+        except OSError:
+            out[pth] = None
+    return out
+
+_START_MTIMES = _snapshot_mtimes()
+
+def _code_changed():
+    now = _snapshot_mtimes()
+    return [os.path.basename(p) for p in now if now[p] != _START_MTIMES.get(p)]
 
 
 def main():
@@ -188,7 +277,15 @@ def main():
     except Exception:
         pass
 
+    # [2026-10-11 변경] 예전엔 '수집 후 300초 쉬기'라서 수집 시간(20초 안팎)만큼 주기가
+    # 계속 밀렸다(실측 평균 5.4분 간격). 이제 시작 시각 기준 고정 주기로 돈다 — 수집이
+    # 오래 걸려 한 주기를 넘기면 밀린 회차는 건너뛰고 다음 정시 회차부터 다시 맞춘다.
+    next_run = time.time()
     while True:
+        changed = _code_changed()
+        if changed:
+            print(f"🔄 코드 변경 감지({', '.join(changed)}) — 새 코드로 재시작하려고 종료합니다")
+            sys.exit(0)
         try:
             tickers = tickers_ref[0]
             if not tickers:
@@ -197,7 +294,11 @@ def main():
             collect_once(tickers)
         except Exception as e:
             print(f"⚠️ 수집 실패: {e}")
-        time.sleep(COLLECT_INTERVAL_SEC)
+        next_run += COLLECT_INTERVAL_SEC
+        now = time.time()
+        if next_run < now:
+            next_run = now + (COLLECT_INTERVAL_SEC - (now - next_run) % COLLECT_INTERVAL_SEC)
+        time.sleep(max(0.0, next_run - time.time()))
 
 
 if __name__ == "__main__":
