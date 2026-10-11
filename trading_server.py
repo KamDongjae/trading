@@ -2015,6 +2015,65 @@ def score_ema_compression(ema20, ema60, ema120, direction):
     elif aligned_down: return 2
     return 1
 
+# ============================================================
+# [2026-10-12] 매집/분산 v7 — "조용한 눌림 매집" / "과열 분산"으로 재설계
+# 9/19~10/12 1시간 표본(2.16만행)에서 v6 구성요소별 순위상관(24h/48h 시장대비 초과수익)을
+# 기간 전반(~10/4)/후반으로 나눠 다시 봤더니:
+#   - 꾸준히 맞는 것: 3일 등락 낮을수록(+0.15/+0.07), 20캔들 박스 하단일수록(+0.15/+0.08),
+#     RSI·BB% 낮을수록, 가격이 EMA20 아래(-0.5~-4%)일수록 좋음 → 매집 = "많이 안 오른, 눌린 자리"
+#   - v6에서 반대로 작용하던 것: RSI 45~60 우대(실제론 낮을수록 좋음), EMA 압축 가점(-0.10/0),
+#     higher-low 가점(-0.07/0), OI 반전(≈0) → v7에서 제외
+#   - 상승장 HL 가점 때문에 레짐 반영 후 매집≥80이 전체 행의 25%로 폭증하던 문제도 같이 해소
+#   - 하락장 ×0.5는 신호를 아예 없애서, 하락장에선 컷을 사실상 90으로 올리는 ×0.89로 완화
+# 검증(독립 사건 12h 쿨다운, 12h/24h 승률 · 24h 시장대비 초과수익):
+#   매집≥80  v6: 전반 52/55% +0.30 | 10/4~10/9 43/36% +0.08 | 최근3일 55/53% +0.04 (행 14.6%)
+#            v7: 전반 71/73% +1.27 | 10/4~10/9 44/39% +0.64 | 최근3일 85/82% +0.91 (행 4.3%)
+#            (10/4~10/9는 무작위 롱 24h 승률이 32%인 하락 구간 — 절대 승률은 낮아도 시장은 이김)
+#   분산≥80  v6: 전반 80/80% (20건) | 최근3일 50/60% (6건) — 정확하지만 거의 안 뜸(행 0.6%)
+#            v7: 전반 70/68% +2.32 (81건) | 10/4~10/9 71/57% (7건) | 최근3일 44/75% +8.07 (12건) (행 1.8%)
+#            10배 6h 청산 4~13% — calc_liq_risk 권장 레버리지를 반드시 같이 볼 것
+# 주의: 구간 선택에 두 기간 패턴을 모두 참고했으므로 낙관 편향 가능. 매일 리포트에서 추적.
+# PREPUMP_SCORE_VERSION = 6 으로 바꾸면 v6 그대로 복귀.
+# ============================================================
+PREPUMP_SCORE_VERSION = 7
+
+def _prepump_v7(current_price, box_high, box_low, ema20, rsi, recent_pct, atr_pct, price_cv_24h, regime):
+    s = 0
+    rp = recent_pct if recent_pct is not None else 0.0
+    s += 20 if rp <= -10 else 18 if rp <= -5 else 12 if rp <= -2 else 8 if rp <= 0 else 4 if rp <= 3 else 0 if rp <= 10 else -10
+    if box_high is not None and box_low is not None and box_high > box_low:
+        bp = (current_price - box_low) / (box_high - box_low) * 100
+        s += 15 if bp <= 10 else 12 if bp <= 25 else 7 if bp <= 50 else 2 if bp <= 80 else 0
+    if ema20:
+        ed = (current_price / ema20 - 1) * 100
+        s += 8 if ed < -4 else 15 if ed <= -0.5 else 6 if ed <= 0.5 else 2 if ed <= 2 else 0
+    s += 12 if rsi < 30 else 15 if rsi <= 40 else 12 if rsi <= 45 else 8 if rsi <= 50 else 4 if rsi <= 55 else 0
+    a = atr_pct or 0.0
+    s += 0 if a < 0.5 else 4 if a < 0.9 else 7 if a < 1.5 else 10 if a <= 3 else 0
+    cv = price_cv_24h or 0.0
+    s += 0 if cv < 0.006 else 10 if 0.0166 <= cv < 0.0241 else 6 if 0.0129 <= cv < 0.0166 else 3
+    score = s * 100 / 78
+    if regime == '하락장':
+        score *= 80 / 90
+    return max(0, min(round(score), 100))
+
+def _preshort_v7(current_price, box_high, box_low, ema20, rsi, recent_pct, atr_pct, bb_percent):
+    s = 0
+    rp = recent_pct if recent_pct is not None else 0.0
+    s += 25 if rp >= 15 else 18 if rp >= 10 else 8 if rp >= 5 else 0 if rp >= -2 else -10
+    s += 18 if rsi >= 70 else 12 if rsi >= 60 else 4 if rsi >= 55 else 0
+    if ema20:
+        ed = (current_price / ema20 - 1) * 100
+        s += 18 if ed >= 4 else 12 if ed >= 2 else 5 if ed >= 0.5 else 0
+    bb = bb_percent if bb_percent is not None else 50
+    s += 12 if bb >= 100 else 9 if bb >= 80 else 4 if bb >= 60 else 0
+    if box_high is not None and box_low is not None and box_high > box_low:
+        bp = (current_price - box_low) / (box_high - box_low) * 100
+        s += 8 if bp >= 80 else 4 if bp >= 60 else 0
+    a = atr_pct or 0.0
+    s += 9 if a >= 3 else 6 if a >= 2 else 3 if a >= 1.2 else 0
+    return max(0, min(round(s * 100 / 81), 100))
+
 def calculate_prepump_score(oi_change_pct, cvd_1h, ema20, ema60, ema120, atr_pct, vol_z,
                              current_price, box_high, box_low, rsi, recent_pct, chg_30m_pct=0.0,
                              regime='normal', price_cv_24h=0.0, hl_flag=0):
@@ -2026,6 +2085,11 @@ def calculate_prepump_score(oi_change_pct, cvd_1h, ema20, ema60, ema120, atr_pct
     하락장에서는 신호가 무너지는 게 재확인돼(corr≈0) 0.5배 적용."""
     if not ENABLE_PREPUMP_SCORE:
         return 0
+    if PREPUMP_SCORE_VERSION >= 7:
+        try:
+            return _prepump_v7(current_price, box_high, box_low, ema20, rsi, recent_pct, atr_pct, price_cv_24h, regime)
+        except Exception:
+            return 0
     try:
         score = (score_oi_persistence(oi_change_pct, 'prepump')
                  + score_atr_state(atr_pct, 'prepump')
@@ -2043,12 +2107,17 @@ def calculate_prepump_score(oi_change_pct, cvd_1h, ema20, ema60, ema120, atr_pct
 
 def calculate_preshort_score(oi_change_pct, cvd_1h, ema20, ema60, ema120, atr_pct, vol_z,
                               current_price, box_high, box_low, rsi, recent_pct, chg_30m_pct=0.0,
-                              regime='normal', price_cv_24h=0.0):
+                              regime='normal', price_cv_24h=0.0, bb_percent=None):
     """분산 총점(0~100, 2026-09-29 v5)
     = OI반전(6)+ATR(22)+price_cv궤적(20)+RSI(18)+최근급등(26)+가격위치(8).
     28만행 검증: 24h corr -0.183→-0.175(소폭 하락), 48h -0.095→-0.125(개선)."""
     if not ENABLE_PREPUMP_SCORE:
         return 0
+    if PREPUMP_SCORE_VERSION >= 7:
+        try:
+            return _preshort_v7(current_price, box_high, box_low, ema20, rsi, recent_pct, atr_pct, bb_percent)
+        except Exception:
+            return 0
     try:
         score = (score_oi_persistence(oi_change_pct, 'preshort')
                  + score_atr_state(atr_pct, 'preshort')
@@ -3223,7 +3292,7 @@ def process_ticker(ticker):
         preshort_score = calculate_preshort_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
                                                    atr_pct, vz, current_price, box_high, box_low,
                                                    rsi_val, recent_pct, chg_30m, regime=current_market_regime,
-                                                   price_cv_24h=price_cv_24h)
+                                                   price_cv_24h=price_cv_24h, bb_percent=bb_percent)
         # [2026-10-08] 신호 후 12h 내내 수익권에 못 가는 케이스 분석 결과 반영(전/후반 모두 재현):
         #  - 롱 점수: ATR<0.9% 저변동 코인은 12h 내 수익권 미도달 17% (ATR>=0.9는 3%), 12h 평균 +0.14% vs +1.01%
         #    → 홀드아웃(10/8~10/10)에서도 재현: 통과 12h평균 +1.92%/손실 26% vs 탈락 -1.07%/손실 69% (검증됨)
@@ -3440,7 +3509,7 @@ def process_ticker_upbit(ticker):
         preshort_score = calculate_preshort_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
                                                    atr_pct, vz, current_price, box_high, box_low,
                                                    rsi_val, recent_pct, chg_30m, regime=current_market_regime_upbit,
-                                                   price_cv_24h=price_cv_24h)
+                                                   price_cv_24h=price_cv_24h, bb_percent=bb_percent)
         # [2026-10-08] 신호 후 12h 내내 수익권에 못 가는 케이스 분석 결과 반영(전/후반 모두 재현):
         #  - 롱 점수: ATR<0.9% 저변동 코인은 12h 내 수익권 미도달 17% (ATR>=0.9는 3%), 12h 평균 +0.14% vs +1.01%
         #    → 홀드아웃(10/8~10/10)에서도 재현: 통과 12h평균 +1.92%/손실 26% vs 탈락 -1.07%/손실 69% (검증됨)

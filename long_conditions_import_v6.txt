@@ -1,0 +1,4 @@
+# 커스텀 조건식 내보내기
+# 형식: 색상	사용여부(1/0)	알림여부(1/0)	조건식
+# [2026-10-12 자동] v5 각 절에 bb_percent < 20 추가. 근거(독립 사건 12h 쿨다운): 학습 24h 54→57%, 초과 +0.44→+0.65 / 홀드 24h 70→85%, 초과 +0.28→+1.31, 청산 1.2→0.0%
+#2eaa4a	1	0	(bb_percent < 20 && rsi_delta > 0) || (rsi < 35 && bb_percent < 20) || (rsi < 40 && rsi_delta > 0 && bb_percent < 20) || (recent_pct < -5 && chg_30m < -1 && bb_percent < 20) || (bb_percent < 0 && atr_pct > 1 && oi_change_pct < -1)
