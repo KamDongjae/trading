@@ -2163,28 +2163,36 @@ current_market_regime_upbit = 'normal'  # 업비트 전용
 # ATR%/EMA배열비율)만으로 바로바로 레짐이 바뀌던 걸 완화. trading_client.py의 "연결끊김"
 # 깜빡임을 _stale_strike로 잡았던 것과 같은 패턴 — 후보 레짐이 REGIME_CONFIRM_CYCLES번
 # 연속으로 나와야 실제 전환 확정, 아니면 직전 확정 레짐 유지.
-REGIME_CONFIRM_CYCLES = 18  # 10초×18 ≈ 3분 연속 동일 판정일 때만 전환
-_regime_streak = {'bithumb': {'candidate': None, 'count': 0}, 'upbit': {'candidate': None, 'count': 0}}
+REGIME_CONFIRM_CYCLES = 18  # (구버전 호환용, 현재 미사용 — 아래 REGIME_CONFIRM_SECONDS 사용)
+# [2026-10-12 변경] 횟수 기준 → 시간 기준. 10/12 수집 로그에서 레짐이 상승장↔횡보장으로
+# 5~10분마다 뒤집히는 게 확인됐다(3분 디바운스로는 부족). 서버(10초 주기)와 수집기(5분 주기)가
+# 같은 기준을 쓰도록, 새 후보 레짐이 REGIME_CONFIRM_SECONDS 동안 계속 유지돼야 전환한다.
+# 시작 직후('normal')에는 첫 판정을 바로 반영한다.
+REGIME_CONFIRM_SECONDS = 900  # 15분
+_regime_streak = {'bithumb': {'candidate': None, 'since': 0.0}, 'upbit': {'candidate': None, 'since': 0.0}}
 
-def _debounce_regime(exchange, candidate):
-    """candidate가 REGIME_CONFIRM_CYCLES번 연속 나와야 확정 레짐을 바꾼다. 그 전엔 직전
-    확정값을 그대로 반환(1틱짜리 노이즈로 레짐이 튀는 걸 방지)."""
-    confirmed = current_market_regime if exchange == 'bithumb' else current_market_regime_upbit
-    state = _regime_streak[exchange]
+def debounce_regime_value(state, confirmed, candidate, now=None):
+    """공용 디바운스: state={'candidate','since'}를 갱신하고 확정 레짐을 돌려준다."""
+    now = time.time() if now is None else now
+    if confirmed in (None, 'normal'):
+        state['candidate'] = None
+        return candidate
     if candidate == confirmed:
         state['candidate'] = None
-        state['count'] = 0
         return confirmed
-    if candidate == state['candidate']:
-        state['count'] += 1
-    else:
+    if candidate != state.get('candidate'):
         state['candidate'] = candidate
-        state['count'] = 1
-    if state['count'] >= REGIME_CONFIRM_CYCLES:
+        state['since'] = now
+        return confirmed
+    if now - state.get('since', now) >= REGIME_CONFIRM_SECONDS:
         state['candidate'] = None
-        state['count'] = 0
         return candidate
     return confirmed
+
+def _debounce_regime(exchange, candidate):
+    """candidate가 REGIME_CONFIRM_SECONDS 동안 계속 나와야 확정 레짐을 바꾼다."""
+    confirmed = current_market_regime if exchange == 'bithumb' else current_market_regime_upbit
+    return debounce_regime_value(_regime_streak[exchange], confirmed, candidate)
 
 def detect_market_regime(results):
     """

@@ -194,6 +194,9 @@ def load_tickers():
     return tickers_ref
 
 
+_collector_regime_state = {"candidate": None, "since": 0.0}
+
+
 def _score_all(tickers):
     results = []
     with ThreadPoolExecutor(max_workers=srv.MAX_WORKERS) as pool:
@@ -209,6 +212,145 @@ def _score_all(tickers):
     return results
 
 
+# ============================================================
+# [2026-10-12 추가] 진입 신호(판정 롱/숏) 사후 수익률 기록
+# 서버 calc_verdict가 낸 판정(LONG/SHORT)이 새로 켜진 순간을 '진입'으로 보고,
+# 1h/2h/4h/6h/12h 뒤 수익률(방향 반영, %)과 12h 동안의 최대 유리/불리 폭을 채워서
+# signal_outcomes_verdict.csv에 남긴다.
+#   - 같은 티커·같은 방향 판정이 계속 켜져 있는 동안은 한 건으로 본다.
+#     꺼졌다가 SIGNAL_REARM_MIN분 안에 다시 켜져도 같은 건(깜빡임 방지).
+#   - 각 시점 수익률은 그 시각 이후 첫 수집 가격으로 채운다. 수집기가 꺼져 있어서
+#     SIGNAL_LATE_MIN분 넘게 늦으면 비워두고 'missed'로 표시한다.
+#   - 수집기를 껐다 켜도 CSV에서 미완료 건을 다시 읽어서 이어서 채운다.
+# ============================================================
+SIGNAL_LOG_CSV = os.path.join(SCRIPT_DIR, "signal_outcomes_verdict.csv")
+SIGNAL_HORIZONS_H = [1, 2, 4, 6, 12]
+SIGNAL_REARM_MIN = 60
+SIGNAL_LATE_MIN = 15
+SIGNAL_COLS = (["event_id", "start", "ticker", "direction", "reason", "entry_price",
+                "long_score", "short_score", "prepump_score", "preshort_score",
+                "regime", "max_lev", "liq_risk", "last_seen"]
+               + [f"r{h}h" for h in SIGNAL_HORIZONS_H]
+               + ["mfe_12h", "mae_12h", "status", "missed"])
+
+
+class SignalTracker:
+    def __init__(self, path=SIGNAL_LOG_CSV):
+        self.path = path
+        self.events = []
+        self.load()
+
+    def load(self):
+        self.events = []
+        if not os.path.exists(self.path):
+            return
+        try:
+            with open(self.path, newline="", encoding="utf-8") as f:
+                for r in csv.DictReader(f):
+                    self.events.append(dict(r))
+        except Exception as e:
+            print(f"⚠️ 신호 기록 읽기 실패: {e}")
+
+    def save(self):
+        tmp = self.path + ".tmp"
+        try:
+            with open(tmp, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=SIGNAL_COLS, extrasaction="ignore")
+                w.writeheader()
+                for e in self.events:
+                    w.writerow(e)
+            os.replace(tmp, self.path)
+        except Exception as e:
+            print(f"⚠️ 신호 기록 저장 실패: {e}")
+
+    @staticmethod
+    def _dt(s):
+        return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+
+    def update(self, now, rows):
+        """now: datetime, rows: [{'ticker','price','verdict','verdict_reason',...}]"""
+        prices = {r["ticker"]: r.get("price") for r in rows if r.get("price")}
+        now_s = now.strftime("%Y-%m-%d %H:%M:%S")
+        open_by_key = {}
+        for e in self.events:
+            open_by_key[(e["ticker"], e["direction"])] = e  # 마지막 건이 남음
+        new_cnt = 0
+        for r in rows:
+            v = r.get("verdict")
+            if v not in ("LONG", "SHORT") or not r.get("price"):
+                continue
+            key = (r["ticker"], v)
+            last = open_by_key.get(key)
+            if last and last.get("last_seen"):
+                gap = (now - self._dt(last["last_seen"])).total_seconds() / 60
+                if gap <= SIGNAL_REARM_MIN:
+                    last["last_seen"] = now_s
+                    continue
+            e = {c: "" for c in SIGNAL_COLS}
+            e.update({
+                "event_id": f"{now:%Y%m%d%H%M}_{r['ticker']}_{v}", "start": now_s, "ticker": r["ticker"],
+                "direction": v, "reason": r.get("verdict_reason", ""), "entry_price": r["price"],
+                "long_score": r.get("long_score", ""), "short_score": r.get("short_score", ""),
+                "prepump_score": r.get("prepump_score", ""), "preshort_score": r.get("preshort_score", ""),
+                "regime": r.get("regime", ""), "max_lev": r.get("max_lev", ""), "liq_risk": r.get("liq_risk", ""),
+                "last_seen": now_s, "status": "open", "mfe_12h": 0.0, "mae_12h": 0.0, "missed": "",
+            })
+            self.events.append(e)
+            open_by_key[key] = e
+            new_cnt += 1
+        # 미완료 건 채우기
+        for e in self.events:
+            if e.get("status") != "open":
+                continue
+            try:
+                start = self._dt(e["start"])
+                entry = float(e["entry_price"])
+                sign = 1 if e["direction"] == "LONG" else -1
+            except Exception:
+                e["status"] = "error"
+                continue
+            p = prices.get(e["ticker"])
+            elapsed_min = (now - start).total_seconds() / 60
+            if p and elapsed_min <= 12 * 60 + SIGNAL_LATE_MIN:
+                ret = (float(p) / entry - 1) * 100 * sign
+                try:
+                    e["mfe_12h"] = round(max(float(e.get("mfe_12h") or 0), ret), 3)
+                    e["mae_12h"] = round(min(float(e.get("mae_12h") or 0), ret), 3)
+                except Exception:
+                    pass
+            missed = [m for m in str(e.get("missed") or "").split("|") if m]
+            for h in SIGNAL_HORIZONS_H:
+                col = f"r{h}h"
+                if e.get(col) not in (None, "") or f"{h}h" in missed:
+                    continue
+                if elapsed_min < h * 60:
+                    continue
+                if p and elapsed_min - h * 60 <= SIGNAL_LATE_MIN:
+                    e[col] = round((float(p) / entry - 1) * 100 * sign, 3)
+                else:
+                    missed.append(f"{h}h")
+            e["missed"] = "|".join(missed)
+            if all(e.get(f"r{h}h") not in (None, "") or f"{h}h" in missed for h in SIGNAL_HORIZONS_H):
+                e["status"] = "done"
+        return new_cnt
+
+
+_signal_tracker = None
+
+
+def _track_signals(ts, results):
+    global _signal_tracker
+    try:
+        if _signal_tracker is None:
+            _signal_tracker = SignalTracker()
+        n = _signal_tracker.update(datetime.strptime(ts, "%Y-%m-%d %H:%M:%S"), results)
+        _signal_tracker.save()
+        if n:
+            print(f"📌 새 진입 신호 {n}건 기록 → {os.path.basename(SIGNAL_LOG_CSV)}")
+    except Exception as e:
+        print(f"⚠️ 신호 추적 실패: {e}")
+
+
 def collect_once(tickers):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     results = _score_all(tickers)
@@ -218,7 +360,11 @@ def collect_once(tickers):
     # 바뀐 레짐으로 한 번 더 계산해서 서버와 같은 로직의 점수가 로그에 남게 한다.
     try:
         if results:
-            new_regime = srv.detect_market_regime(results)
+            raw_regime = srv.detect_market_regime(results)
+            # [2026-10-12] 서버와 같은 시간 기준 디바운스(REGIME_CONFIRM_SECONDS, 15분) — 5~10분마다
+            # 상승장↔횡보장이 뒤집히던 문제 완화. 구버전 서버면 디바운스 없이 그대로 사용.
+            deb = getattr(srv, "debounce_regime_value", None)
+            new_regime = deb(_collector_regime_state, srv.current_market_regime, raw_regime) if deb else raw_regime
             if new_regime != srv.current_market_regime:
                 print(f"🧭 레짐 전환: {srv.current_market_regime} → {new_regime} (점수 재계산)")
                 srv.current_market_regime = new_regime
@@ -233,12 +379,14 @@ def collect_once(tickers):
         with open(out_path, "a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerows(rows)
     print(f"[{ts}] {len(rows)}개 티커 로그 저장 (레짐 {srv.current_market_regime}) → {out_path}")
+    _track_signals(ts, results)
 
 
 # [2026-10-11 추가] 코드 자동 재적용. 매일 리포트 작업이 trading_server.py/data_collector.py를
 # 고치면, 수집기는 다음 사이클 시작 전에 그걸 감지하고 스스로 종료한다 — run_collector.bat의
 # 재시작 루프가 30초 뒤 새 코드로 다시 띄운다(bat 없이 직접 돌릴 땐 그냥 종료됨).
-_WATCH_FILES = [os.path.join(SCRIPT_DIR, 'trading_server.py'), os.path.abspath(__file__)]
+_WATCH_FILES = [os.path.join(SCRIPT_DIR, 'trading_server.py'), os.path.abspath(__file__),
+                os.path.join(SCRIPT_DIR, 'trading_client.py')]  # 클라만 바뀌어도 재시작→즉시 push
 
 def _snapshot_mtimes():
     out = {}
@@ -254,6 +402,30 @@ _START_MTIMES = _snapshot_mtimes()
 def _code_changed():
     now = _snapshot_mtimes()
     return [os.path.basename(p) for p in now if now[p] != _START_MTIMES.get(p)]
+
+
+# [2026-10-12 추가] GitHub 자동 push — 수집기가 auto_git_push.bat(같은 폴더)를 직접 실행한다.
+# 시작할 때 한 번(= 코드가 바뀌어 재시작될 때마다) + AUTO_PUSH_INTERVAL_MIN 분마다.
+# bat은 바뀐 게 없으면 아무것도 안 하고, 결과는 git_push_log.txt에 남는다. 수집은 기다리지 않음.
+AUTO_PUSH_BAT = os.path.join(SCRIPT_DIR, "auto_git_push.bat")
+AUTO_PUSH_INTERVAL_MIN = 30
+_last_push = [0.0]
+
+def _maybe_auto_push(force=False):
+    try:
+        if os.name != "nt" or not os.path.exists(AUTO_PUSH_BAT):
+            return
+        now = time.time()
+        if not force and now - _last_push[0] < AUTO_PUSH_INTERVAL_MIN * 60:
+            return
+        _last_push[0] = now
+        import subprocess
+        subprocess.Popen(["cmd", "/c", AUTO_PUSH_BAT], cwd=SCRIPT_DIR,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        print("⬆️ GitHub 자동 push 실행(결과: git_push_log.txt)")
+    except Exception as e:
+        print(f"⚠️ 자동 push 실행 실패: {e}")
 
 
 def main():
@@ -287,7 +459,9 @@ def main():
     # 계속 밀렸다(실측 평균 5.4분 간격). 이제 시작 시각 기준 고정 주기로 돈다 — 수집이
     # 오래 걸려 한 주기를 넘기면 밀린 회차는 건너뛰고 다음 정시 회차부터 다시 맞춘다.
     next_run = time.time()
+    _maybe_auto_push(force=True)
     while True:
+        _maybe_auto_push()
         changed = _code_changed()
         if changed:
             print(f"🔄 코드 변경 감지({', '.join(changed)}) — 새 코드로 재시작하려고 종료합니다")

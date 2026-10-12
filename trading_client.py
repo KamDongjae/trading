@@ -46,6 +46,7 @@ ACCOUNT_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_account.csv")
 CMD_DIR = os.path.join(SCRIPT_DIR, "server_cmds")
 RESULTS_FILE = os.path.join(SCRIPT_DIR, "server_results.csv")
 HISTORY_FILE = os.path.join(SCRIPT_DIR, "trade_history_usd.csv")  # 서버가 실제로 쓰는 파일명과 일치시킴(기존엔 이름이 달라서 청산기록이 항상 비어 보였음)
+SIGNAL_SINCE_FILE = os.path.join(SCRIPT_DIR, "signal_since.json")  # [2026-10-12 추가] 카드 롱/숏 신호 시작시각 저장
 CUSTOM_CONDITIONS_FILE = os.path.join(SCRIPT_DIR, "custom_conditions.json")  # [2026-07-21 추가] 사용자 정의 조건식 저장
 FILTER_CONDITIONS_FILE = os.path.join(SCRIPT_DIR, "filter_conditions.json")  # [2026-08-05 추가] 필터(코인 목록 자체를 걸러냄) 저장
 
@@ -680,6 +681,11 @@ class TradingClient:
         self.card_canvas.bind("<MouseWheel>", lambda e: self.card_canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"), add="+")
         self.card_widgets = {}
         self._latest_rows = {}  # [2026-10-05 추가] 정보 모달용 — 티커별 최신 row dict 캐시
+        # [2026-10-12 추가] 롱/숏 진입 테두리(초록/빨강)가 켜진 시작 시각. 키=(거래소, 티커),
+        # 값={'dir','since','seen'}. 신호가 꺼지면 지우고, 다시 켜지면 그 시각부터 다시 센다.
+        # 클라이언트를 껐다 켜도 이어지게 파일에 저장(마지막 확인 후 10분 넘게 지난 건 버림).
+        self._signal_since = self._load_signal_since()
+        self._signal_since_dirty = False
         self._last_table_order = []
         self._last_reorder_time = 0.0
         self._reorder_interval = 3.0  # 순서 재배치는 3초마다만 (매 폴링마다 하면 깜빡임 심함)
@@ -1462,6 +1468,51 @@ class TradingClient:
 
         threading.Thread(target=_fire, daemon=True).start()
 
+    def _load_signal_since(self):
+        try:
+            with open(SIGNAL_SINCE_FILE, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+            now = time.time()
+            out = {}
+            for k, v in raw.items():
+                if now - float(v.get('seen', 0)) <= 600:
+                    ex, tk = k.split('|', 1)
+                    out[(ex, tk)] = v
+            return out
+        except Exception:
+            return {}
+
+    def _save_signal_since(self):
+        try:
+            data = {f"{k[0]}|{k[1]}": v for k, v in self._signal_since.items()}
+            tmp = SIGNAL_SINCE_FILE + ".tmp"
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, SIGNAL_SINCE_FILE)
+        except Exception:
+            pass
+
+    def _signal_since_text(self, ticker, border_color):
+        """롱/숏 진입 테두리가 켜진 시작 시각을 'mm-dd hh:mm'으로 돌려준다(없으면 '')."""
+        key = (self.current_exchange, ticker)
+        direction = 'L' if border_color == "#2fa84f" else ('S' if border_color == "#e04040" else None)
+        now = time.time()
+        cur = self._signal_since.get(key)
+        if direction is None:
+            if cur is not None:
+                del self._signal_since[key]
+                self._signal_since_dirty = True
+            return ""
+        if cur is None or cur.get('dir') != direction:
+            cur = {'dir': direction, 'since': now, 'seen': now}
+            self._signal_since[key] = cur
+            self._signal_since_dirty = True
+        else:
+            if now - cur.get('seen', now) > 60:
+                self._signal_since_dirty = True
+            cur['seen'] = now
+        return time.strftime("%m-%d %H:%M", time.localtime(cur["since"]))
+
     def _render_table(self, data_list):
         try:
             self._last_render_data = data_list
@@ -1606,6 +1657,9 @@ class TradingClient:
                         conflict_badge = f"{v_badge}\n{conflict_badge}" if conflict_badge else v_badge
                 display_ticker = f"[{ticker}]" if ticker in self.pinned_tickers else ticker
                 line1 = f"{display_ticker}  {chg24h_str} ({krw_str})  {usd_str}  롱{ls} 숏{ss}  매집{pp} 분산{ps}"
+                since_txt = self._signal_since_text(ticker, border_color)
+                if since_txt:
+                    line1 += f"   {'롱' if border_color == '#2fa84f' else '숏'} {since_txt}~"
                 lsr = row.get('ls_ratio')
                 ls_str = f"{lsr:.2f}" if lsr is not None else "N/A"
                 line2 = (f"RSI {row['rsi']}({row['rsi_delta']:+}) BB {row['bb_percent']:.0f}% "
@@ -1671,6 +1725,10 @@ class TradingClient:
                 if ticker not in seen:
                     self.card_widgets[ticker].destroy()
                     del self.card_widgets[ticker]
+
+            if self._signal_since_dirty:
+                self._save_signal_since()
+                self._signal_since_dirty = False
 
             # 순서 재배치는 실제로 순서가 바뀌었고, 마지막 재배치 후 일정 시간(또는 정렬버튼 클릭)이
             # 지났을 때만 수행한다. pack_forget()으로 전부 뗐다 다시 붙이면 그 순간 리스트가

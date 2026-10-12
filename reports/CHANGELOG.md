@@ -1,5 +1,33 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-10-12 (수동, 22:40 KST) — 수집기가 GitHub 자동 push 실행
+
+- **변경**: `data_collector.py`가 시작할 때 + 30분마다 `auto_git_push.bat`를 백그라운드 실행(창 없음, 결과는 git_push_log.txt). 감시 파일에 `trading_client.py` 추가 → 서버/수집기/클라 중 하나라도 바뀌면 수집기 재시작 → 즉시 push
+- **이유**: 코드 변경 후 다음날 07:00까지 GitHub 반영이 늦던 문제. 윈도우 작업 스케줄러(07:00)는 그대로 둬도 무방
+- **되돌리는 법**: backups\20261012_push\data_collector.py
+- **반영 조건**: 수집기 자동 재시작
+
+## 2026-10-12 (수동, 22:20 KST) — 카드에 신호 시작 시각 표시
+
+- **변경**: `trading_client.py` 카드 첫 줄 맨 오른쪽에 롱/숏 진입 테두리(초록/빨강)가 켜진 시각 `롱 mm-dd hh:mm~` / `숏 mm-dd hh:mm~` 표시. 신호가 꺼지면 지우고, 다시 켜지면 그 시각부터 새로 표시. 클라이언트 재시작 시 이어지도록 `signal_since.json`에 저장(10분 넘게 확인 안 된 건 버림)
+- **되돌리는 법**: backups\20261012_since\trading_client.py
+- **반영 조건**: 클라이언트 재시작
+
+## 2026-10-12 (수동, 20:30 KST) — 진입 신호 사후 수익률 기록
+
+- **변경**: `data_collector.py`에 `SignalTracker` 추가. 판정(LONG/SHORT)이 새로 켜진 순간을 진입으로 보고 1h/2h/4h/6h/12h 수익률(방향 반영 %), 12h 최대 유리(mfe)/불리(mae) 폭을 `signal_outcomes_verdict.csv`에 기록. 같은 티커·방향이 계속 켜져 있거나 60분 안에 다시 켜지면 같은 건. 수집기 정지로 15분 넘게 늦은 시점은 missed 표시
+- **초기 데이터**: 10/11 06:23~10/12 20:14 로그로 역산해 44건 채워둠(롱 23, 숏 21)
+- **되돌리는 법**: backups\20261012_regime\data_collector.py (디바운스 전 버전) 또는 이 기능 블록만 삭제
+- **반영 조건**: 수집기 자동 재시작(서버/클라 무관)
+
+## 2026-10-12 (수동, 20:10 KST) — 레짐 디바운스 시간 기준(15분)
+
+- **변경**: `trading_server.py` `_debounce_regime`을 횟수(10초×18=3분) → 시간 기준 `REGIME_CONFIRM_SECONDS=900`(15분)으로, 공용 함수 `debounce_regime_value()` 추가. `data_collector.py`도 같은 함수로 디바운스(이전엔 매 사이클 즉시 전환)
+- **이유**: 10/12 수집 로그에서 레짐이 상승장↔횡보장으로 5~10분마다 뒤집힘(하루 15회+). 레짐마다 점수 경로가 달라 점수가 출렁임
+- **영향**: 새 레짐이 15분 이상 유지돼야 전환. 시작 직후(normal)는 즉시 반영. 점수 공식 자체는 무변경
+- **되돌리는 법**: backups\20261012_regime\
+- **반영 조건**: 서버 재시작 필요, 수집기 자동 재시작
+
 ## 2026-10-12 (수동, 07:10 KST) — 매집/분산 v7
 
 - **변경**: `trading_server.py` `PREPUMP_SCORE_VERSION=7`, `_prepump_v7()`/`_preshort_v7()` 추가(calculate_prepump/preshort_score가 분기), `calculate_preshort_score`에 `bb_percent` 인자 추가(호출 2곳). `trading_client.py` 도움말 문구 갱신. 판정 규칙 무변경
