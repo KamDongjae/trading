@@ -948,8 +948,20 @@ class TradingClient:
 
     def _build_rank_panel(self):
         fs = self.ui_font_base
+        # [2026-10-14] 세로 스크롤(스크롤바 + 휠 + 터치 드래그) — 화면이 작으면 20줄이 다 안 들어가서
         self.rank_panel = tk.Frame(self.root)
-        self._rank_info = tk.Label(self.rank_panel, text="", anchor="w", justify="left",
+        self.rank_canvas = tk.Canvas(self.rank_panel, highlightthickness=0)
+        self.rank_canvas.pack(side="left", fill="both", expand=True)
+        self.rank_scrollbar = ttk.Scrollbar(self.rank_panel, orient="vertical", command=self.rank_canvas.yview)
+        self.rank_scrollbar.pack(side="right", fill="y")
+        self.rank_canvas.configure(yscrollcommand=self.rank_scrollbar.set)
+        inner = tk.Frame(self.rank_canvas)
+        self.rank_inner = inner
+        self._rank_window = self.rank_canvas.create_window((0, 0), window=inner, anchor="nw")
+        self.rank_canvas.bind("<Configure>", lambda e: self.rank_canvas.itemconfig(self._rank_window, width=e.width))
+        inner.bind("<Configure>", lambda e: self.rank_canvas.configure(scrollregion=self.rank_canvas.bbox("all")))
+        self._rank_drag = {"y": 0, "view": 0.0, "dragged": False}
+        self._rank_info = tk.Label(inner, text="", anchor="w", justify="left",
                                    font=("Arial", self.FONT_SMALL), fg="#555555",
                                    wraplength=max(self.card_wraplength, 300))
         self._rank_info.pack(fill="x", padx=4, pady=(2, 2))
@@ -957,7 +969,7 @@ class TradingClient:
         self._rank_tickers = {}
         for side, title, color in (("long", "롱 상위 10 — 24h 상승확률 높은 순", "#2fa84f"),
                                    ("short", "숏 상위 10 — 24h 상승확률 낮은 순", "#e04040")):
-            box = tk.Frame(self.rank_panel, highlightbackground=color, highlightcolor=color, highlightthickness=3)
+            box = tk.Frame(inner, highlightbackground=color, highlightcolor=color, highlightthickness=3)
             box.pack(fill="x", padx=2, pady=4)
             tk.Label(box, text=title, font=("Arial", fs, "bold"), fg=color, anchor="w").grid(
                 row=0, column=0, columnspan=len(self.RANK_COLS), sticky="w", padx=4, pady=(2, 0))
@@ -978,8 +990,37 @@ class TradingClient:
             self._rank_rows[side] = rows
             self._rank_tickers[side] = [None] * self.RANK_N
         self._rank_default_bg = self._rank_info.cget("bg")
+        self._bind_rank_scroll(self.rank_canvas)
+
+    def _bind_rank_scroll(self, w):
+        """순위 탭 안의 모든 위젯에 휠/드래그 스크롤을 건다(라벨이 캔버스를 덮고 있어서 각자 걸어야 함)."""
+        w.bind("<ButtonPress-1>", self._rank_press, add="+")
+        w.bind("<B1-Motion>", self._rank_motion, add="+")
+        w.bind("<MouseWheel>", lambda e: self.rank_canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"), add="+")
+        w.bind("<Button-4>", lambda e: self.rank_canvas.yview_scroll(-1, "units"), add="+")
+        w.bind("<Button-5>", lambda e: self.rank_canvas.yview_scroll(1, "units"), add="+")
+        for ch in w.winfo_children():
+            self._bind_rank_scroll(ch)
+
+    def _rank_press(self, event):
+        self._rank_drag["y"] = event.y_root
+        self._rank_drag["view"] = self.rank_canvas.yview()[0]
+        self._rank_drag["dragged"] = False
+
+    def _rank_motion(self, event):
+        dy = event.y_root - self._rank_drag["y"]
+        if abs(dy) > 8:
+            self._rank_drag["dragged"] = True
+        if not self._rank_drag["dragged"]:
+            return
+        h = max(self.rank_canvas.winfo_height(), 1)
+        ylo, yhi = self.rank_canvas.yview()
+        span = max(yhi - ylo, 0.0001)
+        self.rank_canvas.yview_moveto(max(0.0, min(1.0, self._rank_drag["view"] - (dy / h) * span)))
 
     def _rank_click(self, side, idx):
+        if self._rank_drag.get("dragged"):
+            return
         t = self._rank_tickers.get(side, [None] * self.RANK_N)[idx]
         if t:
             self.ticker_entry.delete(0, tk.END)
