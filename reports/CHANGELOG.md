@@ -1,5 +1,15 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-10-13 (수동, 21:40 KST) — 24h 상승확률 모델 + 판정 확률 필터
+
+- **추가**: `prob_model.py` — history\ 1시간봉으로 "24h 뒤 상승" 확률을 학습(HistGradientBoosting, 피처 35개: 가격지표 22 + 시장맥락·종목간 순위 13). 모델은 `models\prob_model.pkl`, 로그 `models\train_log.txt`
+- **변경 trading_server.py**: 전 종목 결과를 모은 뒤 `apply_prob_filter`로 `p_up` 계산. 판정 LONG인데 p<0.55, SHORT인데 p>0.45면 대기로 내림(`USE_PROB_FILTER`, `PROB_LONG_MIN`, `PROB_SHORT_MAX`). server_market.csv 맨 뒤에 `p_up` 칸. 주문·청산 로직 무변경
+- **변경 data_collector.py**: 로그에 `p_up` 칸. 백그라운드 작업: scikit-learn 없으면 pip 설치 → history 다운로드(20h 주기) → 모델 재학습(20h 주기). 감시 파일에 prob_model.py 추가
+- **변경 trading_client.py**: 카드 2번째 줄에 `확률 0.62`. 판정 뱃지 승률 문구를 2년 검증치로 교체, 확률 미달로 대기된 경우 이유 표시
+- **근거**: 2년 워크포워드(reports\longterm_20261013.md). 판정 LONG 24h 승률 49.6→54.1%(A 50.8→55.3 / B 48.2→52.4), SHORT 59.9→63.6%(A 59.1→64.4 / B 60.7→62.8), 초과수익 롱 +0.14→+0.28 / 숏 +0.98→+1.44
+- **되돌리는 법**: `USE_PROB_FILTER = False`(표시만 유지) 또는 backups\20261013_prob\ 3개 파일 복원
+- **반영 조건**: 수집기 자동 재시작(모델 첫 학습은 재시작 직후 1분 안팎). 서버·클라이언트는 재시작 필요
+
 ## 2026-10-13 (수동, 19:40 KST) — 과거 캔들 자동 다운로드
 
 - **추가**: `history_downloader.py` — 업비트(없으면 빗썸 v1) 공개 API에서 코인별 1시간봉 2년 / 일봉 3년을 `history\` 폴더에 CSV로 저장. 이어받기·증분 업데이트 지원, 상장일까지 다 받은 코인은 다시 안 받음. 진행상황 `history\_status.json`, 로그 `history\_download_log.txt`

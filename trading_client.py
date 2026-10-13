@@ -266,6 +266,8 @@ def read_market_snapshot(path=None):
                     'liq_risk': r.get('liq_risk', '') or '',
                     'verdict': r.get('verdict', '') or '',
                     'verdict_reason': r.get('verdict_reason', '') or '',
+                    # [2026-10-13 추가] 24h 상승확률(서버 prob_model, 없으면 None)
+                    'p_up': _f(r.get('p_up')) if r.get('p_up') not in (None, '',) else None,
                 })
                 cut = r.get('min_cut')
                 if cut:
@@ -1639,14 +1641,15 @@ class TradingClient:
                 if 'verdict' in row and row.get('verdict') is not None and verdict_supported_flag[0]:
                     if verdict == "LONG":
                         border_color = "#2fa84f"
-                        v_badge = f"✅ 판정 롱 ({row.get('verdict_reason', '')}) · 과거 3h 62%·12h 61%·24h 65%"
+                        v_badge = f"✅ 판정 롱 ({row.get('verdict_reason', '')}) · 2년 검증 24h 승률 54%"
                     elif verdict == "SHORT":
                         border_color = "#e04040"
-                        v_badge = f"✅ 판정 숏 ({row.get('verdict_reason', '')}) · 과거 3h 64%·12h 64%·24h 71%"
+                        v_badge = f"✅ 판정 숏 ({row.get('verdict_reason', '')}) · 2년 검증 24h 승률 64%"
                     else:
                         v_badge = None
                         if border_color in ("#2fa84f", "#e04040"):
-                            v_badge = "⏸ 대기: 점수는 넘었지만 반대 신호/확인 조건 부족"
+                            v_badge = (f"⏸ 대기: {row.get('verdict_reason')}" if row.get('verdict_reason')
+                                       else "⏸ 대기: 점수는 넘었지만 반대 신호/확인 조건 부족")
                             border_color = "#c9a800"
                         elif border_color in ("#3a7fd0", "#9a4fd0"):
                             v_badge = "⏸ 대기: 매집/분산 단독은 진입 근거 아님(조건식 확인 필요)"
@@ -1668,7 +1671,8 @@ class TradingClient:
                          f"ATR {row.get('atr_pct', 0):.2f}% OI {row.get('oi_change_pct', 0):+.2f}% "
                          f"L/S {ls_str} Fund {row.get('funding', 0):+.3f}% Vol {row.get('vol_24h_m', 0):,}M"
                          + (f" 3일 {row['recent_pct']:+.1f}%" if row.get('recent_pct') is not None else "")
-                         + (f" 권장≤{row['max_lev']}x" if row.get('max_lev') else ""))
+                         + (f" 권장≤{row['max_lev']}x" if row.get('max_lev') else "")
+                         + (f" 확률 {row['p_up']:.2f}" if row.get('p_up') is not None else ""))
                 card = self.card_widgets.get(ticker)
                 is_new = card is None
                 if is_new:

@@ -70,6 +70,8 @@ CSV_HEADER = [
     "max_lev", "liq_risk",
     # [2026-10-11 추가] 단일 판정(trading_server.calc_verdict)
     "verdict", "verdict_reason",
+    # [2026-10-13 추가] 24h 상승확률(prob_model.py, trading_server.apply_prob_filter)
+    "p_up",
 ]
 
 # 현재 로그 구간 상태 (get_output_path가 채워줌)
@@ -179,6 +181,7 @@ def _row_from_result(ts, r):
         r.get("bb_dwell_low_h", ""), r.get("bb_dwell_high_h", ""), r.get("hl_flag", ""),
         r.get("max_lev", ""), r.get("liq_risk", ""),
         r.get("verdict", ""), r.get("verdict_reason", ""),
+        r.get("p_up", "") if r.get("p_up") is not None else "",
     ]
 
 
@@ -373,6 +376,13 @@ def collect_once(tickers):
                     results = rescored
     except Exception as e:
         print(f"⚠️ 레짐 판정 실패: {e}")
+    # [2026-10-13] 24h 상승확률 + 판정 확률 필터(서버 score_updater와 동일). 구버전 서버면 건너뜀.
+    try:
+        apf = getattr(srv, "apply_prob_filter", None)
+        if apf and results:
+            apf(results)
+    except Exception as e:
+        print(f"⚠️ 상승확률 계산 실패: {e}")
     rows = [_row_from_result(ts, r) for r in results]
     out_path = get_output_path()  # 구간이 바뀌었으면 여기서 자동으로 새 파일로 전환됨
     if rows:
@@ -386,7 +396,8 @@ def collect_once(tickers):
 # 고치면, 수집기는 다음 사이클 시작 전에 그걸 감지하고 스스로 종료한다 — run_collector.bat의
 # 재시작 루프가 30초 뒤 새 코드로 다시 띄운다(bat 없이 직접 돌릴 땐 그냥 종료됨).
 _WATCH_FILES = [os.path.join(SCRIPT_DIR, 'trading_server.py'), os.path.abspath(__file__),
-                os.path.join(SCRIPT_DIR, 'trading_client.py')]  # 클라만 바뀌어도 재시작→즉시 push
+                os.path.join(SCRIPT_DIR, 'trading_client.py'),  # 클라만 바뀌어도 재시작→즉시 push
+                os.path.join(SCRIPT_DIR, 'prob_model.py')]
 
 def _snapshot_mtimes():
     out = {}
@@ -450,6 +461,65 @@ def _maybe_history_download():
     threading.Thread(target=_job, daemon=True).start()
 
 
+# [2026-10-13 추가] 과거 캔들 다운로드 + 24h 상승확률 모델 재학습을 한 백그라운드 스레드에서 순서대로.
+# 시작할 때 + MODEL_CHECK_INTERVAL_MIN 분마다 확인하고, 할 일이 있을 때만 돈다(수집은 기다리지 않음).
+#  1) scikit-learn이 없으면 pip로 한 번 설치 시도
+#  2) history_downloader.due()면 다운로드(약 35분)
+#  3) prob_model.due()(모델 없음/20시간 경과)면 재학습(1분 안팎) → 서버/수집기가 파일 변경을 보고 자동으로 새 모델 사용
+MODEL_CHECK_INTERVAL_MIN = 60
+_bg_state = {"running": False, "last_check": 0.0, "pip_tried": False}
+
+def _ensure_sklearn():
+    try:
+        import sklearn  # noqa: F401
+        return True
+    except Exception:
+        pass
+    if _bg_state["pip_tried"]:
+        return False
+    _bg_state["pip_tried"] = True
+    print("📦 scikit-learn 설치 시도 중 (상승확률 모델용)...")
+    try:
+        import subprocess
+        kw = {"creationflags": 0x08000000} if os.name == "nt" else {}
+        res = subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "scikit-learn"],
+                             capture_output=True, text=True, timeout=900, **kw)
+        print(f"📦 scikit-learn 설치 {'완료' if res.returncode == 0 else '실패: ' + (res.stderr or '')[-300:]}")
+        import importlib
+        importlib.invalidate_caches()
+        import sklearn  # noqa: F401
+        return True
+    except Exception as e:
+        print(f"⚠️ scikit-learn 설치 실패: {e}")
+        return False
+
+def _maybe_background_jobs(force=False):
+    now = time.time()
+    if _bg_state["running"]:
+        return
+    if not force and now - _bg_state["last_check"] < MODEL_CHECK_INTERVAL_MIN * 60:
+        return
+    _bg_state["last_check"] = now
+    def _job():
+        _bg_state["running"] = True
+        try:
+            try:
+                import history_downloader as hd
+                if hd.due():
+                    hd.run()
+            except Exception as e:
+                print(f"⚠️ 과거 캔들 다운로드 실패: {e}")
+            try:
+                import prob_model as pm
+                if pm.due() and _ensure_sklearn():
+                    pm.train()
+            except Exception as e:
+                print(f"⚠️ 상승확률 모델 학습 실패: {e}")
+        finally:
+            _bg_state["running"] = False
+    threading.Thread(target=_job, daemon=True).start()
+
+
 def main():
     if CANDLE_INTERVAL_OVERRIDE:
         srv.CANDLE_INTERVAL = CANDLE_INTERVAL_OVERRIDE
@@ -482,9 +552,10 @@ def main():
     # 오래 걸려 한 주기를 넘기면 밀린 회차는 건너뛰고 다음 정시 회차부터 다시 맞춘다.
     next_run = time.time()
     _maybe_auto_push(force=True)
-    _maybe_history_download()
+    _maybe_background_jobs(force=True)
     while True:
         _maybe_auto_push()
+        _maybe_background_jobs()
         changed = _code_changed()
         if changed:
             print(f"🔄 코드 변경 감지({', '.join(changed)}) — 새 코드로 재시작하려고 종료합니다")

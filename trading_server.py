@@ -20,6 +20,11 @@ import matplotlib
 matplotlib.use("Agg")  # 헤드리스(서버/Termux) 환경 — GUI 백엔드 없이 이미지만 렌더링
 import matplotlib.pyplot as plt
 from collections import deque, defaultdict
+try:
+    import prob_model  # [2026-10-13] 24h 상승확률 모델 (없거나 실패해도 서버는 그대로 동작)
+except Exception as _e:
+    prob_model = None
+    print(f"⚠️ prob_model 로드 실패 — 상승확률 기능 꺼짐: {_e}")
 
 # ====================== DNS + SSL 우회 ======================
 try:
@@ -3368,6 +3373,7 @@ def process_ticker(ticker):
             "rsi_dwell_os_h": rsi_dwell_os_h, "rsi_dwell_ob_h": rsi_dwell_ob_h,
             "bb_dwell_low_h": bb_dwell_low_h, "bb_dwell_high_h": bb_dwell_high_h,
             "hl_flag": hl_flag,
+            "_pmf": _pm_ticker_features(df),
         }
     except Exception as e:
         print(f"[{ticker}] 데이터 수집 실패: {e}")
@@ -3573,6 +3579,7 @@ def process_ticker_upbit(ticker):
             "components": components,
             "max_lev": max_lev,
             "liq_risk": liq_risk,
+            "_pmf": _pm_ticker_features(df),
         }
     except Exception as e:
         print(f"[업비트:{ticker}] 데이터 수집 실패: {e}")
@@ -3639,6 +3646,52 @@ def process_ticker_upbit(ticker):  # noqa: F811
     if r:
         r['verdict'], r['verdict_reason'] = calc_verdict(r)
     return r
+
+# ============================================================
+# [2026-10-13 추가] 24h 상승확률(p_up) 필터 — prob_model.py 참고
+# 2년치(34종목 1시간봉) 워크포워드 검증(reports/longterm_20261013.md):
+#   판정 LONG 24h 승률 49.6% → (p>=0.55) 54.1%  (A 50.8→55.3 / B 48.2→52.4)
+#   판정 SHORT 24h 승률 59.9% → (p<=0.45) 63.6%  (A 59.1→64.4 / B 60.7→62.8)
+# 확률은 전 종목을 모은 뒤(시장 맥락 피처 때문에) score_updater/수집기에서 한 번에 계산한다.
+# 모델 파일이 없거나 scikit-learn이 없으면 p_up=None이고 판정은 기존 그대로.
+# ============================================================
+USE_PROB_FILTER = True
+PROB_LONG_MIN = 0.55
+PROB_SHORT_MAX = 0.45
+
+def _pm_ticker_features(df):
+    if prob_model is None or CANDLE_INTERVAL != "1h":
+        return None
+    try:
+        return prob_model.ticker_features(df)
+    except Exception:
+        return None
+
+def apply_prob_filter(results):
+    """results 전체에 p_up을 채우고, 확률이 판정 방향과 안 맞으면 판정을 대기로 내린다."""
+    try:
+        if prob_model is not None:
+            prob_model.predict(results)
+    except Exception as e:
+        print(f"상승확률 계산 실패: {e}")
+    for r in results:
+        r.pop('_pmf', None)
+        p = r.get('p_up')
+        if p is None:
+            continue
+        v = r.get('verdict', '')
+        why = r.get('verdict_reason', '')
+        if v == 'LONG':
+            if USE_PROB_FILTER and p < PROB_LONG_MIN:
+                r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) 확률 {p:.2f} 미달"
+            else:
+                r['verdict_reason'] = f"{why} · 확률 {p:.2f}"
+        elif v == 'SHORT':
+            if USE_PROB_FILTER and p > PROB_SHORT_MAX:
+                r['verdict'], r['verdict_reason'] = '', f"숏후보({why}) 확률 {p:.2f} 높음"
+            else:
+                r['verdict_reason'] = f"{why} · 확률 {p:.2f}"
+    return results
 
 
 def price_updater(tickers_ref):
@@ -3739,6 +3792,7 @@ def score_updater(tickers_ref, exchange='bithumb'):
                 if res:
                     results.append(res)
         if results:
+            apply_prob_filter(results)
             results.sort(key=lambda x: x['long_score'] + x['short_score'], reverse=True)
             if exchange == 'bithumb':
                 global current_min_score, current_market_regime
@@ -3850,7 +3904,8 @@ MARKET_COLS = ['ticker', 'price', 'price_usd', 'chg_24h', 'long_score', 'short_s
                'min_cut', 'watch_cut', 'pp_min_cut', 'interval', 'score_time', 'price_time',
                'regime',  # [2026-10-11 추가] 현재 확정된 시장 레짐(클라이언트 상단 표시용, 맨 뒤에 붙여 구버전 클라이언트와 호환)
                'max_lev', 'liq_risk',  # [2026-10-11 추가] 권장 최대 레버리지 / 청산위험 플래그(calc_liq_risk 참고)
-               'verdict', 'verdict_reason']  # [2026-10-11 추가] 단일 판정(calc_verdict 참고)
+               'verdict', 'verdict_reason',  # [2026-10-11 추가] 단일 판정(calc_verdict 참고)
+               'p_up']  # [2026-10-13 추가] 24h 상승확률(apply_prob_filter 참고, 없으면 빈칸)
 
 _last_score_time = [""]
 _last_score_time_upbit = [""]
@@ -3903,6 +3958,7 @@ def write_market_snapshot(exchange='bithumb'):
             regime_now,
             r.get('max_lev', ''), r.get('liq_risk', ''),
             r.get('verdict', ''), r.get('verdict_reason', ''),
+            r.get('p_up', '') if r.get('p_up') is not None else '',
         ])
         # [2026-07-21 추가] 커스텀 조건식 — CSV에 쓰는 것과 동일한 값으로 평가
         try:
