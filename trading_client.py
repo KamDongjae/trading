@@ -589,6 +589,12 @@ class TradingClient:
                                         padx=10, pady=3)
         self.btn_view_coins.pack(side="left", padx=(0, 3), fill="x", expand=True)
         self.btn_view_coins.bind("<ButtonRelease-1>", lambda e: self.switch_view('coins'))
+        # [2026-10-14 추가] 순위 탭 — 점수 누적식 대신 24h 상승확률(p_up) 순위로 롱/숏 상위 10개
+        self.btn_view_rank = tk.Label(view_bar, text="순위", font=("Arial", self.FONT_SMALL, "bold"),
+                                      bg="#eeeeee", fg="black", relief="raised", bd=1, cursor="hand2",
+                                      padx=10, pady=3)
+        self.btn_view_rank.pack(side="left", padx=3, fill="x", expand=True)
+        self.btn_view_rank.bind("<ButtonRelease-1>", lambda e: self.switch_view('rank'))
         self.btn_view_positions = tk.Label(view_bar, text="포지션 (0)", font=("Arial", self.FONT_SMALL, "bold"),
                                             bg="#eeeeee", fg="black", relief="raised", bd=1, cursor="hand2",
                                             padx=10, pady=3)
@@ -693,6 +699,7 @@ class TradingClient:
         self._card_drag_state = {"y": 0, "view_top": 0.0, "dragged": False}
         self.card_canvas.bind("<MouseWheel>", lambda e: self.card_canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"), add="+")
         self.card_widgets = {}
+        self._build_rank_panel()
         self._latest_rows = {}  # [2026-10-05 추가] 정보 모달용 — 티커별 최신 row dict 캐시
         # [2026-10-12 추가] 롱/숏 진입 테두리(초록/빨강)가 켜진 시작 시각. 키=(거래소, 티커),
         # 값={'dir','since','seen'}. 신호가 꺼지면 지우고, 다시 켜지면 그 시각부터 다시 센다.
@@ -866,12 +873,22 @@ class TradingClient:
         if mode == self.view_mode:
             return
         self.view_mode = mode
+        self.rank_panel.pack_forget()
         if mode == 'coins':
             self._hide_pos_panel()
             self.pos_sort_bar.pack_forget()
             self.exchange_bar.pack(side="top", fill="x", padx=4, pady=(4, 0))
             self.sortbar.pack(side="top", fill="x", padx=4, pady=(0, 2))
             self.tree_container.pack(fill="both", expand=True, padx=4, pady=2)
+        elif mode == 'rank':
+            self._hide_pos_panel()
+            self.pos_sort_bar.pack_forget()
+            self.tree_container.pack_forget()
+            self.sortbar.pack_forget()
+            self.exchange_bar.pack_forget()
+            self.exchange_bar.pack(side="top", fill="x", padx=4, pady=(4, 0))
+            self.rank_panel.pack(fill="both", expand=True, padx=4, pady=2)
+            self._render_rank_panel(self._last_render_data)
         else:
             self.tree_container.pack_forget()
             self.sortbar.pack_forget()
@@ -914,12 +931,95 @@ class TradingClient:
         return pos_list
 
     def _highlight_view_buttons(self):
-        if self.view_mode == 'coins':
-            self._cfg(self.btn_view_coins, bg="#1a7abf", fg="white")
-            self._cfg(self.btn_view_positions, bg="#eeeeee", fg="black")
+        for mode, b in (('coins', self.btn_view_coins), ('rank', self.btn_view_rank),
+                        ('positions', self.btn_view_positions)):
+            if self.view_mode == mode:
+                self._cfg(b, bg="#1a7abf", fg="white")
+            else:
+                self._cfg(b, bg="#eeeeee", fg="black")
+
+    # ── [2026-10-14 추가] 순위 탭 ─────────────────────────────────
+    # 점수 누적식(롱/숏/매집/분산 점수)과 별개로, 서버 확률모델(prob_model.py)의 24h 상승확률
+    # p_up을 전 종목 순위로 세워서 롱 상위 10(확률 높은 순) / 숏 상위 10(확률 낮은 순)을 보여준다.
+    # 2년 워크포워드(reports/longterm_20261013.md): 매일 롱 상위5+숏 하위5 동시 운용 승률 62%,
+    # 샤프 4.1, MDD -26%. 롱만 단독으로는 약함(일 +0.24%, 최근 구간 +0.10%).
+    RANK_N = 10
+    RANK_COLS = ("#", "코인", "확률", "24h", "3일", "RSI", "ATR", "권장", "판정")
+
+    def _build_rank_panel(self):
+        fs = self.ui_font_base
+        self.rank_panel = tk.Frame(self.root)
+        self._rank_info = tk.Label(self.rank_panel, text="", anchor="w", justify="left",
+                                   font=("Arial", self.FONT_SMALL), fg="#555555",
+                                   wraplength=max(self.card_wraplength, 300))
+        self._rank_info.pack(fill="x", padx=4, pady=(2, 2))
+        self._rank_rows = {}
+        self._rank_tickers = {}
+        for side, title, color in (("long", "롱 상위 10 — 24h 상승확률 높은 순", "#2fa84f"),
+                                   ("short", "숏 상위 10 — 24h 상승확률 낮은 순", "#e04040")):
+            box = tk.Frame(self.rank_panel, highlightbackground=color, highlightcolor=color, highlightthickness=3)
+            box.pack(fill="x", padx=2, pady=4)
+            tk.Label(box, text=title, font=("Arial", fs, "bold"), fg=color, anchor="w").grid(
+                row=0, column=0, columnspan=len(self.RANK_COLS), sticky="w", padx=4, pady=(2, 0))
+            for c, h in enumerate(self.RANK_COLS):
+                tk.Label(box, text=h, font=("Arial", self.FONT_SMALL, "bold"), fg="#666666").grid(
+                    row=1, column=c, sticky="ew", padx=1)
+                box.grid_columnconfigure(c, weight=1)
+            rows = []
+            for i in range(self.RANK_N):
+                labs = []
+                for c in range(len(self.RANK_COLS)):
+                    l = tk.Label(box, text="", font=("Arial", fs, "bold" if c == 1 else "normal"),
+                                 anchor="center", cursor="hand2")
+                    l.grid(row=i + 2, column=c, sticky="ew", padx=1, pady=1)
+                    l.bind("<ButtonRelease-1>", lambda e, s_=side, k=i: self._rank_click(s_, k))
+                    labs.append(l)
+                rows.append(labs)
+            self._rank_rows[side] = rows
+            self._rank_tickers[side] = [None] * self.RANK_N
+        self._rank_default_bg = self._rank_info.cget("bg")
+
+    def _rank_click(self, side, idx):
+        t = self._rank_tickers.get(side, [None] * self.RANK_N)[idx]
+        if t:
+            self.ticker_entry.delete(0, tk.END)
+            self.ticker_entry.insert(0, t)
+
+    def _render_rank_panel(self, data_list):
+        if self.view_mode != 'rank' or not hasattr(self, 'rank_panel'):
+            return
+        rows = [r for r in (data_list or []) if r.get('p_up') is not None]
+        ex_label = "빗썸" if self.current_exchange == 'bithumb' else "업비트"
+        if not rows:
+            self._cfg(self._rank_info, text=f"[{ex_label}] 상승확률(p_up) 정보 없음 — 서버를 최신 코드로 재시작했는지, "
+                                            f"models\\prob_model.pkl이 있는지 확인")
         else:
-            self._cfg(self.btn_view_coins, bg="#eeeeee", fg="black")
-            self._cfg(self.btn_view_positions, bg="#1a7abf", fg="white")
+            self._cfg(self._rank_info, text=(f"[{ex_label}] 기준: 서버 확률모델의 24h 상승확률 순위({len(rows)}종목). "
+                                             f"점수 누적식과 별개. 2년 검증: 매일 롱 상위5+숏 하위5 같이 운용 시 승률 62%·샤프 4.1 "
+                                             f"(롱 단독은 약함). 시장 대비 상대순위라 하락장엔 롱 상위도 빠질 수 있음. 줄 누르면 티커 입력"))
+        ranked = {"long": sorted(rows, key=lambda r: -r['p_up'])[:self.RANK_N],
+                  "short": sorted(rows, key=lambda r: r['p_up'])[:self.RANK_N]}
+        for side, lst in ranked.items():
+            for i, labs in enumerate(self._rank_rows[side]):
+                if i < len(lst):
+                    r = lst[i]
+                    v = r.get('verdict') or ''
+                    if not getattr(self, 'prob_filter_on', True) and r.get('verdict_raw') is not None:
+                        v = r.get('verdict_raw') or ''
+                    vtxt = "✅롱" if v == "LONG" else ("✅숏" if v == "SHORT" else "")
+                    rp = r.get('recent_pct')
+                    vals = (str(i + 1), r['ticker'], f"{r['p_up']:.2f}", f"{r.get('chg_24h', 0):+.1f}%",
+                            f"{rp:+.1f}%" if rp is not None else "-", f"{r.get('rsi', 0):.0f}",
+                            f"{r.get('atr_pct', 0):.1f}%", f"≤{r['max_lev']}x" if r.get('max_lev') else "-", vtxt)
+                    match = (side == "long" and v == "LONG") or (side == "short" and v == "SHORT")
+                    bg = ("#dff3e4" if side == "long" else "#f8e0e0") if match else self._rank_default_bg
+                    self._rank_tickers[side][i] = r['ticker']
+                else:
+                    vals = ("",) * len(self.RANK_COLS)
+                    bg = self._rank_default_bg
+                    self._rank_tickers[side][i] = None
+                for c, l in enumerate(labs):
+                    self._cfg(l, text=vals[c], bg=bg)
 
     def set_exchange(self, exchange):
         """코인탭의 빗썸/업비트 토글. 코인 목록/가격/차트/롱숏진입이 전부 이 값을 따라간다."""
@@ -1529,6 +1629,10 @@ class TradingClient:
     def _render_table(self, data_list):
         try:
             self._last_render_data = data_list
+            try:
+                self._render_rank_panel(data_list)
+            except Exception as e:
+                print(f"순위 탭 갱신 실패: {e}")
             self._update_score_history(data_list)
             yview_top = self.card_canvas.yview()[0]
             data_list = self._apply_search_filter(data_list)
