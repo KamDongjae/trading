@@ -428,6 +428,28 @@ def _maybe_auto_push(force=False):
         print(f"⚠️ 자동 push 실행 실패: {e}")
 
 
+# [2026-10-13 추가] 과거 캔들(1시간봉 2년/일봉 3년) 자동 다운로드 — history_downloader.py.
+# 수집기가 켜질 때 마지막 완료 후 20시간이 지났으면 백그라운드 스레드로 돌린다(수집은 안 기다림).
+# 결과는 history/ 폴더, 로그는 history/_download_log.txt 와 이 콘솔(📚)로 나온다.
+def _maybe_history_download():
+    try:
+        import history_downloader as hd
+    except Exception as e:
+        print(f"⚠️ history_downloader 불러오기 실패: {e}")
+        return
+    try:
+        if not hd.due():
+            return
+    except Exception:
+        pass
+    def _job():
+        try:
+            hd.run()
+        except Exception as e:
+            print(f"⚠️ 과거 캔들 다운로드 실패: {e}")
+    threading.Thread(target=_job, daemon=True).start()
+
+
 def main():
     if CANDLE_INTERVAL_OVERRIDE:
         srv.CANDLE_INTERVAL = CANDLE_INTERVAL_OVERRIDE
@@ -460,6 +482,7 @@ def main():
     # 오래 걸려 한 주기를 넘기면 밀린 회차는 건너뛰고 다음 정시 회차부터 다시 맞춘다.
     next_run = time.time()
     _maybe_auto_push(force=True)
+    _maybe_history_download()
     while True:
         _maybe_auto_push()
         changed = _code_changed()
