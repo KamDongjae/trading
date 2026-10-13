@@ -1,5 +1,12 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-10-13 (수동, 22:00 KST) — 클라이언트 확률필터 ON/OFF 버튼
+
+- **변경 trading_client.py**: 상단 '필터' 옆에 `확률필터 ON/OFF` 버튼. OFF면 확률필터 적용 전 판정을 표시(기기별 설정, prob_filter.json). 표시만 바뀌고 서버·수집기 판정/로그는 그대로
+- **변경 trading_server.py**: server_market.csv 맨 뒤에 `verdict_raw`, `verdict_reason_raw`(필터 전 판정) 칸 추가
+- **되돌리는 법**: backups\20261013_probtoggle\
+- **반영 조건**: 서버·클라이언트 재시작
+
 ## 2026-10-13 (수동, 21:40 KST) — 24h 상승확률 모델 + 판정 확률 필터
 
 - **추가**: `prob_model.py` — history\ 1시간봉으로 "24h 뒤 상승" 확률을 학습(HistGradientBoosting, 피처 35개: 가격지표 22 + 시장맥락·종목간 순위 13). 모델은 `models\prob_model.pkl`, 로그 `models\train_log.txt`

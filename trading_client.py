@@ -46,6 +46,7 @@ ACCOUNT_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_account.csv")
 CMD_DIR = os.path.join(SCRIPT_DIR, "server_cmds")
 RESULTS_FILE = os.path.join(SCRIPT_DIR, "server_results.csv")
 HISTORY_FILE = os.path.join(SCRIPT_DIR, "trade_history_usd.csv")  # 서버가 실제로 쓰는 파일명과 일치시킴(기존엔 이름이 달라서 청산기록이 항상 비어 보였음)
+PROB_FILTER_FILE = os.path.join(SCRIPT_DIR, "prob_filter.json")  # [2026-10-13 추가] 확률필터 표시 ON/OFF (기기별 설정)
 SIGNAL_SINCE_FILE = os.path.join(SCRIPT_DIR, "signal_since.json")  # [2026-10-12 추가] 카드 롱/숏 신호 시작시각 저장
 CUSTOM_CONDITIONS_FILE = os.path.join(SCRIPT_DIR, "custom_conditions.json")  # [2026-07-21 추가] 사용자 정의 조건식 저장
 FILTER_CONDITIONS_FILE = os.path.join(SCRIPT_DIR, "filter_conditions.json")  # [2026-08-05 추가] 필터(코인 목록 자체를 걸러냄) 저장
@@ -268,6 +269,9 @@ def read_market_snapshot(path=None):
                     'verdict_reason': r.get('verdict_reason', '') or '',
                     # [2026-10-13 추가] 24h 상승확률(서버 prob_model, 없으면 None)
                     'p_up': _f(r.get('p_up')) if r.get('p_up') not in (None, '',) else None,
+                    # [2026-10-13 추가] 확률필터 적용 전 판정(구버전 서버면 None → 필터 판정 그대로 표시)
+                    'verdict_raw': (r.get('verdict_raw') or '') if 'verdict_raw' in r else None,
+                    'verdict_reason_raw': r.get('verdict_reason_raw', '') or '',
                 })
                 cut = r.get('min_cut')
                 if cut:
@@ -615,6 +619,13 @@ class TradingClient:
                                      command=self.open_filter_dialog)
         self.btn_filter.pack(side="left", padx=2)
         self._highlight_filter_button()
+        # [2026-10-13 추가] 확률필터 토글 — ON이면 서버의 확률필터 판정, OFF면 필터 전 판정을 표시.
+        # 표시만 바뀌고 서버/수집기 판정·로그는 그대로(기기별 설정, prob_filter.json에 저장).
+        self.prob_filter_on = self._load_prob_filter()
+        self.btn_prob_filter = tk.Button(exchange_bar, font=("Arial", self.FONT_SMALL, "bold"),
+                                         fg="white", padx=8, pady=2, command=self._toggle_prob_filter)
+        self.btn_prob_filter.pack(side="left", padx=2)
+        self._highlight_prob_filter_button()
 
         # 타임프레임(계산 기준 캔들) 전환 버튼 — 테이블 바로 위
         tf_bar = tk.Frame(self.root)
@@ -1637,6 +1648,8 @@ class TradingClient:
                 # 신호는 '관심'(노랑)으로 낮추고, 매집/분산 단독(판정 없음)은 기존 색을 유지하되
                 # 진입 근거가 아니라는 뜻으로 '대기' 문구를 붙인다. 서버가 구버전이라 verdict 칸이
                 # 없으면(None) 예전 표시를 그대로 쓴다.
+                if not getattr(self, 'prob_filter_on', True) and row.get('verdict_raw') is not None:
+                    row = dict(row, verdict=row['verdict_raw'], verdict_reason=row.get('verdict_reason_raw', ''))
                 verdict = row.get('verdict')
                 if 'verdict' in row and row.get('verdict') is not None and verdict_supported_flag[0]:
                     if verdict == "LONG":
@@ -2491,6 +2504,29 @@ class TradingClient:
                           font=("Arial", 9), padx=6).pack(side="left", padx=4)
 
         refresh_list()
+
+    def _load_prob_filter(self):
+        try:
+            with open(PROB_FILTER_FILE, 'r', encoding='utf-8') as f:
+                return bool(json.load(f).get('on', True))
+        except Exception:
+            return True
+
+    def _toggle_prob_filter(self):
+        self.prob_filter_on = not self.prob_filter_on
+        try:
+            with open(PROB_FILTER_FILE, 'w', encoding='utf-8') as f:
+                json.dump({'on': self.prob_filter_on}, f)
+        except Exception as e:
+            print(f"확률필터 설정 저장 실패: {e}")
+        self._highlight_prob_filter_button()
+        self._market_mtime = None  # 다음 폴링(1초 안)에 스냅샷 다시 읽어서 새 설정으로 렌더
+
+    def _highlight_prob_filter_button(self):
+        if self.prob_filter_on:
+            self._cfg(self.btn_prob_filter, text="확률필터 ON", bg="#2f7fbf", fg="white")
+        else:
+            self._cfg(self.btn_prob_filter, text="확률필터 OFF", bg="#555555", fg="white")
 
     def _highlight_filter_button(self):
         """필터가 하나라도 활성화돼있으면 버튼을 눈에 띄게 바꿔서, 지금 코인 목록이
