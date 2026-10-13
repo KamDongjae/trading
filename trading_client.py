@@ -1719,11 +1719,13 @@ class TradingClient:
                         wd.bind("<B1-Motion>", self._card_motion, add="+")
                         wd.bind("<ButtonRelease-1>", lambda e, t=ticker: self._card_release(e, t), add="+")
                     self.card_widgets[ticker] = card
-                self._cfg(card._lbl1, text=line1, bg=bg)
-                self._cfg(card._lbl2, text=line2, bg=bg)
+                # [2026-10-14] 조건식 색이 진하면(빨강 등) 회색/주황 글자가 안 보여서, 배경 밝기에 따라 글자색 전환
+                fg1, fg2, fg3 = self._card_text_colors(bg)
+                self._cfg(card._lbl1, text=line1, bg=bg, fg=fg1)
+                self._cfg(card._lbl2, text=line2, bg=bg, fg=fg2)
                 self._cfg(card._text_frame, bg=bg)
                 if conflict_badge:
-                    self._cfg(card._lbl3, text=conflict_badge, bg=bg)
+                    self._cfg(card._lbl3, text=conflict_badge, bg=bg, fg=fg3)
                     if not card._lbl3.winfo_ismapped():
                         card._lbl3.pack(fill="x", padx=4, pady=(0, 2), after=card._lbl2)
                 else:
@@ -2504,6 +2506,22 @@ class TradingClient:
                           font=("Arial", 9), padx=6).pack(side="left", padx=4)
 
         refresh_list()
+
+    def _card_text_colors(self, bg):
+        """카드 배경 밝기에 맞는 (1줄, 2줄, 뱃지줄) 글자색. 어두운 배경이면 흰/연노랑 계열."""
+        cache = self.__dict__.setdefault('_fg_cache', {})
+        if bg in cache:
+            return cache[bg]
+        res = ("black", "#444444", "#b35c00")
+        try:
+            r, g, b = (v / 257 for v in self.root.winfo_rgb(bg))
+            lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+            if lum < 0.6:
+                res = ("white", "#f4f4f4", "#ffe680")
+        except Exception:
+            pass
+        cache[bg] = res
+        return res
 
     def _load_prob_filter(self):
         try:

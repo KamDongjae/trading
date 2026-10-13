@@ -1,0 +1,3095 @@
+# -*- coding: utf-8 -*-
+"""
+주문용 클라이언트 (trading_client.py)
+- 포지션 개수 많아도 짤리지 않도록 높이 크게 조정
+"""
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog, colorchooser, filedialog
+import os
+import csv
+import json
+import re
+import time
+import random
+import requests
+import threading
+from collections import deque
+
+# ============================================================
+# 저장 경로
+# ============================================================
+DEFAULT_LEVERAGE = 10
+FALLBACK_MIN_SCORE = 75
+FALLBACK_PP_MIN_SCORE = 80
+FALLBACK_WATCH_MIN_SCORE = 65
+STALE_SEC = 15
+
+try:
+    _fallback_dir = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    _fallback_dir = os.getcwd()
+
+_ANDROID_PUBLIC_DIR = "/storage/emulated/0/Documents"
+try:
+    os.makedirs(_ANDROID_PUBLIC_DIR, exist_ok=True)
+    _t = os.path.join(_ANDROID_PUBLIC_DIR, ".write_test")
+    with open(_t, "w") as _f:
+        _f.write("ok")
+    os.remove(_t)
+    SCRIPT_DIR = _ANDROID_PUBLIC_DIR
+except Exception:
+    SCRIPT_DIR = _fallback_dir
+
+MARKET_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_market.csv")
+MARKET_SNAPSHOT_UPBIT = os.path.join(SCRIPT_DIR, "server_market_upbit.csv")
+ACCOUNT_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_account.csv")
+CMD_DIR = os.path.join(SCRIPT_DIR, "server_cmds")
+RESULTS_FILE = os.path.join(SCRIPT_DIR, "server_results.csv")
+HISTORY_FILE = os.path.join(SCRIPT_DIR, "trade_history_usd.csv")  # 서버가 실제로 쓰는 파일명과 일치시킴(기존엔 이름이 달라서 청산기록이 항상 비어 보였음)
+PROB_FILTER_FILE = os.path.join(SCRIPT_DIR, "prob_filter.json")  # [2026-10-13 추가] 확률필터 표시 ON/OFF (기기별 설정)
+SIGNAL_SINCE_FILE = os.path.join(SCRIPT_DIR, "signal_since.json")  # [2026-10-12 추가] 카드 롱/숏 신호 시작시각 저장
+CUSTOM_CONDITIONS_FILE = os.path.join(SCRIPT_DIR, "custom_conditions.json")  # [2026-07-21 추가] 사용자 정의 조건식 저장
+FILTER_CONDITIONS_FILE = os.path.join(SCRIPT_DIR, "filter_conditions.json")  # [2026-08-05 추가] 필터(코인 목록 자체를 걸러냄) 저장
+
+
+def _load_discord_webhook_client():
+    """서버/data_collector.py와 동일한 규약 — 같은 폴더의 DISCORD_WEBHOOK.txt를 읽는다.
+    커스텀 조건식 알림 전송용(클라이언트가 직접 보냄, 서버를 거치지 않음)."""
+    path = os.path.join(SCRIPT_DIR, "DISCORD_WEBHOOK.txt")
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                url = f.read().strip()
+            if url:
+                return url
+    except Exception:
+        pass
+    return None
+
+
+DISCORD_WEBHOOK_URL_CLIENT = _load_discord_webhook_client()
+
+# ============================================================
+# [2026-07-21 추가] 사용자 정의 조건식(커스텀 알림) — C언어 스타일(&&, ||, !, ==, !=, <, >)
+# 조건식을 등록하면 매 폴링마다 전 코인에 대해 평가해서, 맞는 코인은 지정한 색으로
+# 카드가 칠해지고(선택 시) 디스코드 알림도 별도로 뜬다. 서버는 전혀 안 건드리고 클라이언트가
+# 이미 갖고 있는 지표값(server_market.csv에서 읽은 값)만으로 전부 처리한다.
+# ============================================================
+CONDITION_INDICATORS = [
+    ("ticker", "코인명"),
+    ("rsi", "RSI"), ("rsi_delta", "RSI델타"), ("vol_z", "VolZ"), ("bb_percent", "BB%"),
+    ("price", "가격(원)"), ("price_usd", "가격(USD)"), ("chg_24h", "24h변동%"),
+    ("cvd", "CVD"), ("cvd_diff", "CVD변화"), ("funding", "펀딩"), ("vol_24h_m", "24h거래대금"),
+    ("atr_pct", "ATR%"), ("oi_change_pct", "OI변화%"), ("chg_30m", "30분변동%"),
+    ("ls_ratio", "L/S비율"), ("ema20", "EMA20"), ("ema60", "EMA60"), ("recent_pct", "최근등락%"),
+    ("long_score", "롱점수"), ("short_score", "숏점수"),
+    ("prepump_score", "매집점수"), ("preshort_score", "분산점수"),
+]
+_CONDITION_ALLOWED_NAMES = {name for name, _ in CONDITION_INDICATORS} | {"and", "or", "not", "True", "False"}
+_CONDITION_CHAR_PATTERN = re.compile(r'''^[a-zA-Z0-9_\s\.\+\-\*/()<>=!&|'"]*$''')  # 따옴표 추가(코인명 비교용) — 쉼표는 일부러 제외
+                                      # (괄호 안에 쉼표가 남으면 "(조건,)"이 파이썬 튜플이 돼서 내용과
+                                      # 무관하게 항상 참으로 평가되는 사고가 실제로 있었음 — 아예 차단)
+_CONDITION_TOKEN_PATTERN = re.compile(r'[a-zA-Z_][a-zA-Z0-9_]*')
+_QUOTED_STRING_PATTERN = re.compile(r"""(['"])(?:(?!\1).)*\1""")
+
+
+def translate_condition_expr(expr):
+    """C스타일(&&, ||, !) 연산자를 파이썬 eval이 이해하는 형태(and, or, not)로 바꾼다.
+    비교연산자(==, !=, <, >, <=, >=)는 파이썬과 동일해서 그대로 둔다.
+    [2026-07-21 추가] 따옴표 안 문자열(코인명 비교용, 예: ticker=='xrp')은 소문자로
+    통일한다 — evaluate_condition()에서 ticker 값도 소문자로 넣어줘서 대소문자
+    상관없이 비교되게(XRP/Xrp/xrp 다 같이 매칭)."""
+    out = expr.replace('&&', ' and ').replace('||', ' or ')
+    out = re.sub(r'!(?!=)', ' not ', out)
+    out = re.sub(r"'([^']*)'", lambda m: "'" + m.group(1).lower() + "'", out)
+    out = re.sub(r'"([^"]*)"', lambda m: '"' + m.group(1).lower() + '"', out)
+    return out.strip()  # 맨 앞이 "!"였으면 앞에 공백이 붙어서 compile()이 들여쓰기 에러를 냄 — strip으로 방지
+
+
+def validate_condition_expr(expr):
+    """eval하기 전에 위험하거나 알 수 없는 문자/식별자가 없는지 검사한다.
+    허용 문자 화이트리스트 + 식별자는 CONDITION_INDICATORS에 있는 것만 통과.
+    따옴표 안 문자열(코인명 등) 내용은 식별자 검사에서 제외한다(예: 'xrp'의 xrp가
+    "알 수 없는 지표명"으로 오탐되지 않게).
+    반환: (통과여부, 에러메시지)"""
+    if not expr or not expr.strip():
+        return False, "조건식이 비어있습니다"
+    if not _CONDITION_CHAR_PATTERN.match(expr):
+        return False, "허용되지 않는 문자가 포함되어 있습니다"
+    stripped = _QUOTED_STRING_PATTERN.sub('""', expr)  # 문자열 리터럴 내용은 지표명 검사 대상에서 제외
+    for tok in _CONDITION_TOKEN_PATTERN.findall(stripped):
+        if tok not in _CONDITION_ALLOWED_NAMES:
+            return False, f"알 수 없는 지표명: {tok}"
+    try:
+        translated = translate_condition_expr(expr)
+        compile(translated, "<condition>", "eval")
+    except SyntaxError as e:
+        return False, f"문법 오류: {e}"
+    return True, ""
+
+
+def evaluate_condition(expr, row):
+    """row(티커별 지표 dict)를 넣고 조건식을 평가한다. 값이 없거나(None) 계산 중
+    에러가 나면 안전하게 False로 처리한다(알림/색칠 안 됨 — 매칭 안 된 것으로 취급).
+    ticker는 소문자로 넣어서 translate_condition_expr가 소문자로 바꿔둔 문자열
+    리터럴과 대소문자 무관하게 비교되게 한다."""
+    try:
+        translated = translate_condition_expr(expr)
+        env = {name: row.get(name) for name, _ in CONDITION_INDICATORS}
+        env = {k: (v if v is not None else 0) for k, v in env.items()}
+        env['ticker'] = str(row.get('ticker', '')).lower()
+        return bool(eval(translated, {"__builtins__": {}}, env))
+    except Exception:
+        return False
+
+
+def load_custom_conditions():
+    try:
+        if os.path.exists(CUSTOM_CONDITIONS_FILE):
+            with open(CUSTOM_CONDITIONS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"커스텀 조건식 로드 실패: {e}")
+    return []
+
+
+def save_custom_conditions(conditions):
+    try:
+        with open(CUSTOM_CONDITIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(conditions, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"커스텀 조건식 저장 실패: {e}")
+
+
+def load_filter_conditions():
+    """[2026-08-05 추가] 필터 조건식 로드 — 조건식이랑 같은 형식(expr/enabled)이지만
+    색상은 없다(칠하는 게 아니라 걸러내는 용도라서)."""
+    try:
+        if os.path.exists(FILTER_CONDITIONS_FILE):
+            with open(FILTER_CONDITIONS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"필터 조건식 로드 실패: {e}")
+    return []
+
+
+def save_filter_conditions(conditions):
+    try:
+        with open(FILTER_CONDITIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(conditions, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"필터 조건식 저장 실패: {e}")
+
+
+os.makedirs(CMD_DIR, exist_ok=True)
+
+current_min_score = FALLBACK_MIN_SCORE
+pp_current_min_score = FALLBACK_PP_MIN_SCORE
+watch_current_min_score = FALLBACK_WATCH_MIN_SCORE
+current_interval = "1h"
+verdict_supported_flag = [False]  # [2026-10-11 추가] server_market.csv에 verdict 칸이 있으면 True
+current_regime = ""  # [2026-10-11 추가] 서버가 server_market.csv 맨 뒤 regime 칸에 써주는 현재 시장 레짐
+current_margin_mode = "cross"  # 서버 기본값과 동일. read_account_snapshot이 실제 값으로 갱신함
+bank_balance = 0.0
+bank_total_deposit = 0.0
+bank_total_spent = 0.0
+fng_value = None
+fng_class = ""
+ALLOWED_INTERVALS = ["1h", "2h", "6h", "12h"]
+CHART_INTERVALS = ["10m", "30m", "1h", "2h", "6h", "12h"]  # 차트 팝업 전용(기준봉 전환 버튼과는 별개)
+
+def _f(v, default=0.0):
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+def format_price_adaptive(value, unit=""):
+    """[2026-07-26 추가] 가격 크기에 맞춰 소수점 자릿수를 자동으로 늘리는 포맷터
+    (업비트/빗썸이 실제로 쓰는 호가단위 방식과 같은 취지). 예전엔 1000원 미만이면
+    무조건 소수점 2자리(:,.2f)로 고정해서, PEPE처럼 1원도 안 되는 코인이 0.00원으로
+    뭉개져 보이는 문제가 있었다."""
+    if value is None:
+        return f"N/A{unit}"
+    v = abs(value)
+    if v == 0:
+        return f"0{unit}"
+    if v >= 1000:
+        return f"{value:,.0f}{unit}"
+    elif v >= 100:
+        return f"{value:,.1f}{unit}"
+    elif v >= 1:
+        return f"{value:,.2f}{unit}"
+    elif v >= 0.01:
+        return f"{value:,.4f}{unit}"
+    elif v >= 0.0001:
+        return f"{value:,.6f}{unit}"
+    else:
+        return f"{value:,.8f}{unit}"
+
+
+def read_market_snapshot(path=None):
+    global current_min_score, pp_current_min_score, watch_current_min_score, current_interval, current_regime
+    path = path or MARKET_SNAPSHOT
+    try:
+        with open(path, 'r', newline='', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            rows = []
+            score_time = price_time = ""
+            for r in reader:
+                rows.append({
+                    'ticker': r.get('ticker', ''),
+                    'price': _f(r.get('price')),
+                    'price_usd': _f(r.get('price_usd')) if r.get('price_usd') not in (None, '',) else None,
+                    'chg_24h': _f(r.get('chg_24h'), 0),
+                    'long_score': int(_f(r.get('long_score'))),
+                    'short_score': int(_f(r.get('short_score'))),
+                    # 신설: 출발 전 매집 구간 탐지 점수 (없는 구버전 CSV라도 안전하게 0 처리)
+                    'prepump_score': int(_f(r.get('prepump_score'), 0)),
+                    'preshort_score': int(_f(r.get('preshort_score'), 0)),
+                    'rsi': _f(r.get('rsi')),
+                    'rsi_delta': _f(r.get('rsi_delta')),
+                    'vol_z': _f(r.get('vol_z')),
+                    'bb_percent': _f(r.get('bb_percent')),
+                    'cvd': _f(r.get('cvd')),
+                    'cvd_diff': _f(r.get('cvd_diff'), 0),
+                    'funding': _f(r.get('funding')),
+                    'vol_24h_m': int(_f(r.get('vol_24h_m'))),
+                    'atr_pct': _f(r.get('atr_pct')),
+                    'oi_change_pct': _f(r.get('oi_change_pct')),
+                    'chg_30m': _f(r.get('chg_30m')),
+                    'ls_ratio': _f(r.get('ls_ratio')) if r.get('ls_ratio') not in (None, '',) else None,
+                    'ema20': _f(r.get('ema20')) if r.get('ema20') not in (None, '',) else None,
+                    'ema60': _f(r.get('ema60')) if r.get('ema60') not in (None, '',) else None,
+                    'recent_pct': _f(r.get('recent_pct')) if r.get('recent_pct') not in (None, '',) else None,
+                    # [2026-10-11 추가] 서버 calc_liq_risk 결과(구버전 서버 CSV면 None/빈값)
+                    'max_lev': int(_f(r.get('max_lev'))) if r.get('max_lev') not in (None, '',) else None,
+                    'liq_risk': r.get('liq_risk', '') or '',
+                    'verdict': r.get('verdict', '') or '',
+                    'verdict_reason': r.get('verdict_reason', '') or '',
+                    # [2026-10-13 추가] 24h 상승확률(서버 prob_model, 없으면 None)
+                    'p_up': _f(r.get('p_up')) if r.get('p_up') not in (None, '',) else None,
+                    # [2026-10-13 추가] 확률필터 적용 전 판정(구버전 서버면 None → 필터 판정 그대로 표시)
+                    'verdict_raw': (r.get('verdict_raw') or '') if 'verdict_raw' in r else None,
+                    'verdict_reason_raw': r.get('verdict_reason_raw', '') or '',
+                })
+                cut = r.get('min_cut')
+                if cut:
+                    current_min_score = int(_f(cut, FALLBACK_MIN_SCORE))
+                watch_cut = r.get('watch_cut')
+                if watch_cut:
+                    watch_current_min_score = int(_f(watch_cut, FALLBACK_WATCH_MIN_SCORE))
+                pp_cut = r.get('pp_min_cut')
+                if pp_cut:
+                    pp_current_min_score = int(_f(pp_cut, FALLBACK_PP_MIN_SCORE))
+                iv = r.get('interval')
+                if iv:
+                    current_interval = iv
+                rg = r.get('regime')
+                if rg:
+                    current_regime = rg
+                verdict_supported_flag[0] = 'verdict' in r
+                score_time = r.get('score_time', '') or score_time
+                price_time = r.get('price_time', '') or price_time
+        return rows, score_time, price_time
+    except Exception:
+        return None
+
+def read_account_snapshot():
+    global current_margin_mode, bank_balance, bank_total_deposit, bank_total_spent, fng_value, fng_class
+    try:
+        balance = 0
+        ts = ""
+        pos_list = []
+        with open(ACCOUNT_SNAPSHOT, 'r', newline='', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            parse_mode = None
+            for row in reader:
+                if not row: continue
+                if row[0] == 'balance':
+                    balance = round(_f(row[1]), 2)
+                elif row[0] == 'ts':
+                    ts = row[1] if len(row) > 1 else ""
+                elif row[0] == 'margin_mode':
+                    if len(row) > 1 and row[1] in ('cross', 'isolated'):
+                        current_margin_mode = row[1]
+                elif row[0] == 'bank_balance':
+                    bank_balance = round(_f(row[1]), 2)
+                elif row[0] == 'bank_total_deposit':
+                    bank_total_deposit = round(_f(row[1]), 2)
+                elif row[0] == 'bank_total_spent':
+                    bank_total_spent = round(_f(row[1]), 2)
+                elif row[0] == 'fng_value':
+                    fng_value = int(_f(row[1])) if len(row) > 1 and row[1] != '' else None
+                elif row[0] == 'fng_class':
+                    fng_class = row[1] if len(row) > 1 else ""
+                elif row[0] == 'positions':
+                    parse_mode = 'positions'
+                    continue
+                elif parse_mode == 'positions' and len(row) >= 10:
+                    pos_list.append({
+                        'ticker': row[0],
+                        'entry_price': _f(row[1]),
+                        'amount': _f(row[2]),
+                        'leverage': int(_f(row[3], 1)),
+                        'position_type': row[4],
+                        'entry_fee': _f(row[5]),
+                        'entry_time': row[6],
+                        'current_price': _f(row[7]),
+                        'pnl': _f(row[8]),
+                        'pnl_rate_pct': _f(row[9]),
+                        'entry_score': _f(row[10], 0) if len(row) >= 11 else 0,
+                        'price_currency': row[11] if len(row) >= 12 and row[11] else 'usd',
+                        'pnl_krw': _f(row[12]) if len(row) >= 13 and row[12] not in ('', None) else None,
+                    })
+        return balance, ts, pos_list
+    except Exception:
+        return None
+
+def send_command(action, ticker='', amount=0, leverage=0, position_type='', exchange='bithumb', entry_price=0):
+    cmd_id = f"{int(time.time()*1000)}_{random.randint(1000, 9999)}"
+    fname = f"cmd_{cmd_id}.csv"
+    tmp = os.path.join(CMD_DIR, "." + fname)
+    final = os.path.join(CMD_DIR, fname)
+    with open(tmp, 'w', newline='', encoding='utf-8') as f:
+        csv.writer(f).writerow([cmd_id, action, ticker, amount, leverage, position_type, exchange, entry_price])
+    os.replace(tmp, final)
+    return cmd_id
+
+def find_result(cmd_id):
+    try:
+        with open(RESULTS_FILE, 'r', newline='', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                if row.get('cmd_id') == cmd_id:
+                    return row.get('status', ''), row.get('message', '')
+    except Exception:
+        pass
+    return None
+
+def read_history_csv():
+    out = []
+    if not os.path.exists(HISTORY_FILE):
+        return out
+    try:
+        with open(HISTORY_FILE, 'r', newline='', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                out.append({
+                    'type': row.get('type', ''),
+                    'ticker': row.get('ticker', ''),
+                    'direction': row.get('direction', ''),
+                    'amount': _f(row.get('amount')),
+                    'leverage': int(_f(row.get('leverage'))),
+                    'entry_price': _f(row.get('entry_price')),
+                    'exit_price': _f(row.get('exit_price')),
+                    'pnl': _f(row.get('pnl')),
+                    'pnl_rate_pct': _f(row.get('pnl_rate_pct')),
+                    'entry_time': row.get('entry_time', ''),
+                    'exit_time': row.get('exit_time', ''),
+                })
+    except Exception:
+        pass
+    return out
+
+# ============================================================
+# GUI
+# ============================================================
+class TradingClient:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("모의투자 주문용 (서버 연동)")
+        self.root.update_idletasks()
+        w = self.root.winfo_screenwidth()
+        h = self.root.winfo_screenheight()
+        self.root.geometry(f"{w}x{h}")
+        self.root.resizable(True, True)
+
+        self.history_win = None
+        self.pinned_tickers = set()
+        self.current_exchange = 'bithumb'  # 코인탭 빗썸/업비트 토글 — open/close/차트 명령에도 그대로 씀
+        self.custom_conditions = load_custom_conditions()  # [2026-07-21] 사용자 정의 조건식 목록
+        self.filter_conditions = load_filter_conditions()  # [2026-08-05] 필터 조건식 목록(통과한 코인만 표시)
+        self._custom_alert_cooldown = {}  # (조건id, 티커) -> 마지막 알림 보낸 시각(초)
+        self._last_render_data = []
+        self._tap_state = {"last_time": 0.0, "last_ticker": None}
+        self.DOUBLE_TAP_MS = 450
+        self._account = (0, "", [])
+        self._market_mtime = 0.0
+        self._stale_strike = 0  # [2026-09-27 추가] proot bind 경유 FUSE 지연으로 인한
+                                  # 순간적 getmtime() 오탐을 걸러내기 위한 연속 실패 카운터
+
+        # 화면 폭만으로 "모바일"을 판단하면 VNC/X11 세션(해상도는 작아도 DPI는 표준
+        # 96dpi)까지 모바일로 오판해서 글자가 깨알만해지는 문제가 있었다. 실제 폰
+        # 화면은 DPI가 훨씬 높으니(보통 300dpi+) DPI까지 같이 확인한다.
+        try:
+            dpi = self.root.winfo_fpixels('1i')
+        except Exception:
+            dpi = 96.0
+        self.is_mobile = (w <= 1280) and (dpi > 150)
+        if self.is_mobile:
+            FONT_BASE, FONT_BOLD_LABEL, FONT_BTN, FONT_INPUT, FONT_SMALL = 5, 5, 5, 5, 4
+            LABEL_PADX, BTN_PADX, BTN_IPADY = 5, 6, 4
+            ENTRY_W_TICKER, ENTRY_W_AMOUNT, ENTRY_W_LEV = 7, 7, 4
+            BTN_WIDTH, BTN_EXIT_WIDTH = 12, 14
+        else:
+            FONT_BASE, FONT_BOLD_LABEL, FONT_BTN, FONT_INPUT, FONT_SMALL = 11, 11, 11, 12, 10
+            LABEL_PADX, BTN_PADX, BTN_IPADY = 10, 15, 6
+            ENTRY_W_TICKER, ENTRY_W_AMOUNT, ENTRY_W_LEV = 10, 10, 6
+            BTN_WIDTH, BTN_EXIT_WIDTH = 10, 12
+        self.ui_font_base = FONT_BASE
+        self.FONT_SMALL = FONT_SMALL
+
+        # 상단 정보
+        info_outer = tk.Frame(self.root, bd=1, relief="groove")
+        info_outer.pack(side="top", fill="x", padx=6, pady=(6, 2))
+
+        # 외부 통장 (거래소 밖의 내 진짜 지갑) — 입금은 새 돈이 생기는 것, 출금은 실생활로 빠져나가 사라지는 것
+        row0 = tk.Frame(info_outer)
+        row0.pack(fill="x", padx=4, pady=(3, 1))
+        self.bank_label = tk.Label(row0, text="외부통장: $-", font=("Arial", FONT_BOLD_LABEL, "bold"), fg="#5a3d99")
+        self.bank_label.pack(side="left", padx=LABEL_PADX)
+        btn_bank_deposit = tk.Label(row0, text="통장입금", bg="#5a3d99", fg="white", font=("Arial", FONT_BTN, "bold"),
+                                    relief="raised", bd=1, cursor="hand2", padx=6, pady=1)
+        btn_bank_deposit.pack(side="left", padx=4)
+        btn_bank_deposit.bind("<ButtonRelease-1>", lambda e: self.bank_deposit())
+        btn_bank_withdraw = tk.Label(row0, text="통장출금", bg="#8a6dc9", fg="white", font=("Arial", FONT_BTN, "bold"),
+                                     relief="raised", bd=1, cursor="hand2", padx=6, pady=1)
+        btn_bank_withdraw.pack(side="left", padx=4)
+        btn_bank_withdraw.bind("<ButtonRelease-1>", lambda e: self.bank_withdraw())
+        self.fng_label = tk.Label(row0, text="공포탐욕지수: -", font=("Arial", FONT_BOLD_LABEL, "bold"), fg="gray")
+        self.fng_label.pack(side="right", padx=LABEL_PADX)
+
+        row1 = tk.Frame(info_outer)
+        row1.pack(fill="x", padx=4, pady=(3, 1))
+        self.cash_label = tk.Label(row1, text="현금: $-", font=("Arial", FONT_BOLD_LABEL, "bold"), fg="blue")
+        self.cash_label.pack(side="left", padx=LABEL_PADX)
+        self.invested_label = tk.Label(row1, text="투입: $-", font=("Arial", FONT_BOLD_LABEL, "bold"), fg="darkorange")
+        self.invested_label.pack(side="left", padx=LABEL_PADX)
+        self.pnl_label = tk.Label(row1, text="수익: $-", font=("Arial", FONT_BOLD_LABEL, "bold"), fg="green")
+        self.pnl_label.pack(side="left", padx=LABEL_PADX)
+        btn_charge = tk.Label(row1, text="거래소충전", bg="#1a7abf", fg="white", font=("Arial", FONT_BTN, "bold"),
+                              relief="raised", bd=1, cursor="hand2", padx=6, pady=1)
+        btn_charge.pack(side="left", padx=4)
+        btn_charge.bind("<ButtonRelease-1>", lambda e: self.add_funds())
+        btn_withdraw = tk.Label(row1, text="거래소출금", bg="#0f5c8a", fg="white", font=("Arial", FONT_BTN, "bold"),
+                                relief="raised", bd=1, cursor="hand2", padx=6, pady=1)
+        btn_withdraw.pack(side="left", padx=4)
+        btn_withdraw.bind("<ButtonRelease-1>", lambda e: self.withdraw_funds())
+        btn_help = tk.Label(row1, text="설명", bg="#888888", fg="white", font=("Arial", FONT_BTN, "bold"),
+                            relief="raised", bd=1, cursor="hand2", padx=6, pady=1)
+        btn_help.pack(side="left", padx=4)
+        btn_help.bind("<ButtonRelease-1>", lambda e: self.show_help())
+        btn_report = tk.Label(row1, text="리포트", bg="#5a5f66", fg="white", font=("Arial", FONT_BTN, "bold"),
+                              relief="raised", bd=1, cursor="hand2", padx=6, pady=1)
+        btn_report.pack(side="left", padx=4)
+        btn_report.bind("<ButtonRelease-1>", lambda e: self.generate_report())
+        btn_report_dir = tk.Label(row1, text="경로수정", bg="#3f4349", fg="white", font=("Arial", FONT_BTN, "bold"),
+                                  relief="raised", bd=1, cursor="hand2", padx=6, pady=1)
+        btn_report_dir.pack(side="left", padx=4)
+        btn_report_dir.bind("<ButtonRelease-1>", lambda e: self.set_report_dir())
+        btn_reset = tk.Label(row1, text="리셋", bg="#aa3333", fg="white", font=("Arial", FONT_BTN, "bold"),
+                             relief="raised", bd=1, cursor="hand2", padx=6, pady=1)
+        btn_reset.pack(side="left", padx=4)
+        btn_reset.bind("<ButtonRelease-1>", lambda e: self.reset_balance())
+        self.btn_margin_mode = tk.Label(row1, text="크로스", bg="#1a7abf", fg="white",
+                                         font=("Arial", FONT_BTN, "bold"),
+                                         relief="raised", bd=1, cursor="hand2", padx=6, pady=1)
+        self.btn_margin_mode.pack(side="left", padx=4)
+        self.btn_margin_mode.bind("<ButtonRelease-1>", lambda e: self.toggle_margin_mode())
+        self._last_margin_mode_shown = None
+
+        row2 = tk.Frame(info_outer)
+        row2.pack(fill="x", padx=4, pady=(1, 3))
+        self.total_label = tk.Label(row2, text="총자산: $-", font=("Arial", FONT_BOLD_LABEL, "bold"), fg="black")
+        self.total_label.pack(side="left", padx=LABEL_PADX)
+        self.server_label = tk.Label(row2, text="서버: 연결 대기...", font=("Arial", FONT_SMALL), fg="gray")
+        self.server_label.pack(side="left", padx=LABEL_PADX)
+
+        # 버튼
+        btn_frame = tk.Frame(self.root)
+        btn_frame.pack(side="bottom", fill="x", padx=4, pady=(2, 8))
+        lbl_font = ("Arial", FONT_BTN, "bold")
+        for text, color, cmd in [
+            ("롱 진입", "#44aa44", lambda e: self.open_position("long")),
+            ("숏 진입", "#dd3333", lambda e: self.open_position("short")),
+            ("청산", "#555555", lambda e: self.close_position()),
+            ("차트", "#3a6ea5", lambda e: self.open_chart_for_entry()),
+            ("빠른입력", "#7a4aa0", lambda e: self.open_quick_entry_dialog()),
+            ("기록 보기", "#eeeeee", lambda e: self.show_history()),
+        ]:
+            btn = tk.Label(btn_frame, text=text, bg=color, fg="white" if color != "#eeeeee" else "black",
+                           font=lbl_font, width=BTN_WIDTH, relief="raised", bd=1, cursor="hand2")
+            btn.pack(side="left", padx=BTN_PADX, ipady=BTN_IPADY)
+            btn.bind("<ButtonRelease-1>", cmd)
+        btn_exit = tk.Label(btn_frame, text="종료", bg="#cc0000", fg="white", font=lbl_font,
+                            width=BTN_EXIT_WIDTH, relief="raised", bd=1, cursor="hand2")
+        btn_exit.pack(side="right", padx=BTN_PADX, ipady=BTN_IPADY)
+        btn_exit.bind("<ButtonRelease-1>", lambda e: self.safe_exit())
+
+        # 입력
+        input_frame = tk.Frame(self.root, bd=1, relief="groove")
+        input_frame.pack(side="bottom", fill="x", padx=6, pady=(2, 1))
+        inp = tk.Frame(input_frame)
+        inp.pack(padx=4, pady=4)
+        tk.Label(inp, text="티커:", font=("Arial", FONT_INPUT)).grid(row=0, column=0, padx=(0, 2))
+        self.ticker_entry = tk.Entry(inp, width=ENTRY_W_TICKER, font=("Arial", FONT_INPUT))
+        self.ticker_entry.grid(row=0, column=1, padx=(0, 8))
+        tk.Label(inp, text="금액($):", font=("Arial", FONT_INPUT)).grid(row=0, column=2, padx=(0, 2))
+        self.amount_entry = tk.Entry(inp, width=ENTRY_W_AMOUNT, font=("Arial", FONT_INPUT))
+        self.amount_entry.grid(row=0, column=3, padx=(0, 8))
+        tk.Label(inp, text="배율(x):", font=("Arial", FONT_INPUT)).grid(row=0, column=4, padx=(0, 2))
+        self.leverage_entry = tk.Entry(inp, width=ENTRY_W_LEV, font=("Arial", FONT_INPUT))
+        self.leverage_entry.insert(0, str(DEFAULT_LEVERAGE))
+        self.leverage_entry.grid(row=0, column=5, padx=(0, 2))
+
+        # [2026-07-25 추가] 포지션 탭 정렬 바 — 이름순/수익률순. 코인탭 정렬바(sortbar)랑
+        # 똑같은 클릭 패턴(같은 버튼 다시 누르면 방향 반전)만 훨씬 단순화한 버전.
+        self.pos_sort_mode = None   # None=서버가 준 순서 그대로, 'name'|'pnl'
+        self.pos_sort_reverse = False
+        self.pos_sort_bar = tk.Frame(self.root)
+        pos_sort_buttons = [("기본", None), ("이름순", "name"), ("수익률순", "pnl")]
+        self._pos_sort_btn_widgets = {}
+        for label, key in pos_sort_buttons:
+            b = tk.Label(self.pos_sort_bar, text=label, font=("Arial", self.FONT_SMALL), bg="#eeeeee",
+                         fg="black", relief="raised", bd=1, cursor="hand2", padx=8, pady=2)
+            b.pack(side="left", padx=2)
+            b.bind("<ButtonRelease-1>", lambda e, k=key: self.set_pos_sort(k))
+            self._pos_sort_btn_widgets[key] = b
+        self._highlight_pos_sort_buttons()
+
+        # 포지션 패널 (코인/포지션 뷰 전환 버튼이 pack 여부를 제어 — 여기선 만들기만 함)
+        self.pos_panel = tk.Frame(self.root, bd=1, relief="groove", bg="#16181d")
+        self.pos_canvas = tk.Canvas(self.pos_panel, bg="#16181d", highlightthickness=0)
+        self.pos_canvas.pack(side="left", fill="both", expand=True)
+        self.pos_scrollbar = ttk.Scrollbar(self.pos_panel, orient="vertical", command=self.pos_canvas.yview)
+        self.pos_scrollbar.pack(side="right", fill="y")
+        self.pos_canvas.configure(yscrollcommand=self.pos_scrollbar.set)
+        self.pos_inner = tk.Frame(self.pos_canvas, bg="#16181d")
+        self._pos_window = self.pos_canvas.create_window((0, 0), window=self.pos_inner, anchor="nw")
+        self.pos_canvas.bind("<Configure>", lambda e: self.pos_canvas.itemconfig(self._pos_window, width=e.width))
+        self.pos_inner.bind("<Configure>", lambda e: self.pos_canvas.configure(scrollregion=self.pos_canvas.bbox("all")))
+        self._pos_drag = {"y": 0, "view": 0.0}
+        self.pos_canvas.bind("<ButtonPress-1>", self._pos_press)
+        self.pos_canvas.bind("<B1-Motion>", self._pos_motion)
+        self.pos_canvas.bind("<MouseWheel>", lambda e: self.pos_canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+        self.pos_cards = {}
+        self._score_hist = {}  # ticker -> {'long': deque, 'short': deque} — 포지션 신호등(추세) 판단용
+        self._price_hist = {}  # ticker -> deque(price) — Predict Score의 가격 기울기(Slope) 계산용
+        self._latest_row_by_ticker = {}
+        self._last_pos_order = None
+        self._last_pos_reorder_time = 0.0
+        self._pos_reorder_interval = 3.0  # 코인 목록과 동일한 이유로 스로틀 (매 폴링마다 재배치하면 깜빡임)
+        self._pos_panel_visible = False
+        self.view_mode = 'coins'  # 'coins' | 'positions' — 뷰 전환 버튼으로 바뀜
+
+        # 코인 목록 / 포지션 목록 뷰 전환 버튼 — 둘을 아예 별개 화면으로 분리
+        view_bar = tk.Frame(self.root)
+        view_bar.pack(side="top", fill="x", padx=4, pady=(2, 0))
+        self.btn_view_coins = tk.Label(view_bar, text="코인", font=("Arial", self.FONT_SMALL, "bold"),
+                                        bg="#1a7abf", fg="white", relief="raised", bd=1, cursor="hand2",
+                                        padx=10, pady=3)
+        self.btn_view_coins.pack(side="left", padx=(0, 3), fill="x", expand=True)
+        self.btn_view_coins.bind("<ButtonRelease-1>", lambda e: self.switch_view('coins'))
+        self.btn_view_positions = tk.Label(view_bar, text="포지션 (0)", font=("Arial", self.FONT_SMALL, "bold"),
+                                            bg="#eeeeee", fg="black", relief="raised", bd=1, cursor="hand2",
+                                            padx=10, pady=3)
+        self.btn_view_positions.pack(side="left", padx=(3, 0), fill="x", expand=True)
+        self.btn_view_positions.bind("<ButtonRelease-1>", lambda e: self.switch_view('positions'))
+
+        # 거래소 토글 — 코인탭 전용(빗썸/업비트). 여기서 고른 거래소가 코인 목록/차트/
+        # 롱숏진입 명령에 그대로 쓰인다(self.current_exchange).
+        self.exchange_bar = exchange_bar = tk.Frame(self.root)
+        exchange_bar.pack(side="top", fill="x", padx=4, pady=(4, 0))
+        tk.Label(exchange_bar, text="거래소:", font=("Arial", self.FONT_SMALL, "bold")).pack(side="left", padx=(2, 4))
+        self._exchange_btn_widgets = {}
+        for ex, label in [("bithumb", "빗썸"), ("upbit", "업비트")]:
+            b = tk.Label(exchange_bar, text=label, font=("Arial", self.FONT_SMALL, "bold"),
+                         relief="raised", bd=1, cursor="hand2", padx=10, pady=3)
+            b.pack(side="left", padx=2)
+            b.bind("<ButtonRelease-1>", lambda e, ex_=ex: self.set_exchange(ex_))
+            self._exchange_btn_widgets[ex] = b
+        self._highlight_exchange_buttons()
+        tk.Label(exchange_bar, text="  ").pack(side="left")
+        tk.Button(exchange_bar, text="조건식", font=("Arial", self.FONT_SMALL, "bold"),
+                  bg="#3a7a5a", fg="white", padx=8, pady=2,
+                  command=self.open_custom_condition_dialog).pack(side="left", padx=2)
+        # [2026-08-05 추가] 필터 버튼 — 조건식이랑 같은 입력방식(지표버튼/직접타이핑/OR묶기)
+        # 이지만, 색칠이 아니라 "통과 못 한 코인은 아예 안 보이게" 걸러내는 용도.
+        self.btn_filter = tk.Button(exchange_bar, text="필터", font=("Arial", self.FONT_SMALL, "bold"),
+                                     bg="#555555", fg="white", padx=8, pady=2,
+                                     command=self.open_filter_dialog)
+        self.btn_filter.pack(side="left", padx=2)
+        self._highlight_filter_button()
+        # [2026-10-13 추가] 확률필터 토글 — ON이면 서버의 확률필터 판정, OFF면 필터 전 판정을 표시.
+        # 표시만 바뀌고 서버/수집기 판정·로그는 그대로(기기별 설정, prob_filter.json에 저장).
+        self.prob_filter_on = self._load_prob_filter()
+        self.btn_prob_filter = tk.Button(exchange_bar, font=("Arial", self.FONT_SMALL, "bold"),
+                                         fg="white", padx=8, pady=2, command=self._toggle_prob_filter)
+        self.btn_prob_filter.pack(side="left", padx=2)
+        self._highlight_prob_filter_button()
+
+        # 타임프레임(계산 기준 캔들) 전환 버튼 — 테이블 바로 위
+        tf_bar = tk.Frame(self.root)
+        tf_bar.pack(side="top", fill="x", padx=4, pady=(2, 0))
+        tk.Label(tf_bar, text="기준봉:", font=("Arial", self.FONT_SMALL, "bold")).pack(side="left", padx=(2, 4))
+        self._tf_btn_widgets = {}
+        for iv in ALLOWED_INTERVALS:
+            b = tk.Label(tf_bar, text=iv, font=("Arial", self.FONT_SMALL, "bold"), bg="#eeeeee", fg="black",
+                         relief="raised", bd=1, cursor="hand2", padx=8, pady=2)
+            b.pack(side="left", padx=2)
+            b.bind("<ButtonRelease-1>", lambda e, i=iv: self.set_interval(i))
+            self._tf_btn_widgets[iv] = b
+        self._last_interval_shown = None
+
+        tk.Label(tf_bar, text="검색:", font=("Arial", self.FONT_SMALL, "bold")).pack(side="left", padx=(10, 3))
+        self.search_entry = tk.Entry(tf_bar, font=("Arial", self.FONT_SMALL), width=10)
+        self.search_entry.pack(side="left", padx=(0, 2))
+        self.search_entry.bind("<KeyRelease>", self._on_search_change)
+        btn_search_clear = tk.Label(tf_bar, text="✕", font=("Arial", self.FONT_SMALL, "bold"),
+                                     bg="#dddddd", fg="black", relief="raised", bd=1, cursor="hand2", padx=5, pady=1)
+        btn_search_clear.pack(side="left", padx=2)
+        btn_search_clear.bind("<ButtonRelease-1>", self._clear_search)
+
+        # 정렬 버튼
+        self.sortbar = sortbar = tk.Frame(self.root)
+        sortbar.pack(side="top", fill="x", padx=4, pady=(0, 2))
+        sort_btn_font = ("Arial", self.FONT_SMALL)
+        sort_buttons = [
+            ("기본", None), ("코인", "코인"), ("현재가", "현재가"), ("RSI", "RSI"),
+            ("VolZ", "VolZ"), ("BB%", "BB%"), ("CVD", "CVD(1h)"),
+            ("롱", "롱Score"), ("숏", "숏Score"), ("매집", "선매집"), ("분산", "선분산"),
+            ("Fund", "Funding"), ("Vol24h", "24h Vol(M)"),
+            ("ATR", "ATR%(1h)"), ("OI", "OI%(1h)"), ("30m%", "30m%"), ("L/S", "L/S"),
+        ]
+        self._sort_reverse = {col: False for col in [b[1] for b in sort_buttons if b[1] is not None]}
+        self._sort_col = None
+        self._sort_btn_widgets = {}
+        self._sort_btn_labels = {}
+        ncols_per_row = 6 if self.is_mobile else 11
+        for i, (label, key) in enumerate(sort_buttons):
+            b = tk.Label(sortbar, text=label, font=sort_btn_font, bg="#eeeeee", fg="black",
+                         relief="raised", bd=1, cursor="hand2", padx=4, pady=1)
+            b.grid(row=i // ncols_per_row, column=i % ncols_per_row, padx=1, pady=1, sticky="ew")
+            b.bind("<ButtonRelease-1>", lambda e, k=key: self.set_sort(k))
+            self._sort_btn_widgets[key] = b
+            self._sort_btn_labels[key] = label
+        for c in range(ncols_per_row):
+            sortbar.grid_columnconfigure(c, weight=1)
+
+        # 메인 카드
+        self.tree_container = tree_container = tk.Frame(self.root)
+        tree_container.pack(fill="both", expand=True, padx=4, pady=2)
+        self.card_canvas = tk.Canvas(tree_container, highlightthickness=0)
+        self.card_canvas.grid(row=0, column=0, sticky="nsew")
+        self.card_scrollbar = ttk.Scrollbar(tree_container, orient="vertical", command=self.card_canvas.yview)
+        self.card_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.card_canvas.configure(yscrollcommand=self.card_scrollbar.set)
+        tree_container.grid_rowconfigure(0, weight=1)
+        tree_container.grid_columnconfigure(0, weight=1)
+        self.card_inner = tk.Frame(self.card_canvas)
+        self._card_window = self.card_canvas.create_window((0, 0), window=self.card_inner, anchor="nw")
+        self.card_inner.bind("<Configure>", lambda e: self.card_canvas.configure(scrollregion=self.card_canvas.bbox("all")))
+        self.card_wraplength = max(w - 40, 100)
+        self.card_canvas.bind("<Configure>", self._on_card_canvas_configure)
+        self._card_drag_state = {"y": 0, "view_top": 0.0, "dragged": False}
+        self.card_canvas.bind("<MouseWheel>", lambda e: self.card_canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"), add="+")
+        self.card_widgets = {}
+        self._latest_rows = {}  # [2026-10-05 추가] 정보 모달용 — 티커별 최신 row dict 캐시
+        # [2026-10-12 추가] 롱/숏 진입 테두리(초록/빨강)가 켜진 시작 시각. 키=(거래소, 티커),
+        # 값={'dir','since','seen'}. 신호가 꺼지면 지우고, 다시 켜지면 그 시각부터 다시 센다.
+        # 클라이언트를 껐다 켜도 이어지게 파일에 저장(마지막 확인 후 10분 넘게 지난 건 버림).
+        self._signal_since = self._load_signal_since()
+        self._signal_since_dirty = False
+        self._last_table_order = []
+        self._last_reorder_time = 0.0
+        self._reorder_interval = 3.0  # 순서 재배치는 3초마다만 (매 폴링마다 하면 깜빡임 심함)
+        self._force_resort = True
+        self.set_sort(None)
+
+        self.poll_files()
+
+    def show_history(self):
+        if self.history_win and self.history_win.winfo_exists():
+            self.history_win.lift()
+            return
+
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        win_w = int(screen_w * 0.9)
+        win_h = int(screen_h * 0.85)
+        win_x = (screen_w - win_w) // 2
+        win_y = (screen_h - win_h) // 2
+
+        self.history_win = tk.Toplevel(self.root)
+        self.history_win.title("거래 기록 (진행중 + 청산)")
+        self.history_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+
+        cols = ("status", "type", "ticker", "direction", "amount", "leverage", 
+                "entry_price", "current_exit_price", "pnl", "pnl_rate_pct", "time")
+        display_names = ("상태", "유형", "티커", "방향", "금액($)", "배율", 
+                        "진입가", "현재/청산가", "손익($)", "수익률", "시간")
+
+        tree = ttk.Treeview(self.history_win, columns=cols, show="headings", height=28)
+
+        # [2026-08-02 추가] 헤더 클릭하면 그 컬럼 기준 오름/내림차순 정렬(같은 컬럼 다시
+        # 누르면 방향 반전). 숫자처럼 보이는 값(콤마/$/%/+ 등 붙은 것 포함)은 숫자로,
+        # 아니면 문자열로 비교한다.
+        self._history_sort_state = {"col": None, "reverse": False}
+
+        def _sort_key(raw):
+            s = str(raw).replace(",", "").replace("$", "").replace("%", "").replace("+", "").strip()
+            try:
+                return (0, float(s))
+            except ValueError:
+                return (1, s)
+
+        def _sort_by_column(col):
+            state = self._history_sort_state
+            reverse = (not state["reverse"]) if state["col"] == col else False
+            state["col"], state["reverse"] = col, reverse
+            items = [(tree.set(iid, col), iid) for iid in tree.get_children("")]
+            items.sort(key=lambda t: _sort_key(t[0]), reverse=reverse)
+            for idx, (_, iid) in enumerate(items):
+                tree.move(iid, "", idx)
+            for c, name in zip(cols, display_names):
+                arrow = (" ▼" if reverse else " ▲") if c == col else ""
+                tree.heading(c, text=name + arrow, command=lambda cc=c: _sort_by_column(cc))
+
+        for col, name in zip(cols, display_names):
+            tree.heading(col, text=name, command=lambda c=col: _sort_by_column(c))
+            tree.column(col, width=100, anchor="center")
+        
+        tree.column("ticker", width=85)
+        tree.column("amount", width=120)
+        tree.column("pnl", width=125)
+        tree.column("pnl_rate_pct", width=85)
+        tree.column("time", width=160)
+
+        _, _, open_positions = self._account
+        for p in open_positions:
+            values = (
+                "진행중",
+                "포지션",
+                p['ticker'],
+                p['position_type'].upper(),
+                f"{p['amount']:,.2f}",
+                p['leverage'],
+                f"{p['entry_price']:,.4f}" if p['entry_price'] < 1 else f"{p['entry_price']:,.2f}",
+                f"{p['current_price']:,.4f}" if p['current_price'] < 1 else f"{p['current_price']:,.2f}",
+                f"{p['pnl']:+,.2f}",
+                f"{p['pnl_rate_pct']:+.2f}%",
+                str(p.get('entry_time', ''))[:19]
+            )
+            tree.insert("", "end", values=values)
+
+        history = read_history_csv()
+        for rec in reversed(history):
+            values = (
+                "청산",
+                rec['type'],
+                rec['ticker'],
+                rec['direction'],
+                f"{rec['amount']:,.2f}",
+                rec['leverage'],
+                f"{rec['entry_price']:,.4f}" if rec['entry_price'] < 1 else f"{rec['entry_price']:,.2f}",
+                f"{rec['exit_price']:,.4f}" if rec['exit_price'] < 1 else f"{rec['exit_price']:,.2f}",
+                f"{rec['pnl']:+,.2f}",
+                f"{rec['pnl_rate_pct']:+.2f}%",
+                rec['entry_time'][:19]
+            )
+            tree.insert("", "end", values=values)
+
+        if not open_positions and not history:
+            tree.insert("", "end", values=("아직 기록이 없습니다.", "", "", "", "", "", "", "", "", "", ""))
+
+        tree.pack(fill="both", expand=True, padx=10, pady=10)
+
+        scrollbar = ttk.Scrollbar(self.history_win, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+
+        btn_bar = tk.Frame(self.history_win)
+        btn_bar.pack(pady=10)
+        tk.Button(btn_bar, text="닫기", command=self.history_win.destroy,
+                  font=("Arial", 11, "bold"), padx=30, pady=8).pack(side="left", padx=6)
+        tk.Button(btn_bar, text="청산 기록 초기화", command=self._reset_history_clicked,
+                  bg="#cc4444", fg="white", font=("Arial", 11, "bold"), padx=20, pady=8).pack(side="left", padx=6)
+
+    def _reset_history_clicked(self):
+        """'끝난 것만 삭제' — 청산/진입 로그(trade_history_usd.csv)만 지운다.
+        보유 중인 포지션은 이 파일과 무관하게 서버 positions에 그대로 남아있어서
+        영향받지 않는다(서버 srv_reset_history 참고)."""
+        if not messagebox.askyesno("확인", "청산된 거래 기록을 전부 지웁니다.\n(진행중인 포지션은 그대로 유지됩니다)\n계속할까요?"):
+            return
+        def on_success(msg):
+            messagebox.showinfo("완료", msg)
+            if self.history_win and self.history_win.winfo_exists():
+                self.history_win.destroy()
+            self.show_history()
+        self._send_and_wait_callback('reset_history', on_success, ticker="", label="청산 기록 초기화")
+
+    def _on_card_canvas_configure(self, event):
+        self.card_canvas.itemconfig(self._card_window, width=event.width)
+        new_wrap = max(event.width - 16, 100)
+        if new_wrap != self.card_wraplength:
+            self.card_wraplength = new_wrap
+            for card in self.card_widgets.values():
+                card._lbl1.config(wraplength=new_wrap)
+                card._lbl2.config(wraplength=new_wrap)
+
+    def _pos_press(self, event):
+        self._pos_drag["y"] = event.y_root
+        self._pos_drag["view"] = self.pos_canvas.yview()[0]
+        self._pos_drag["dragged"] = False
+
+    def _pos_motion(self, event):
+        dy = event.y_root - self._pos_drag["y"]
+        if abs(dy) > 12:  # 터치스크린은 탭할 때도 손가락이 몇 px씩 흔들려서 4px는 너무 예민했음
+            self._pos_drag["dragged"] = True
+        h = max(self.pos_canvas.winfo_height(), 1)
+        ylo, yhi = self.pos_canvas.yview()
+        yspan = max(yhi - ylo, 0.0001)
+        new_y = self._pos_drag["view"] - (dy / h) * yspan
+        self.pos_canvas.yview_moveto(max(0.0, min(1.0, new_y)))
+
+    def _hide_pos_panel(self):
+        if self._pos_panel_visible:
+            self.pos_panel.pack_forget()
+            self._pos_panel_visible = False
+
+    def _show_pos_panel(self):
+        if not self._pos_panel_visible:
+            self.pos_panel.pack(fill="both", expand=True, padx=6, pady=(2, 1))
+            self._pos_panel_visible = True
+
+    def switch_view(self, mode):
+        """코인 목록 화면과 포지션 목록 화면을 서로 다른 화면처럼 완전히 분리해서 보여준다."""
+        if mode == self.view_mode:
+            return
+        self.view_mode = mode
+        if mode == 'coins':
+            self._hide_pos_panel()
+            self.pos_sort_bar.pack_forget()
+            self.exchange_bar.pack(side="top", fill="x", padx=4, pady=(4, 0))
+            self.sortbar.pack(side="top", fill="x", padx=4, pady=(0, 2))
+            self.tree_container.pack(fill="both", expand=True, padx=4, pady=2)
+        else:
+            self.tree_container.pack_forget()
+            self.sortbar.pack_forget()
+            self.exchange_bar.pack_forget()
+            self.pos_sort_bar.pack(side="top", fill="x", padx=4, pady=(4, 2))
+            self._show_pos_panel()
+            _, _, pos_list = self._account
+            self._render_pos_panel(pos_list)
+        self._highlight_view_buttons()
+
+    def set_pos_sort(self, key):
+        """포지션 탭 정렬 버튼 클릭 — 같은 버튼 다시 누르면 오름/내림차순 반전."""
+        if key == self.pos_sort_mode:
+            self.pos_sort_reverse = not self.pos_sort_reverse
+        else:
+            self.pos_sort_mode = key
+            self.pos_sort_reverse = False
+        self._highlight_pos_sort_buttons()
+        _, _, pos_list = self._account
+        self._render_pos_panel(pos_list)
+
+    def _highlight_pos_sort_buttons(self):
+        for key, b in self._pos_sort_btn_widgets.items():
+            if key == self.pos_sort_mode:
+                # pnl은 기본이 내림차순(수익 좋은 것 먼저)이라 표시 화살표를 이름순과 반대로 맞춘다
+                showing_desc = self.pos_sort_reverse if key == 'name' else (not self.pos_sort_reverse)
+                arrow = " ▼" if showing_desc else " ▲"
+                self._cfg(b, bg="#1a7abf", fg="white", text=self._pos_sort_label(key) + arrow)
+            else:
+                self._cfg(b, bg="#eeeeee", fg="black", text=self._pos_sort_label(key))
+
+    def _pos_sort_label(self, key):
+        return {"name": "이름순", "pnl": "수익률순", None: "기본"}.get(key, "기본")
+
+    def _apply_pos_sort(self, pos_list):
+        if self.pos_sort_mode == 'name':
+            return sorted(pos_list, key=lambda p: p['ticker'], reverse=self.pos_sort_reverse)
+        if self.pos_sort_mode == 'pnl':
+            return sorted(pos_list, key=lambda p: p['pnl_rate_pct'], reverse=not self.pos_sort_reverse)
+        return pos_list
+
+    def _highlight_view_buttons(self):
+        if self.view_mode == 'coins':
+            self._cfg(self.btn_view_coins, bg="#1a7abf", fg="white")
+            self._cfg(self.btn_view_positions, bg="#eeeeee", fg="black")
+        else:
+            self._cfg(self.btn_view_coins, bg="#eeeeee", fg="black")
+            self._cfg(self.btn_view_positions, bg="#1a7abf", fg="white")
+
+    def set_exchange(self, exchange):
+        """코인탭의 빗썸/업비트 토글. 코인 목록/가격/차트/롱숏진입이 전부 이 값을 따라간다."""
+        if exchange == self.current_exchange:
+            return
+        self.current_exchange = exchange
+        self._highlight_exchange_buttons()
+        self._market_mtime = 0.0  # 다음 poll_files 사이클(늦어도 1초 내)에 무조건 다시 읽게 강제
+        self._last_render_data = []
+
+    def _highlight_exchange_buttons(self):
+        for ex, w in self._exchange_btn_widgets.items():
+            if ex == self.current_exchange:
+                self._cfg(w, bg="#1a7abf", fg="white")
+            else:
+                self._cfg(w, bg="#eeeeee", fg="black")
+
+    def _update_score_history(self, data_list):
+        """매 스냅샷마다 티커별 '유효 점수'를 기록해둔다(값이 실제로 바뀔 때만 추가).
+        유효 점수 = max(추세추종 점수, 매집/분산 점수) — 롱은 max(long_score, prepump_score),
+        숏은 max(short_score, preshort_score). 두 점수 체계는 서로 다른 걸 보는 신호라서
+        (숏=이미 하락전환, 분산=아직 안 터진 고점 매물대), 분산 신호 보고 들어갔는데
+        Predict Score가 숏 점수만 보고 낮게 나오는 불일치를 막기 위함.
+        Predict Score의 기울기(Slope)/가속도(Acceleration) 계산에 이 히스토리를 쓴다.
+        동시에 티커별 '가장 최근 행'도 캐시해둬서 Predict Score의 나머지 항목
+        (EMA/CVD/OI/VolZ)을 조회할 때 쓴다."""
+        self._latest_row_by_ticker = {r['ticker']: r for r in data_list if r.get('ticker')}
+        for r in data_list:
+            t = r.get('ticker')
+            if not t:
+                continue
+            hist = self._score_hist.setdefault(t, {'long': deque(maxlen=6), 'short': deque(maxlen=6)})
+            eff_long = max(r.get('long_score', 0), r.get('prepump_score', 0))
+            eff_short = max(r.get('short_score', 0), r.get('preshort_score', 0))
+            for val, dq_name in ((eff_long, 'long'), (eff_short, 'short')):
+                dq = hist[dq_name]
+                if not dq or dq[-1] != val:
+                    dq.append(val)
+            price = r.get('price_usd') or r.get('price')
+            if price:
+                pdq = self._price_hist.setdefault(t, deque(maxlen=10))
+                if not pdq or pdq[-1] != price:
+                    pdq.append(price)
+
+    # ============================================================
+    # Predict Score (100점, v2 — 개편안 반영) — 진입 후 "이 방향이 계속 이어질지" 예측용.
+    # v1은 '점수'의 기울기를 봤는데, v2는 문서 취지대로 '가격'의 기울기를 직접 본다.
+    #   Slope(30) + Acceleration(25) + CVD방향일치(20) + EMA방향일치(15) + Level(10) = 100
+    #
+    # [원안 대비 구현 메모]
+    #   - Slope/Accel: 가격 스냅샷 이력(최대 10개, 값이 바뀔 때만 저장)으로 계산.
+    #     문서의 "직전 4회 가격 변화량의 SMA"를 '보유 방향으로 유리한 쪽 부호로 뒤집은
+    #     % 변화량'의 평균으로 구현 (숏이면 하락이 양수가 되게 부호 반전).
+    #   - EMA 방향일치: 문서는 "5분봉 EMA9"인데 서버가 5분봉을 안 갖고 있어서,
+    #     이미 갖고 있는 EMA20(기준봉 단위)과 현재가 비교로 근사했다.
+    #   - Level: "진입 당시 원본 스코어"를 그대로 써야 해서, 서버가 진입 시점에
+    #     저장해둔 entry_score(포지션에 저장됨)를 넘겨받아 사용한다. 없으면(구버전
+    #     포지션 등) 중간값으로 처리.
+    # ============================================================
+    def _predict_slope(self, ticker, direction):
+        """
+        직전 가격 변화량들의 평균(SMA)과, 한 칸 앞선 구간의 평균을 비교해서
+        '기울기가 유지/완만해짐/누움'을 판단한다. 보유 방향에 유리한 쪽이 양수가
+        되도록 부호를 맞춘다(숏이면 하락이 +).
+        반환: (current_slope, previous_slope, points)
+        """
+        pdq = self._price_hist.get(ticker)
+        if not pdq or len(pdq) < 3:
+            return 0.0, 0.0, 15  # 데이터 부족 — 중간값으로 보수적 처리
+        prices = list(pdq)
+        pct_diffs = []
+        for i in range(1, len(prices)):
+            d = (prices[i] - prices[i - 1]) / prices[i - 1] * 100
+            pct_diffs.append(d if direction == 'long' else -d)
+        cur_win = pct_diffs[-4:]
+        prev_win = pct_diffs[-8:-4] if len(pct_diffs) >= 5 else pct_diffs[:-1]
+        current_slope = sum(cur_win) / len(cur_win) if cur_win else 0.0
+        previous_slope = sum(prev_win) / len(prev_win) if prev_win else current_slope
+
+        if current_slope <= 0:
+            pts = 0
+        elif previous_slope <= 0:
+            pts = 30  # 이전엔 죽어있다가 지금 살아남 — 유지력 양호
+        elif current_slope <= previous_slope * 0.7:
+            pts = 10  # 직전 대비 30% 이상 완만해짐
+        else:
+            pts = 30
+        return current_slope, previous_slope, pts
+
+    def _predict_accel(self, current_slope, previous_slope):
+        """A = Slope_t - Slope_(t-1). A>0이면 가속 중(25점), 그 외 둔화(5점)."""
+        a = current_slope - previous_slope
+        return a, (25 if a > 0 else 5)
+
+    def _predict_cvd_v2(self, row, direction):
+        """CVD 방향일치(최대 20점, 이분법). 방향과 cvd_diff 부호가 맞으면 20, 아니면 0."""
+        cvd_diff = row.get('cvd_diff', 0) or 0
+        want_positive = (direction == 'long')
+        aligned = (cvd_diff > 0) == want_positive
+        return 20 if aligned else 0
+
+    def _predict_ema_v2(self, row, direction):
+        """
+        EMA 방향일치(최대 15점, 이분법). 문서는 5분봉 EMA9 위/아래인데 서버엔 5분봉이
+        없어 EMA20(기준봉 단위)과 현재가 비교로 근사했다.
+        """
+        price = row.get('price_usd') or row.get('price')
+        ema20 = row.get('ema20')
+        if not price or not ema20:
+            return 0
+        above = price > ema20
+        return 15 if (above if direction == 'long' else not above) else 0
+
+    def _predict_level_v2(self, entry_score):
+        """Level(최대 10점). 진입 당시 원본 스코어 85점 이상→10, 70~75점 턱걸이→5, 그 외 0."""
+        if entry_score >= 85:
+            return 10
+        elif 70 <= entry_score <= 75:
+            return 5
+        return 0
+
+    def predict_score(self, ticker, direction, entry_score=0):
+        """
+        Predict Score(0~100) + 등급/트렌드/위험도를 한번에 계산해서 돌려준다.
+        entry_score는 포지션의 '진입 당시 유효 점수'(서버가 진입 시점에 저장해둔 값).
+        반환: dict(score, tier_label, tier_color, trend, risk)
+        """
+        row = self._latest_row_by_ticker.get(ticker)
+        if row is None:
+            return {'score': 0, 'tier_label': '데이터 없음', 'tier_color': '#5a5f66',
+                    'trend': 'flat', 'risk': 'MID'}
+
+        cur_slope, prev_slope, slope_pts = self._predict_slope(ticker, direction)
+        accel, accel_pts = self._predict_accel(cur_slope, prev_slope)
+        cvd_pts = self._predict_cvd_v2(row, direction)
+        ema_pts = self._predict_ema_v2(row, direction)
+        level_pts = self._predict_level_v2(entry_score)
+
+        total = slope_pts + accel_pts + cvd_pts + ema_pts + level_pts
+        total = max(0, min(100, total))
+
+        if total >= 90: tier_label, tier_color = "🔥 매우 강함", "#0ecb81"
+        elif total >= 80: tier_label, tier_color = "🟢 지속 가능성 높음", "#3ddc84"
+        elif total >= 70: tier_label, tier_color = "🟡 일부 경계", "#f0b90b"
+        elif total >= 60: tier_label, tier_color = "🟠 힘 약해짐", "#ff9500"
+        elif total >= 50: tier_label, tier_color = "🔴 손절 준비", "#f6465a"
+        else: tier_label, tier_color = "⚫ 추세 붕괴 위험", "#8b0000"
+
+        trend = 'up' if cur_slope > 0 else ('down' if cur_slope < 0 else 'flat')
+        risk_flags = sum([accel <= 0, cvd_pts == 0, total < 60])
+        risk = 'HIGH' if risk_flags >= 2 or total < 50 else ('MID' if risk_flags == 1 or total < 75 else 'LOW')
+
+        return {'score': total, 'tier_label': tier_label, 'tier_color': tier_color,
+                'trend': trend, 'risk': risk}
+
+    def _show_empty_pos_message(self):
+        if not hasattr(self, '_empty_pos_label') or not self._empty_pos_label.winfo_exists():
+            self._empty_pos_label = tk.Label(self.pos_inner, text="보유 중인 포지션이 없습니다",
+                                              font=("Arial", self.ui_font_base), bg="#16181d", fg="#888888")
+            self._empty_pos_label.pack(pady=30)
+
+    def _clear_empty_pos_message(self):
+        if hasattr(self, '_empty_pos_label') and self._empty_pos_label.winfo_exists():
+            self._empty_pos_label.destroy()
+
+    def _render_pos_panel(self, pos_list):
+        self._cfg(self.btn_view_positions, text=f"포지션 ({len(pos_list)})")
+        pos_list = self._apply_pos_sort(pos_list)
+        if not pos_list:
+            for t in list(self.pos_cards.keys()):
+                self.pos_cards[t].destroy()
+                del self.pos_cards[t]
+            self._last_pos_order = None
+            if self.view_mode == 'positions':
+                self._show_empty_pos_message()
+            return
+        self._clear_empty_pos_message()
+
+        # 뷰 전환 버튼이 패널 표시 여부를 관리한다 — 코인 화면에서는 포지션이 있어도 안 보여준다.
+        if self.view_mode != 'positions':
+            return
+
+        fs = self.ui_font_base
+        fs_small = max(fs - 1, 4)
+        DARK_BG, FG, DIM = "#16181d", "#e8e8e8", "#9aa0a6"
+
+        for t in list(self.pos_cards.keys()):
+            if t not in [p['ticker'] for p in pos_list]:
+                self.pos_cards[t].destroy()
+                del self.pos_cards[t]
+
+        for p in pos_list:
+            t = p['ticker']
+            entry = p['entry_price']
+            cur = p['current_price']
+            lev = p['leverage']
+            amt = p['amount']
+            ptype = p['position_type']
+            pnl = p['pnl']
+            roe = p['pnl_rate_pct']
+            is_long = (ptype == 'long')
+            LIQ_RATIO = 0.9  # 실제 청산은 수수료/유지증거금 때문에 이론값(1/배율)보다 일찍(약 90%) 발생
+            liq_dist = (1.0 / lev) * LIQ_RATIO
+            liq = entry * (1 - liq_dist) if is_long else entry * (1 + liq_dist)
+            # Margin Ratio: 실제 강제청산 기준(증거금의 90% 손실)을 100%로 스케일링
+            # → 서버의 강제청산 발동 시점과 정확히 일치하는 청산 위험도 게이지
+            risk = min(100.0, max(0.0, -pnl / (amt * LIQ_RATIO) * 100)) if amt > 0 else 0.0
+            size = amt * lev + pnl  # Size = 진입 시 명목가치 + 손익 (손실이면 줄고 이익이면 늘어남)
+            pnl_color = "#0ecb81" if pnl >= 0 else "#f6465a"
+            risk_color = "#f6465a" if risk >= 70 else ("#f0b90b" if risk >= 30 else DIM)
+            side_color = "#0ecb81" if is_long else "#f6465a"
+            side_txt = "L" if is_long else "S"
+            direction = "롱" if is_long else "숏"
+
+            card = self.pos_cards.get(t)
+            is_new_card = card is None
+            if is_new_card:
+                card = tk.Frame(self.pos_inner, bg=DARK_BG, bd=1, relief="solid",
+                                 highlightbackground="#2b2f36", highlightthickness=1)
+
+                # --- 헤더: 배지 + 티커 + Perp/Cross 태그 + 경고 ---
+                hdr = tk.Frame(card, bg=DARK_BG, cursor="hand2")
+                hdr.pack(fill="x", padx=8, pady=(8, 4))
+                card._badge = tk.Label(hdr, font=("Arial", fs, "bold"), width=2, fg="white", cursor="hand2")
+                card._badge.pack(side="left")
+                card._title = tk.Label(hdr, font=("Arial", fs + 1, "bold"), bg=DARK_BG, fg=FG, cursor="hand2")
+                card._title.pack(side="left", padx=(6, 6))
+
+                def _open_chart(e, tk_=t):
+                    # 드래그(스크롤)였다면 팝업 안 띄움 — 나머지 카드 영역의 티커채우기와 동일한 규칙
+                    if self._pos_drag.get("dragged"):
+                        return
+                    self.show_chart_popup(tk_)
+                # 이름 글자 하나만으로는 클릭 영역이 너무 좁아서 잘 안 눌렸다는 피드백 반영 —
+                # 헤더 줄(배지+이름) 전체를 클릭 영역으로 넓힌다.
+                for chart_wdg in (hdr, card._badge, card._title):
+                    chart_wdg.bind("<ButtonPress-1>", self._pos_press, add="+")
+                    chart_wdg.bind("<B1-Motion>", self._pos_motion, add="+")
+                    chart_wdg.bind("<ButtonRelease-1>", _open_chart, add="+")
+                card._tag_perp = tk.Label(hdr, text="Perp", font=("Arial", fs_small, "bold"),
+                                           bg="#2b2f36", fg=DIM, padx=6, pady=1)
+                card._tag_perp.pack(side="left", padx=(0, 4))
+                card._tag_cross = tk.Label(hdr, font=("Arial", fs_small, "bold"),
+                                            bg="#2b2f36", fg=DIM, padx=6, pady=1)
+                card._tag_cross.pack(side="left")
+                card._trend_light = tk.Label(hdr, font=("Arial", fs_small, "bold"), bg=DARK_BG, fg=DIM)
+                card._trend_light.pack(side="left", padx=(5, 0))
+                card._warn = tk.Label(hdr, font=("Arial", fs_small, "bold"), bg=DARK_BG, fg="#f6465a")
+                card._warn.pack(side="right")
+
+                tk.Frame(card, bg="#2b2f36", height=1).pack(fill="x", padx=8)
+
+                # --- Unrealized PNL / ROI ---
+                pnl_row = tk.Frame(card, bg=DARK_BG)
+                pnl_row.pack(fill="x", padx=8, pady=(6, 4))
+                pnl_col = tk.Frame(pnl_row, bg=DARK_BG)
+                pnl_col.pack(side="left", anchor="w")
+                tk.Label(pnl_col, text="Unrealized PNL ($)", font=("Arial", fs_small),
+                         bg=DARK_BG, fg=DIM, anchor="w").pack(anchor="w")
+                card._pnl = tk.Label(pnl_col, font=("Arial", fs + 4, "bold"), bg=DARK_BG, anchor="w")
+                card._pnl.pack(anchor="w")
+                roi_col = tk.Frame(pnl_row, bg=DARK_BG)
+                roi_col.pack(side="right", anchor="e")
+                tk.Label(roi_col, text="ROI", font=("Arial", fs_small),
+                         bg=DARK_BG, fg=DIM, anchor="e").pack(anchor="e")
+                card._roe = tk.Label(roi_col, font=("Arial", fs + 2, "bold"), bg=DARK_BG, anchor="e")
+                card._roe.pack(anchor="e")
+
+                def _cell(parent, col, label_text):
+                    anchor = "w" if col == 0 else ("center" if col == 1 else "e")
+                    justify = {"w": "left", "e": "right", "center": "center"}[anchor]
+                    c = tk.Frame(parent, bg=DARK_BG)
+                    c.grid(row=0, column=col, sticky="w" if col == 0 else ("we" if col == 1 else "e"))
+                    tk.Label(c, text=label_text, font=("Arial", fs_small), bg=DARK_BG, fg=DIM,
+                             anchor=anchor, justify=justify).pack(fill="x")
+                    val = tk.Label(c, font=("Arial", fs, "bold"), bg=DARK_BG, fg=FG,
+                                    anchor=anchor, justify=justify)
+                    val.pack(fill="x")
+                    return val
+
+                # --- Size / Margin / Margin Ratio ---
+                row2 = tk.Frame(card, bg=DARK_BG)
+                row2.pack(fill="x", padx=8, pady=(2, 4))
+                for i in range(3):
+                    row2.grid_columnconfigure(i, weight=1, uniform="row2")
+                card._size_val = _cell(row2, 0, "Size ($)")
+                card._margin_val = _cell(row2, 1, "Margin ($)")
+                card._mratio_val = _cell(row2, 2, "Margin Ratio")
+
+                # --- Entry Price / Mark Price / Liq. Price ---
+                row3 = tk.Frame(card, bg=DARK_BG)
+                row3.pack(fill="x", padx=8, pady=(2, 8))
+                for i in range(3):
+                    row3.grid_columnconfigure(i, weight=1, uniform="row3")
+                card._entry_val = _cell(row3, 0, "Entry Price")
+                card._mark_val = _cell(row3, 1, "Mark Price")
+                card._liq_val = _cell(row3, 2, "Liq. Price")
+
+                # --- 버튼: Leverage / Close ---
+                btn_row = tk.Frame(card, bg=DARK_BG)
+                btn_row.pack(fill="x", padx=8, pady=(0, 8))
+                for i in range(2):
+                    btn_row.grid_columnconfigure(i, weight=1)
+                btn_lev = tk.Label(btn_row, text="Leverage", font=("Arial", fs_small, "bold"),
+                                    bg="#2b2f36", fg=FG, relief="raised", bd=1, cursor="hand2", pady=3)
+                btn_lev.grid(row=0, column=0, sticky="ew", padx=(0, 3))
+                btn_close = tk.Label(btn_row, text="Close", font=("Arial", fs_small, "bold"),
+                                      bg="#3a3f47", fg=FG, relief="raised", bd=1, cursor="hand2", pady=3)
+                btn_close.grid(row=0, column=1, sticky="ew", padx=(3, 0))
+                btn_lev.bind("<ButtonRelease-1>", lambda e, tk_=t: self._show_leverage_info(tk_))
+                btn_close.bind("<ButtonRelease-1>", lambda e, tk_=t: self.close_ticker(tk_))
+
+                def _fill(e, tk_=t):
+                    # 드래그(스크롤)였다면 티커 채우기로 처리하지 않음
+                    if self._pos_drag.get("dragged"):
+                        return
+                    self.ticker_entry.delete(0, tk.END)
+                    self.ticker_entry.insert(0, tk_)
+                for wdg in (card, hdr, card._badge, card._tag_perp, card._tag_cross,
+                            card._trend_light, pnl_row, pnl_col, card._pnl, roi_col, card._roe, row2, row3):
+                    wdg.bind("<ButtonPress-1>", self._pos_press, add="+")
+                    wdg.bind("<B1-Motion>", self._pos_motion, add="+")
+                    wdg.bind("<ButtonRelease-1>", _fill, add="+")
+                self.pos_cards[t] = card
+                card.pack(fill="x", padx=4, pady=4)
+
+            self._cfg(card._badge, text=side_txt, bg=side_color)
+            self._cfg(card._title, text=t)
+            self._cfg(card._tag_cross, text=f"Cross {lev}x")
+            pred = self.predict_score(t, ptype, p.get('entry_score', 0))  # Predict Score(0~100)
+            arrow = {"up": "▲", "down": "▼", "flat": "‒"}[pred['trend']]
+            self._cfg(card._trend_light, text=f"P{pred['score']}{arrow}", fg=pred['tier_color'])
+            warn_txt = "!!!!" if risk >= 70 else ("PRED⚠" if pred['risk'] == 'HIGH' else "")
+            self._cfg(card._warn, text=warn_txt)
+            # [2026-07-26 추가] 바이낸스 미상장 코인(price_currency=='krw')은 포지션 탭에서
+            # 손익을 원화로 보여준다 — 실제 정산(잔고 반영)은 청산 시점 환율로 서버가
+            # 달러 환산해서 처리하고, 여기 표시는 어디까지나 "지금 원화로 얼마 벌었는지" 참고용.
+            is_krw_pos = p.get('price_currency') == 'krw'
+            pnl_krw = p.get('pnl_krw')
+            if is_krw_pos and pnl_krw is not None:
+                self._cfg(card._pnl, text=f"{format_price_adaptive(pnl_krw, '원')} (${pnl:+,.2f})", fg=pnl_color)
+            else:
+                self._cfg(card._pnl, text=f"{pnl:+,.2f}", fg=pnl_color)
+            self._cfg(card._roe, text=f"{roe:+.2f}%", fg=pnl_color)
+            self._cfg(card._size_val, text=f"{size:,.2f}")
+            self._cfg(card._margin_val, text=f"{amt:,.2f}")
+            self._cfg(card._mratio_val, text=f"{risk:.1f}%", fg=risk_color)
+            if is_krw_pos:
+                fmt = lambda v: format_price_adaptive(v, "원")
+            else:
+                fmt = (lambda v: f"{v:,.2f}") if entry >= 1 else (lambda v: f"{v:,.4f}")
+            self._cfg(card._entry_val, text=fmt(entry))
+            self._cfg(card._mark_val, text=fmt(cur))
+            self._cfg(card._liq_val, text=fmt(liq))
+
+        new_pos_order = [p['ticker'] for p in pos_list]
+        now = time.time()
+        order_changed = new_pos_order != self._last_pos_order
+        due = (now - self._last_pos_reorder_time) >= self._pos_reorder_interval
+        if order_changed and (due or not self._last_pos_order):
+            prev = None
+            for t in new_pos_order:
+                w = self.pos_cards[t]
+                if prev is None:
+                    w.pack_configure(fill="x", padx=4, pady=4)
+                else:
+                    w.pack_configure(fill="x", padx=4, pady=4, after=prev)
+                prev = w
+            self._last_pos_order = new_pos_order
+            self._last_pos_reorder_time = now
+
+        self.pos_inner.update_idletasks()
+        self.pos_canvas.configure(scrollregion=self.pos_canvas.bbox("all"))
+        # 이제 포지션 화면이 전체를 차지하므로(코인 화면과 분리됨) 높이를 2개로 제한할
+        # 필요가 없다 — pos_canvas 자체가 fill=both/expand=True라 알아서 채워지고,
+        # 카드가 더 많으면 기존 드래그/휠 스크롤(_pos_press/_pos_motion)로 넘겨본다.
+
+    def poll_files(self):
+        snapshot_path = MARKET_SNAPSHOT if self.current_exchange == 'bithumb' else MARKET_SNAPSHOT_UPBIT
+        # [2026-09-27 추가] proot(Ubuntu) --bind 경유로 안드로이드 공용저장소(FUSE)에
+        # 접근하면 경로 변환이 한 겹 더 생겨서, 정상 상황에서도 os.path.getmtime()이
+        # 순간적으로 실패/지연되는 경우가 관측됐다(직접 Termux에서 돌릴 땐 없던 증상).
+        # 한 번 실패했다고 바로 mt=0 취급하지 않고 짧게 한 번 더 시도한다.
+        mt = 0
+        for _try in range(2):
+            try:
+                mt = os.path.getmtime(snapshot_path)
+                break
+            except Exception:
+                if _try == 0:
+                    time.sleep(0.05)
+                    continue
+                mt = 0
+        if mt and mt != self._market_mtime:
+            res = read_market_snapshot(snapshot_path)
+            if res:
+                rows, score_time, price_time = res
+                self._market_mtime = mt
+                self._render_table(rows)
+                if current_interval != self._last_interval_shown:
+                    self._highlight_interval_buttons(current_interval)
+        age = time.time() - mt if mt else 1e9
+        ex_label = "빗썸" if self.current_exchange == 'bithumb' else "업비트"
+        if age > STALE_SEC:
+            # [2026-09-27 추가] 위 재시도에도 불구하고 뜬 일시적 지연(FUSE 홀딱)까지
+            # 바로 "연결 끊김"으로 표시하면 몇 초에 한 번씩 깜빡이는 문제가 있었다.
+            # 연속 2번(약 2초) 이상 확인돼야 진짜 끊김으로 표시 — 실제 서버 다운은
+            # 어차피 계속 STALE 상태라 2초 늦게 뜨는 것 외엔 차이가 없다.
+            self._stale_strike += 1
+        else:
+            self._stale_strike = 0
+        if self._stale_strike >= 2:
+            self.server_label.config(text=f"서버[{ex_label}]: 연결 끊김 (trading_server.py 실행 확인)", fg="red")
+        else:
+            regime_str = f" / 레짐 {current_regime}" if current_regime else ""
+            self.server_label.config(text=f"서버[{ex_label}]: 정상 (기준봉 {current_interval}{regime_str} / 관심 {watch_current_min_score}·컷 {current_min_score}점 / 매집·분산 컷 {pp_current_min_score}점, {age:.0f}초 전 갱신)", fg="gray")
+        acc = read_account_snapshot()
+        if acc:
+            self._account = acc
+            self._update_account_labels()
+            if current_margin_mode != self._last_margin_mode_shown:
+                self._highlight_margin_mode(current_margin_mode)
+        self.root.after(1000, self.poll_files)
+
+    def _update_account_labels(self):
+        balance, ts, pos_list = self._account
+        invested = sum(p['amount'] for p in pos_list)
+        total_pnl = sum(p['pnl'] for p in pos_list)
+        total = balance + invested + total_pnl
+        self.cash_label.config(text=f"현금: ${balance:,.2f}")
+        self.invested_label.config(text=f"투입: ${invested:,.2f}")
+        self.pnl_label.config(text=f"수익: ${total_pnl:+,.2f}", fg="red" if total_pnl < 0 else "green")
+        self.total_label.config(text=f"총자산: ${total:,.2f}")
+        # 외부통장 잔액 + (지금까지 실생활로 빠져나간 돈) - (지금까지 넣은 돈) = 진짜 순수익(트레이딩 성과)
+        net_profit = (total + bank_balance) + bank_total_spent - bank_total_deposit
+        self.bank_label.config(
+            text=f"외부통장: ${bank_balance:,.2f}  (순수익 {net_profit:+,.2f})",
+            fg="green" if net_profit >= 0 else "red"
+        )
+        if fng_value is not None:
+            fng_colors = {
+                "Extreme Fear": "#8b0000", "Fear": "#f6465a", "Neutral": "#888888",
+                "Greed": "#3ddc84", "Extreme Greed": "#0ecb81",
+            }
+            self.fng_label.config(text=f"공포탐욕지수: {fng_value} ({fng_class})",
+                                   fg=fng_colors.get(fng_class, "gray"))
+        self._render_pos_panel(pos_list)
+
+    def _sort_key_fn(self):
+        if self._sort_col is None:
+            return lambda x: x.get('long_score', 0) + x.get('short_score', 0)
+        key_map = {
+            "코인": lambda r: r['ticker'],
+            "현재가": lambda r: r.get('price_usd') or 0,
+            "RSI": lambda r: r['rsi'],
+            "VolZ": lambda r: r['vol_z'],
+            "BB%": lambda r: r['bb_percent'],
+            "CVD(1h)": lambda r: r.get('cvd', 0),
+            "롱Score": lambda r: r['long_score'],
+            "숏Score": lambda r: r['short_score'],
+            "선매집": lambda r: r.get('prepump_score', 0),
+            "선분산": lambda r: r.get('preshort_score', 0),
+            "Funding": lambda r: r.get('funding', 0),
+            "24h Vol(M)": lambda r: r.get('vol_24h_m', 0),
+            "ATR%(1h)": lambda r: r.get('atr_pct', 0),
+            "OI%(1h)": lambda r: r.get('oi_change_pct', 0),
+            "30m%": lambda r: r.get('chg_30m', 0),
+            "L/S": lambda r: r.get('ls_ratio') or 0,
+        }
+        return key_map.get(self._sort_col, lambda r: 0)
+
+    def _apply_search_filter(self, data_list):
+        """검색창에 입력한 문자열로 티커를 필터링. 고정(pin)된 코인은 검색어와
+        안 맞아도 항상 목록에 남는다 — 필터 때문에 안 보이면 안 되니까."""
+        try:
+            text = self.search_entry.get().strip().upper()
+        except Exception:
+            text = ""
+        if not text:
+            return data_list
+        return [r for r in data_list
+                if text in r['ticker'].upper() or r['ticker'] in self.pinned_tickers]
+
+    def _apply_custom_filter(self, data_list):
+        """[2026-08-05 추가] "필터" 버튼으로 등록한 필터식 — 하나라도 통과 못 하면
+        그 코인 카드 자체를 목록에서 뺀다(조건식처럼 색칠만 하는 게 아니라 아예 숨김).
+        여러 필터가 등록돼있으면 OR(하나라도 맞으면 통과). 활성화된 필터가 하나도
+        없으면 그냥 전체를 반환(필터링 안 함). 검색창이랑 같은 이유로, 고정(pin)된
+        코인은 필터에 안 걸려도 항상 남겨둔다."""
+        enabled = [f_ for f_ in self.filter_conditions if f_.get("enabled", True)]
+        if not enabled:
+            return data_list
+        out = []
+        for r in data_list:
+            if r['ticker'] in self.pinned_tickers:
+                out.append(r)
+                continue
+            if any(evaluate_condition(f_["expr"], r) for f_ in enabled):
+                out.append(r)
+        return out
+
+    def _on_search_change(self, event=None):
+        # 입력할 때마다 마지막으로 받은 데이터로 즉시 다시 그린다 (다음 서버 갱신을 안 기다림)
+        if self._last_render_data:
+            self._render_table(self._last_render_data)
+
+    def _clear_search(self, event=None):
+        self.search_entry.delete(0, tk.END)
+        self._on_search_change()
+
+    def _apply_sort(self, data_list):
+        pinned = [r for r in data_list if r['ticker'] in self.pinned_tickers]
+        non_pinned = [r for r in data_list if r['ticker'] not in self.pinned_tickers]
+        cut = current_min_score
+        pp_cut = pp_current_min_score
+        colored = [r for r in non_pinned if r['long_score'] >= cut or r['short_score'] >= cut
+                   or r.get('prepump_score', 0) >= pp_cut or r.get('preshort_score', 0) >= pp_cut]
+        colored_tickers = {r['ticker'] for r in colored}
+        plain = [r for r in non_pinned if r['ticker'] not in colored_tickers]
+        keyfn = self._sort_key_fn()
+        reverse = True if self._sort_col is None else (not self._sort_reverse[self._sort_col])
+        return (sorted(pinned, key=keyfn, reverse=reverse)
+                + sorted(colored, key=keyfn, reverse=reverse)
+                + sorted(plain, key=keyfn, reverse=reverse))
+
+    def _cfg(self, widget, **kwargs):
+        """값이 실제로 바뀐 속성만 config 호출 → 불필요한 재도색(깜빡임) 방지."""
+        cache = getattr(widget, '_cfg_cache', None)
+        if cache is None:
+            cache = {}
+            widget._cfg_cache = cache
+        changed = {k: v for k, v in kwargs.items() if cache.get(k) != v}
+        if changed:
+            widget.config(**changed)
+            cache.update(changed)
+
+    def _maybe_send_custom_condition_alert(self, cond, ticker, row):
+        """조건식 알림 — 같은 조건+티커는 300초 쿨다운(서버 알림 스팸방지 로직과 동일 관례).
+        클라이언트가 직접 디스코드로 보낸다(서버 안 거침, DISCORD_WEBHOOK.txt 재사용)."""
+        if not DISCORD_WEBHOOK_URL_CLIENT:
+            return
+        key = (cond["id"], ticker)
+        now = time.time()
+        last = self._custom_alert_cooldown.get(key, 0)
+        if now - last < 300:
+            return
+        self._custom_alert_cooldown[key] = now
+
+        def _fire():
+            try:
+                sent_at = time.strftime('%Y-%m-%d %H:%M:%S')
+                content = (f"🔔 **커스텀 조건식** [{self.current_exchange}] **{ticker}**\n"
+                           f"`{cond['expr']}`\n"
+                           f"RSI {row.get('rsi')} BB% {row.get('bb_percent')} VolZ {row.get('vol_z')} "
+                           f"롱{row.get('long_score')} 숏{row.get('short_score')}\n🕐 {sent_at}")
+                requests.post(DISCORD_WEBHOOK_URL_CLIENT, json={"content": content}, timeout=8)
+            except Exception as e:
+                print(f"커스텀 조건식 알림 전송 실패: {e}")
+
+        threading.Thread(target=_fire, daemon=True).start()
+
+    def _load_signal_since(self):
+        try:
+            with open(SIGNAL_SINCE_FILE, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+            now = time.time()
+            out = {}
+            for k, v in raw.items():
+                if now - float(v.get('seen', 0)) <= 600:
+                    ex, tk = k.split('|', 1)
+                    out[(ex, tk)] = v
+            return out
+        except Exception:
+            return {}
+
+    def _save_signal_since(self):
+        try:
+            data = {f"{k[0]}|{k[1]}": v for k, v in self._signal_since.items()}
+            tmp = SIGNAL_SINCE_FILE + ".tmp"
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, SIGNAL_SINCE_FILE)
+        except Exception:
+            pass
+
+    def _signal_since_text(self, ticker, border_color):
+        """롱/숏 진입 테두리가 켜진 시작 시각을 'mm-dd hh:mm'으로 돌려준다(없으면 '')."""
+        key = (self.current_exchange, ticker)
+        direction = 'L' if border_color == "#2fa84f" else ('S' if border_color == "#e04040" else None)
+        now = time.time()
+        cur = self._signal_since.get(key)
+        if direction is None:
+            if cur is not None:
+                del self._signal_since[key]
+                self._signal_since_dirty = True
+            return ""
+        if cur is None or cur.get('dir') != direction:
+            cur = {'dir': direction, 'since': now, 'seen': now}
+            self._signal_since[key] = cur
+            self._signal_since_dirty = True
+        else:
+            if now - cur.get('seen', now) > 60:
+                self._signal_since_dirty = True
+            cur['seen'] = now
+        return time.strftime("%m-%d %H:%M", time.localtime(cur["since"]))
+
+    def _render_table(self, data_list):
+        try:
+            self._last_render_data = data_list
+            self._update_score_history(data_list)
+            yview_top = self.card_canvas.yview()[0]
+            data_list = self._apply_search_filter(data_list)
+            data_list = self._apply_custom_filter(data_list)
+            data_list = self._apply_sort(data_list)
+            seen = set()
+            new_order = []
+            for row in data_list:
+                ticker = row['ticker']
+                seen.add(ticker)
+                new_order.append(ticker)
+                self._latest_rows[ticker] = row  # [2026-10-05 추가] 정보 모달에서 재사용
+                price = row['price']
+                price_usd = row.get('price_usd')
+
+                krw_str = format_price_adaptive(price, "원")
+                if price_usd is not None and price_usd > 0:
+                    usd_str = f"USD {price_usd:,.4f}" if price_usd < 1 else f"USD {price_usd:,.2f}"
+                else:
+                    usd_str = "N/A"
+                chg24h = row.get('chg_24h', 0)
+                chg24h_str = f"{chg24h:+.2f}%"
+
+                cvd_val = row.get('cvd', 0)
+                cvd_str = f"{cvd_val:+,.0f}" if abs(cvd_val) >= 100 else f"{cvd_val:+.2f}"
+                ls, ss = row['long_score'], row['short_score']
+                pp, ps = row.get('prepump_score', 0), row.get('preshort_score', 0)
+                cut = current_min_score
+                wcut = watch_current_min_score
+                pp_cut = pp_current_min_score
+                # [2026-08-06 변경] 조건식 색칠(배경)이랑 롱/숏/매집/분산 신호(테두리)를
+                # 동시에 표시하도록 분리했다 — 예전엔 점수신호 있으면 배경을 그걸로 덮어써서
+                # 조건식 매칭이 안 보였는데, 이제 점수신호는 굵은 색 테두리로, 조건식은
+                # 배경색으로 각각 따로 표시되니 둘 다 한눈에 보인다.
+                if ls >= cut and ls >= ss:
+                    border_color = "#2fa84f"   # 초록(진하게) — 롱 진입
+                elif ss >= cut:
+                    border_color = "#e04040"   # 빨강 — 숏 진입
+                elif pp >= pp_cut and pp >= ps:
+                    border_color = "#3a7fd0"   # 파랑 — 매집(prepump) 대기
+                elif ps >= pp_cut:
+                    border_color = "#9a4fd0"   # 보라 — 분산(preshort) 대기
+                elif ls >= wcut or ss >= wcut:
+                    border_color = "#c9a800"   # 진노랑 — 관심
+                else:
+                    border_color = None
+                bg = "white"
+                for cond in self.custom_conditions:
+                    if not cond.get("enabled", True):
+                        continue
+                    if evaluate_condition(cond["expr"], row):
+                        bg = cond["color"]
+                        break
+                        # [2026-10-05 추가] 조건식(배경)과 점수/신호(테두리)가 서로 반대방향을 가리키는
+                # 충돌 뱃지. 두 그룹으로 나뉨:
+                #  1) 롱숏 점수 충돌(검증됨, 325,107행 실측 n=168) — 4~12h엔 조건식(단기
+                #     모멘텀)쪽이 맞고(승률65~67%), 24h 넘어가면 점수(장기 평균회귀)쪽이
+                #     맞음(승률상승 20.8%/17.9%). 반대조합(빨강배경+초록테두리)은 실측
+                #     표본 0건이라 대칭 가정.
+                #  2) 매집/분산 충돌 — 분산(보라)+롱조건식(초록)은 n=38 실측 결과 12h/24h
+                #     승률(상승) 0.0%로 확정적 반전신호. 반대조합(매집+숏조건식)은 실측
+                #     표본 0건(이 조건식 export본 기준으로는 이 조합 자체가 안 나옴)이라
+                #     대칭 가정으로만 적용 — "미검증" 명시.
+                # bg 색상이 커스텀 조건식 내보내기 관례(롱:#2eaa4a계열 초록, 숏:#d13a3a계열
+                # 빨강)를 따른다는 전제로 RGB 우세채널만 보고 롱/숏 조건식 매칭을 판별한다.
+                conflict_badge = None
+                if bg != "white":
+                    try:
+                        r = int(bg[1:3], 16); g = int(bg[3:5], 16); b = int(bg[5:7], 16)
+                        cond_dir = 'long' if (g > r and g > b) else ('short' if (r > g and r > b) else None)
+                    except Exception:
+                        cond_dir = None
+                    if cond_dir == 'long' and border_color == "#e04040":
+                        conflict_badge = "⚠충돌: 단기(4~12h) 롱 / 24h+ 숏전환 권장"
+                    elif cond_dir == 'short' and border_color == "#2fa84f":
+                        conflict_badge = "⚠충돌: 단기(4~12h) 숏 / 24h+ 롱전환 권장(미검증·대칭추정)"
+                    elif cond_dir == 'long' and border_color == "#9a4fd0":
+                        conflict_badge = "⚠충돌: 분산신호+롱조건식 — 검증됨, 12h/24h 거의 전부 하락(n=38)"
+                    elif cond_dir == 'short' and border_color == "#3a7fd0":
+                        conflict_badge = "⚠충돌: 매집신호+숏조건식(미검증·대칭추정)"
+                # [2026-10-11 추가] 3일 등락(recent_pct) 평균회귀 뱃지. 9/26~10/11 수집 데이터를
+                # 시간순 반반으로 나눠 검증했을 때 양쪽 다 재현된 구간만 표시한다(24h 시장대비 초과수익):
+                #   3일 +15% 이상 → 전반 -7.5% / 후반 -8.5% (단, 5~9개 종목 집중 — 표본 주의)
+                #   3일 +10% 이상 → 전반 -3.7% / 후반 -3.1% (상위 급등 6종목 빼도 방향 유지)
+                # 반대쪽(3일 -10% 이하 반등)은 상위 종목을 빼면 효과가 사라져서 표시하지 않는다.
+                # [같은날 수정] 10/8 이후 홀드아웃에선 독립 에피소드 8건 기준 재현이 안 됐고, 24h 안에
+                # +7% 더 오른 경우도 17%라(10배면 청산) '검증' 표현을 빼고 경향+스퀴즈 주의로 낮췄다.
+                mr_badge = None
+                rp = row.get('recent_pct')
+                if rp is not None:
+                    if rp >= 15:
+                        mr_badge = f"📉 3일 {rp:+.1f}% 과열 — 되돌림 경향(최근 미재현·스퀴즈 주의)"
+                    elif rp >= 10:
+                        mr_badge = f"📉 3일 {rp:+.1f}% 급등 — 되돌림 경향(최근 미재현)"
+                    if mr_badge and border_color == "#2fa84f":
+                        mr_badge += " · 롱 추격 주의"
+                if mr_badge:
+                    conflict_badge = f"{conflict_badge}\n{mr_badge}" if conflict_badge else mr_badge
+                # [2026-10-11 추가] 청산위험 뱃지. 9/19~10/11 데이터에서 점수 통과 후 6h 내 청산선까지 간
+                # 진입 분석 결과(서버 calc_liq_risk 주석 참고): 숏은 ATR>=2% / EMA20보다 4%+ 위 /
+                # 선물 미상장일 때 15x 청산률이 19~40%로 뛰고, 롱 청산은 거의 전부 선물 미상장 코인이었다.
+                liq_risk = row.get('liq_risk') or ''
+                max_lev = row.get('max_lev')
+                liq_badge = None
+                if liq_risk:
+                    names = {"ATR": f"ATR {row.get('atr_pct', 0):.1f}%", "EMA": "EMA20 4%+ 위", "NOFUT": "선물 미상장"}
+                    parts = [names[k] for k in liq_risk.split("|") if k in names]
+                    lev_txt = f" · 권장 ≤{max_lev}x" if max_lev else ""
+                    if border_color in ("#e04040", "#9a4fd0") and parts:
+                        liq_badge = f"🔥숏 청산위험: {', '.join(parts)}{lev_txt}"
+                    elif border_color in ("#2fa84f", "#3a7fd0") and "NOFUT" in liq_risk:
+                        liq_badge = f"🔥선물 미상장 코인 — 급변동 청산위험{lev_txt}"
+                if liq_badge:
+                    conflict_badge = f"{conflict_badge}\n{liq_badge}" if conflict_badge else liq_badge
+                # [2026-10-11 추가] 단일 판정(서버 calc_verdict). 롱/숏이 동시에 뜨던 문제를 막으려고
+                # 진입 테두리(초록/빨강)는 판정이 난 경우에만 쓴다. 점수만 넘고 판정이 안 난 롱/숏
+                # 신호는 '관심'(노랑)으로 낮추고, 매집/분산 단독(판정 없음)은 기존 색을 유지하되
+                # 진입 근거가 아니라는 뜻으로 '대기' 문구를 붙인다. 서버가 구버전이라 verdict 칸이
+                # 없으면(None) 예전 표시를 그대로 쓴다.
+                if not getattr(self, 'prob_filter_on', True) and row.get('verdict_raw') is not None:
+                    row = dict(row, verdict=row['verdict_raw'], verdict_reason=row.get('verdict_reason_raw', ''))
+                verdict = row.get('verdict')
+                if 'verdict' in row and row.get('verdict') is not None and verdict_supported_flag[0]:
+                    if verdict == "LONG":
+                        border_color = "#2fa84f"
+                        v_badge = f"✅ 판정 롱 ({row.get('verdict_reason', '')}) · 2년 검증 24h 승률 54%"
+                    elif verdict == "SHORT":
+                        border_color = "#e04040"
+                        v_badge = f"✅ 판정 숏 ({row.get('verdict_reason', '')}) · 2년 검증 24h 승률 64%"
+                    else:
+                        v_badge = None
+                        if border_color in ("#2fa84f", "#e04040"):
+                            v_badge = (f"⏸ 대기: {row.get('verdict_reason')}" if row.get('verdict_reason')
+                                       else "⏸ 대기: 점수는 넘었지만 반대 신호/확인 조건 부족")
+                            border_color = "#c9a800"
+                        elif border_color in ("#3a7fd0", "#9a4fd0"):
+                            v_badge = "⏸ 대기: 매집/분산 단독은 진입 근거 아님(조건식 확인 필요)"
+                    # 판정이 롱/숏 충돌을 이미 정리했으니 예전 '단기 롱/숏 충돌' 문구는 뺀다(혼란 방지)
+                    if conflict_badge:
+                        conflict_badge = "\n".join(x for x in conflict_badge.split("\n") if not x.startswith("⚠충돌: 단기")) or None
+                    if v_badge:
+                        conflict_badge = f"{v_badge}\n{conflict_badge}" if conflict_badge else v_badge
+                display_ticker = f"[{ticker}]" if ticker in self.pinned_tickers else ticker
+                line1 = f"{display_ticker}  {chg24h_str} ({krw_str})  {usd_str}  롱{ls} 숏{ss}  매집{pp} 분산{ps}"
+                since_txt = self._signal_since_text(ticker, border_color)
+                if since_txt:
+                    line1 += f"   {'롱' if border_color == '#2fa84f' else '숏'} {since_txt}~"
+                lsr = row.get('ls_ratio')
+                ls_str = f"{lsr:.2f}" if lsr is not None else "N/A"
+                line2 = (f"RSI {row['rsi']}({row['rsi_delta']:+}) BB {row['bb_percent']:.0f}% "
+                         f"VolZ {row.get('vol_z', 0):+.1f} "
+                         f"CVD {cvd_str} 30m {row.get('chg_30m', 0):+.2f}% "
+                         f"ATR {row.get('atr_pct', 0):.2f}% OI {row.get('oi_change_pct', 0):+.2f}% "
+                         f"L/S {ls_str} Fund {row.get('funding', 0):+.3f}% Vol {row.get('vol_24h_m', 0):,}M"
+                         + (f" 3일 {row['recent_pct']:+.1f}%" if row.get('recent_pct') is not None else "")
+                         + (f" 권장≤{row['max_lev']}x" if row.get('max_lev') else "")
+                         + (f" 확률 {row['p_up']:.2f}" if row.get('p_up') is not None else ""))
+                card = self.card_widgets.get(ticker)
+                is_new = card is None
+                if is_new:
+                    card = tk.Frame(self.card_inner, bd=1, relief="solid")
+                    # [2026-10-05 추가] 카드 측면 "정보" 버튼 — 누르면 차트+코인정보 모달.
+                    # 드래그/탭(핀고정) 바인딩은 text_frame 쪽에만 걸고 버튼은 별도로 둬서
+                    # 버튼 클릭이 카드 탭(티커입력)이나 더블탭(핀고정)으로 새지 않게 한다.
+                    info_btn = tk.Label(card, text="정보", font=("Arial", max(self.ui_font_base - 1, 8), "bold"),
+                                         bg="#2b2f36", fg="white", cursor="hand2", relief="raised", bd=1,
+                                         padx=6, width=3)
+                    info_btn.pack(side="right", fill="y", padx=(2, 4), pady=2)
+                    info_btn.bind("<ButtonRelease-1>", lambda e, t=ticker: self.show_chart_popup(t))
+                    text_frame = tk.Frame(card)
+                    text_frame.pack(side="left", fill="both", expand=True)
+                    lbl1 = tk.Label(text_frame, font=("Arial", self.ui_font_base, "bold"), anchor="w",
+                                    justify="left", wraplength=self.card_wraplength)
+                    lbl2 = tk.Label(text_frame, font=("Arial", max(round((self.ui_font_base - 1) * 1.5), 4)), anchor="w",
+                                    justify="left", fg="#444444", wraplength=self.card_wraplength)
+                    # [2026-10-05 추가] 조건식↔점수 충돌 뱃지용 3번째 줄. 평소엔 숨김(pack 안 함).
+                    lbl3 = tk.Label(text_frame, font=("Arial", self.ui_font_base, "bold"), anchor="w",
+                                     justify="left", fg="#b35c00", wraplength=self.card_wraplength)
+                    lbl1.pack(fill="x", padx=4, pady=(2, 0))
+                    lbl2.pack(fill="x", padx=4, pady=(0, 2))
+                    card._text_frame = text_frame
+                    card._info_btn = info_btn
+                    card._lbl1 = lbl1
+                    card._lbl2 = lbl2
+                    card._lbl3 = lbl3
+                    for wd in (card, text_frame, lbl1, lbl2, lbl3):
+                        wd.bind("<ButtonPress-1>", lambda e, t=ticker: self._card_press(e, t), add="+")
+                        wd.bind("<B1-Motion>", self._card_motion, add="+")
+                        wd.bind("<ButtonRelease-1>", lambda e, t=ticker: self._card_release(e, t), add="+")
+                    self.card_widgets[ticker] = card
+                self._cfg(card._lbl1, text=line1, bg=bg)
+                self._cfg(card._lbl2, text=line2, bg=bg)
+                self._cfg(card._text_frame, bg=bg)
+                if conflict_badge:
+                    self._cfg(card._lbl3, text=conflict_badge, bg=bg)
+                    if not card._lbl3.winfo_ismapped():
+                        card._lbl3.pack(fill="x", padx=4, pady=(0, 2), after=card._lbl2)
+                else:
+                    if card._lbl3.winfo_ismapped():
+                        card._lbl3.pack_forget()
+                self._cfg(card, bg=bg)
+                if border_color:
+                    self._cfg(card, highlightbackground=border_color, highlightcolor=border_color,
+                              highlightthickness=6, bd=0)
+                else:
+                    self._cfg(card, highlightthickness=0, bd=1, relief="solid")
+                if is_new:
+                    card.pack(fill="x", padx=2, pady=1)
+
+            for ticker in list(self.card_widgets.keys()):
+                if ticker not in seen:
+                    self.card_widgets[ticker].destroy()
+                    del self.card_widgets[ticker]
+
+            if self._signal_since_dirty:
+                self._save_signal_since()
+                self._signal_since_dirty = False
+
+            # 순서 재배치는 실제로 순서가 바뀌었고, 마지막 재배치 후 일정 시간(또는 정렬버튼 클릭)이
+            # 지났을 때만 수행한다. pack_forget()으로 전부 뗐다 다시 붙이면 그 순간 리스트가
+            # 통째로 사라졌다 다시 그려져서 눈에 띄게 번쩍인다 — 대신 pack_configure(after=...)로
+            # 카드를 하나씩 '제자리로 슬쩍 이동'만 시키면 화면이 끊기지 않는다.
+            now = time.time()
+            order_changed = new_order != self._last_table_order
+            due = (now - self._last_reorder_time) >= self._reorder_interval
+            if order_changed and (self._force_resort or due or not self._last_table_order):
+                prev = None
+                for ticker in new_order:
+                    w = self.card_widgets[ticker]
+                    if prev is None:
+                        w.pack_configure(fill="x", padx=2, pady=1)
+                    else:
+                        w.pack_configure(fill="x", padx=2, pady=1, after=prev)
+                    prev = w
+                self._last_table_order = new_order
+                self._last_reorder_time = now
+                self._force_resort = False
+
+            self.card_inner.update_idletasks()
+            self.card_canvas.configure(scrollregion=self.card_canvas.bbox("all"))
+            self.card_canvas.yview_moveto(yview_top)
+        except Exception as e:
+            print(f"렌더링 오류: {e}")
+
+    def set_sort(self, col):
+        if col is None:
+            self._sort_col = None
+        else:
+            if self._sort_col == col:
+                self._sort_reverse[col] = not self._sort_reverse[col]
+            self._sort_col = col
+        for key, btn in self._sort_btn_widgets.items():
+            base_label = self._sort_btn_labels[key]
+            if key == self._sort_col:
+                arrow = "" if key is None else (" ▲" if self._sort_reverse.get(key, False) else " ▼")
+                btn.config(text=base_label + arrow, bg="#4a90d9", fg="white")
+            else:
+                btn.config(text=base_label, bg="#eeeeee", fg="black")
+        self._force_resort = True
+        if self._last_render_data:
+            self._render_table(self._last_render_data)
+
+    def _card_press(self, event, ticker):
+        self._card_drag_state["y"] = event.y_root
+        self._card_drag_state["dragged"] = False
+        self._card_drag_state["view_top"] = self.card_canvas.yview()[0]
+
+    def _card_motion(self, event):
+        dy = event.y_root - self._card_drag_state["y"]
+        if abs(dy) > 12:  # 터치스크린은 탭할 때도 손가락이 몇 px씩 흔들려서 4px는 너무 예민했음
+            self._card_drag_state["dragged"] = True
+        h = max(self.card_canvas.winfo_height(), 1)
+        ylo, yhi = self.card_canvas.yview()
+        yspan = max(yhi - ylo, 0.0001)
+        new_y = self._card_drag_state["view_top"] - (dy / h) * yspan
+        self.card_canvas.yview_moveto(max(0.0, min(1.0, new_y)))
+
+    def _card_release(self, event, ticker):
+        if self._card_drag_state["dragged"]:
+            return
+        now = time.time() * 1000
+        if self._tap_state["last_ticker"] == ticker and (now - self._tap_state["last_time"]) < self.DOUBLE_TAP_MS:
+            self.toggle_pin(ticker)
+            self._tap_state["last_time"] = 0
+            self._tap_state["last_ticker"] = None
+        else:
+            self._tap_state["last_time"] = now
+            self._tap_state["last_ticker"] = ticker
+            self.ticker_entry.delete(0, tk.END)
+            self.ticker_entry.insert(0, ticker)
+
+    def toggle_pin(self, ticker):
+        if ticker in self.pinned_tickers:
+            self.pinned_tickers.discard(ticker)
+        else:
+            self.pinned_tickers.add(ticker)
+        if self._last_render_data:
+            self._render_table(self._last_render_data)
+
+    def _send_and_wait(self, action, ticker='', amount=0, leverage=0, position_type='', label='', exchange=None, entry_price=0):
+        try:
+            cmd_id = send_command(action, ticker, amount, leverage, position_type,
+                                   exchange=exchange or self.current_exchange, entry_price=entry_price)
+        except Exception as e:
+            messagebox.showerror("오류", f"명령 전송 실패: {e}")
+            return
+        self._wait_result(cmd_id, label or action, tries=16)
+
+    def _wait_result(self, cmd_id, label, tries):
+        res = find_result(cmd_id)
+        if res:
+            status, msg = res
+            if status == 'ok':
+                messagebox.showinfo(f"{label} 완료", msg)
+            else:
+                messagebox.showwarning(f"{label} 실패", msg)
+            return
+        if tries <= 0:
+            messagebox.showwarning("응답 없음", "서버 응답이 없습니다.\ntrading_server.py 실행 여부를 확인하세요.")
+            return
+        self.root.after(500, lambda: self._wait_result(cmd_id, label, tries - 1))
+
+    def _send_and_wait_callback(self, action, on_success, ticker='', amount=0, leverage=0,
+                                 position_type='', label='', tries=16, exchange=None, entry_price=0):
+        """_send_and_wait과 달리 성공 시 팝업 대신 on_success(msg) 콜백을 호출한다
+        (차트 팝업처럼, 응답 메시지 안의 데이터를 더 써먹어야 할 때 씀)."""
+        try:
+            cmd_id = send_command(action, ticker, amount, leverage, position_type,
+                                   exchange=exchange or self.current_exchange, entry_price=entry_price)
+        except Exception as e:
+            messagebox.showerror("오류", f"명령 전송 실패: {e}")
+            return
+        self._wait_result_callback(cmd_id, label or action, tries=tries, on_success=on_success)
+
+    def _wait_result_callback(self, cmd_id, label, tries, on_success):
+        res = find_result(cmd_id)
+        if res:
+            status, msg = res
+            if status == 'ok':
+                on_success(msg)
+            else:
+                messagebox.showwarning(f"{label} 실패", msg)
+            return
+        if tries <= 0:
+            messagebox.showwarning("응답 없음", "서버 응답이 없습니다.\ntrading_server.py 실행 여부를 확인하세요.")
+            return
+        self.root.after(500, lambda: self._wait_result_callback(cmd_id, label, tries - 1, on_success))
+
+    def _build_info_text(self, ticker):
+        """[2026-10-05 추가] 코인정보 카드의 "정보" 버튼 → 차트 모달 하단에 들어가는
+        텍스트 패널. 메인 카드 렌더링 때 캐싱해둔 _latest_rows[ticker]를 섹션별로
+        정리해서 보여준다(모달이 뜰 때 서버에 새로 요청하지 않고 마지막 스냅샷 재사용)."""
+        row = self._latest_rows.get(ticker)
+        if not row:
+            return "(최신 데이터 없음 — 코인 목록이 갱신된 후 다시 열어보세요)"
+        ls, ss = row.get('long_score', 0), row.get('short_score', 0)
+        pp, ps = row.get('prepump_score', 0), row.get('preshort_score', 0)
+        price = row.get('price', 0)
+        price_usd = row.get('price_usd')
+        krw_str = format_price_adaptive(price, "원")
+        usd_str = (f"USD {price_usd:,.4f}" if price_usd < 1 else f"USD {price_usd:,.2f}") if price_usd else "N/A"
+        cvd_val = row.get('cvd', 0)
+        cvd_str = f"{cvd_val:+,.0f}" if abs(cvd_val) >= 100 else f"{cvd_val:+.2f}"
+        lsr = row.get('ls_ratio')
+        ls_str = f"{lsr:.2f}" if lsr is not None else "N/A"
+        lines = [
+            f"[가격]  {krw_str}  ({usd_str})   24h {row.get('chg_24h', 0):+.2f}%   30m {row.get('chg_30m', 0):+.2f}%",
+            f"[점수]  롱 {ls}   숏 {ss}   매집 {pp}   분산 {ps}",
+            f"[가격위치] RSI {row.get('rsi')}({row.get('rsi_delta', 0):+})   BB% {row.get('bb_percent', 0):.0f}%",
+            f"[수급]  VolZ {row.get('vol_z', 0):+.1f}   CVD {cvd_str}   OI {row.get('oi_change_pct', 0):+.2f}%   "
+            f"L/S {ls_str}   Fund {row.get('funding', 0):+.3f}%",
+            f"[변동성] ATR {row.get('atr_pct', 0):.2f}%   거래량 {row.get('vol_24h_m', 0):,}M",
+        ]
+        return "\n".join(lines)
+
+    def show_chart_popup(self, ticker, interval="1h"):
+        """포지션 카드의 티커 이름을 클릭하면 캔들차트 팝업을 띄운다."""
+        def on_success(msg):
+            path = msg.split(": ", 1)[1].strip() if ": " in msg else None
+            if not path or not os.path.exists(path):
+                messagebox.showerror("오류", f"차트 파일을 못 찾음: {msg}")
+                return
+            self._render_chart_window(ticker, path, interval)
+        # 캔들 조회는 빗썸 API를 실제로 호출해야 해서(재시도 포함 최대 20초 넘게 걸릴 수 있음)
+        # 다른 즉시 처리되는 명령들보다 훨씬 오래 기다려줘야 한다(60회×0.5초 = 30초).
+        # position_type 필드를 시간봉 문자열 전달용으로 재사용 (get_candles 전용 관례)
+        self._send_and_wait_callback('get_candles', on_success, ticker=ticker, position_type=interval,
+                                      label=f"{ticker} {interval} 차트 조회", tries=60)
+
+    def _render_chart_window(self, ticker, csv_path, interval):
+        """서버가 내려준 캔들+지표 CSV를 읽어서 Tkinter Canvas로 직접 그린다
+        (matplotlib 없이 — 클라이언트를 계속 무의존성으로 유지하려는 목적).
+        가격 패널(캔들+EMA20/60/120+볼린저밴드) + RSI 패널 + RSI Delta 패널, 3단 구성.
+        상단 버튼으로 시간봉을 바꾸면 서버에 다시 요청해서 같은 창에 새로 그린다."""
+        rows = []
+        try:
+            with open(csv_path, 'r', newline='', encoding='utf-8') as f:
+                for row in csv.DictReader(f):
+                    def gf(key):
+                        v = row.get(key, '')
+                        try:
+                            return float(v)
+                        except (TypeError, ValueError):
+                            return None
+                    o, h, l, c = gf('open'), gf('high'), gf('low'), gf('close')
+                    if None in (o, h, l, c):
+                        continue
+                    rows.append({
+                        'open': o, 'high': h, 'low': l, 'close': c,
+                        'rsi': gf('RSI'), 'rsi_delta': gf('RSI_Delta'),
+                        'ema20': gf('EMA20'), 'ema60': gf('EMA60'), 'ema120': gf('EMA120'),
+                        'bb_upper': gf('BB_UPPER'), 'bb_mid': gf('BB_MID'), 'bb_lower': gf('BB_LOWER'),
+                        'timestamp': row.get('timestamp', ''),
+                    })
+        except Exception as e:
+            messagebox.showerror("오류", f"차트 파일을 못 읽음: {e}")
+            return
+        if not rows:
+            messagebox.showerror("오류", "차트 데이터가 비어있습니다")
+            return
+
+        # 기존에 이 티커로 열려있던 차트 창이 있으면 재사용(시간봉 전환용), 없으면 새로 생성
+        win = getattr(self, '_chart_windows', {}).get(ticker)
+        if not (win and win.winfo_exists()):
+            win = tk.Toplevel(self.root)
+            if not hasattr(self, '_chart_windows'):
+                self._chart_windows = {}
+            self._chart_windows[ticker] = win
+            win.geometry("900x640")
+            win.configure(bg="#111111")
+
+            top = tk.Frame(win, bg="#111111")
+            top.pack(fill="x")
+            title_label = tk.Label(top, font=("Arial", 11, "bold"), bg="#111111", fg="white")
+            title_label.pack(side="left", padx=8, pady=6)
+            win._title_label = title_label
+
+            tf_bar = tk.Frame(top, bg="#111111")
+            tf_bar.pack(side="right", padx=8)
+            win._tf_buttons = {}
+            for iv in CHART_INTERVALS:
+                b = tk.Label(tf_bar, text=iv, font=("Arial", 9, "bold"), padx=8, pady=2,
+                             cursor="hand2", relief="raised", bd=1)
+                b.pack(side="left", padx=2)
+                b.bind("<ButtonRelease-1>", lambda e, iv_=iv: self.show_chart_popup(ticker, iv_))
+                win._tf_buttons[iv] = b
+
+            price_canvas = tk.Canvas(win, bg="#111111", highlightthickness=0, height=340)
+            price_canvas.pack(fill="both", expand=True, padx=4)
+            rsi_canvas = tk.Canvas(win, bg="#111111", highlightthickness=0, height=110)
+            rsi_canvas.pack(fill="x", padx=4, pady=(4, 0))
+            rd_canvas = tk.Canvas(win, bg="#111111", highlightthickness=0, height=90)
+            rd_canvas.pack(fill="x", padx=4, pady=(4, 4))
+            win._price_canvas, win._rsi_canvas, win._rd_canvas = price_canvas, rsi_canvas, rd_canvas
+            # [2026-10-05 추가] 차트 아래 코인정보 텍스트 정리 패널(카드 측면 "정보" 버튼으로 진입).
+            info_frame = tk.Frame(win, bg="#1a1d21", bd=1, relief="solid")
+            info_frame.pack(fill="x", padx=4, pady=(0, 8))
+            info_label = tk.Label(info_frame, font=("Consolas", 10), bg="#1a1d21", fg="#e8e8e8",
+                                   justify="left", anchor="w", wraplength=870)
+            info_label.pack(fill="x", padx=8, pady=6)
+            win._info_label = info_label
+        else:
+            win.lift()
+
+        win.title(f"{ticker} {interval} 차트")
+        win._title_label.config(text=f"{ticker}  {interval}  (최근 {len(rows)}봉)")
+        for iv, b in win._tf_buttons.items():
+            active = (iv == interval)
+            b.config(bg="#1a7abf" if active else "#2b2f36", fg="white" if active else "#9aa0a6")
+        win._info_label.config(text=self._build_info_text(ticker))
+
+        def draw_price(_event=None):
+            canvas = win._price_canvas
+            canvas.delete("all")
+            w, h = canvas.winfo_width(), canvas.winfo_height()
+            n = len(rows)
+            if n == 0 or w < 50 or h < 50:
+                return
+            pad_l, pad_r, pad_t, pad_b = 8, 65, 8, 18
+            plot_w, plot_h = w - pad_l - pad_r, h - pad_t - pad_b
+            if plot_w <= 0 or plot_h <= 0:
+                return
+            candle_w = plot_w / n
+            price_vals = [v for r in rows for v in (r['high'], r['low'],
+                          r.get('bb_upper') or r['high'], r.get('bb_lower') or r['low'])]
+            p_max, p_min = max(price_vals), min(price_vals)
+            p_range = (p_max - p_min) or 1
+
+            def y(price):
+                return pad_t + (p_max - price) / p_range * plot_h
+
+            for frac in (0, 0.25, 0.5, 0.75, 1.0):
+                price = p_max - frac * p_range
+                yy = pad_t + frac * plot_h
+                canvas.create_line(pad_l, yy, w - pad_r, yy, fill="#2a2a2a")
+                pfmt = f"{price:,.4f}" if price < 1 else f"{price:,.2f}"
+                canvas.create_text(w - pad_r + 5, yy, text=pfmt, fill="#cccccc",
+                                    font=("Arial", 8), anchor="w")
+
+            # 볼린저밴드 (상단/중단/하단 라인)
+            def plot_line(key, color):
+                pts = []
+                for i, r in enumerate(rows):
+                    v = r.get(key)
+                    if v is None:
+                        continue
+                    x_center = pad_l + i * candle_w + candle_w / 2
+                    pts.extend([x_center, y(v)])
+                if len(pts) >= 4:
+                    canvas.create_line(*pts, fill=color, width=1)
+
+            plot_line('bb_upper', "#5a6a7a")
+            plot_line('bb_mid', "#5a6a7a")
+            plot_line('bb_lower', "#5a6a7a")
+
+            # 캔들스틱
+            for i, r in enumerate(rows):
+                x_center = pad_l + i * candle_w + candle_w / 2
+                up = r['close'] >= r['open']
+                color = "#00ff88" if up else "#ff3838"
+                canvas.create_line(x_center, y(r['high']), x_center, y(r['low']), fill=color, width=1)
+                body_top, body_bot = y(max(r['open'], r['close'])), y(min(r['open'], r['close']))
+                bw = max(candle_w * 0.6, 1)
+                if abs(body_bot - body_top) < 1:
+                    body_bot = body_top + 1
+                canvas.create_rectangle(x_center - bw / 2, body_top, x_center + bw / 2, body_bot,
+                                         fill=color, outline=color)
+
+            # EMA20/60/120
+            plot_line('ema20', "#ffff00")
+            plot_line('ema60', "#00ffff")
+            plot_line('ema120', "#ff00ff")
+
+            legend_y = pad_t + 4
+            for text, color in (("EMA20", "#ffff00"), ("EMA60", "#00ffff"), ("EMA120", "#ff00ff"), ("BB", "#5a6a7a")):
+                canvas.create_text(pad_l + 4, legend_y, text=text, fill=color, font=("Arial", 8, "bold"), anchor="nw")
+                legend_y += 12
+
+            # x축 날짜 라벨(mm.dd) — 회색 구분선 위에 표시. 캔들 몇 개당 하나씩만 찍어서 안 겹치게.
+            axis_y = pad_t + plot_h
+            canvas.create_line(pad_l, axis_y, w - pad_r, axis_y, fill="#444444")
+            label_every = max(n // 6, 1)
+            last_label = None
+            for i, r in enumerate(rows):
+                if i % label_every != 0:
+                    continue
+                ts = r.get('timestamp', '')
+                if not ts or len(ts) < 10:
+                    continue
+                mmdd = f"{ts[5:7]}.{ts[8:10]}"  # "YYYY-MM-DD HH:MM:SS" -> "MM.DD"
+                if mmdd == last_label:
+                    continue
+                last_label = mmdd
+                x_center = pad_l + i * candle_w + candle_w / 2
+                canvas.create_line(x_center, axis_y, x_center, axis_y + 3, fill="#666666")
+                canvas.create_text(x_center, axis_y + 5, text=mmdd, fill="#999999",
+                                    font=("Arial", 8), anchor="n")
+
+        def draw_rsi(_event=None):
+            canvas = win._rsi_canvas
+            canvas.delete("all")
+            w, h = canvas.winfo_width(), canvas.winfo_height()
+            n = len(rows)
+            if n == 0 or w < 50 or h < 30:
+                return
+            pad_l, pad_r, pad_t, pad_b = 8, 65, 6, 6
+            plot_w, plot_h = w - pad_l - pad_r, h - pad_t - pad_b
+            if plot_w <= 0 or plot_h <= 0:
+                return
+            candle_w = plot_w / n
+
+            def y(v):
+                return pad_t + (100 - v) / 100 * plot_h
+
+            for level, dash in ((30, True), (50, False), (70, True)):
+                yy = y(level)
+                canvas.create_line(pad_l, yy, w - pad_r, yy, fill="#3a3a3a" if not dash else "#444444")
+                canvas.create_text(w - pad_r + 5, yy, text=str(level), fill="#999999",
+                                    font=("Arial", 7), anchor="w")
+            canvas.create_text(pad_l + 4, pad_t + 2, text="RSI(14)", fill="#ffa500",
+                                font=("Arial", 8, "bold"), anchor="nw")
+
+            pts = []
+            for i, r in enumerate(rows):
+                if r.get('rsi') is None:
+                    continue
+                x_center = pad_l + i * candle_w + candle_w / 2
+                pts.extend([x_center, y(max(0, min(100, r['rsi'])))])
+            if len(pts) >= 4:
+                canvas.create_line(*pts, fill="#ffa500", width=1.3)
+
+        def draw_rsi_delta(_event=None):
+            canvas = win._rd_canvas
+            canvas.delete("all")
+            w, h = canvas.winfo_width(), canvas.winfo_height()
+            n = len(rows)
+            if n == 0 or w < 50 or h < 30:
+                return
+            pad_l, pad_r, pad_t, pad_b = 8, 65, 6, 6
+            plot_w, plot_h = w - pad_l - pad_r, h - pad_t - pad_b
+            if plot_w <= 0 or plot_h <= 0:
+                return
+            candle_w = plot_w / n
+            deltas = [r['rsi_delta'] for r in rows if r.get('rsi_delta') is not None]
+            if not deltas:
+                return
+            d_max = max(abs(max(deltas)), abs(min(deltas)), 1)
+
+            def y(v):
+                return pad_t + (d_max - v) / (2 * d_max) * plot_h
+
+            zero_y = y(0)
+            canvas.create_line(pad_l, zero_y, w - pad_r, zero_y, fill="#555555")
+            canvas.create_text(w - pad_r + 5, zero_y, text="0", fill="#999999", font=("Arial", 7), anchor="w")
+            canvas.create_text(pad_l + 4, pad_t + 2, text="RSI Δ", fill="#00ccff",
+                                font=("Arial", 8, "bold"), anchor="nw")
+
+            pts = []
+            for i, r in enumerate(rows):
+                if r.get('rsi_delta') is None:
+                    continue
+                x_center = pad_l + i * candle_w + candle_w / 2
+                pts.extend([x_center, y(r['rsi_delta'])])
+            if len(pts) >= 4:
+                canvas.create_line(*pts, fill="#00ccff", width=1.3)
+
+        def draw_all(_event=None):
+            draw_price()
+            draw_rsi()
+            draw_rsi_delta()
+
+        win._price_canvas.bind("<Configure>", draw_all)
+        win._rsi_canvas.bind("<Configure>", draw_all)
+        win._rd_canvas.bind("<Configure>", draw_all)
+        win.after(50, draw_all)
+
+    def generate_report(self):
+        self._send_and_wait('generate_report', label="리포트 생성")
+
+    def set_report_dir(self):
+        new_dir = simpledialog.askstring(
+            "리포트 저장 경로 변경",
+            "PDF 리포트를 저장할 폴더 경로를 입력하세요:\n"
+            "(기본값은 안드로이드 공용 문서함 — 예: /storage/emulated/0/Documents)"
+        )
+        if new_dir and new_dir.strip():
+            self._send_and_wait('set_report_dir', ticker=new_dir.strip(), label="리포트 경로 변경")
+
+    def add_funds(self):
+        amount = simpledialog.askfloat(
+            "거래소 충전", f"거래소로 충전할 금액 ($):\n(외부통장 → 거래소로 이체됩니다. 현재 외부통장 ${bank_balance:,.2f})",
+            minvalue=0
+        )
+        if amount and amount > 0:
+            self._send_and_wait('charge', amount=amount, label="거래소 충전")
+
+    def withdraw_funds(self):
+        cash = self._account[0] if self._account else 0
+        amount = simpledialog.askfloat(
+            "거래소 출금", f"거래소에서 출금할 금액 ($):\n(포지션/그 손익은 안 건드리고, 여유 현금 ${cash:,.2f}에서만 빠져 외부통장으로 들어갑니다)",
+            minvalue=0
+        )
+        if amount and amount > 0:
+            self._send_and_wait('withdraw', amount=amount, label="거래소 출금")
+
+    def bank_deposit(self):
+        amount = simpledialog.askfloat("외부통장 입금", "외부통장에 입금할 금액 ($):\n(월급 등 새로 들어오는 돈)", minvalue=0)
+        if amount and amount > 0:
+            self._send_and_wait('bank_deposit', amount=amount, label="외부통장 입금")
+
+    def bank_withdraw(self):
+        amount = simpledialog.askfloat(
+            "외부통장 출금", f"외부통장에서 출금할 금액 ($):\n(실생활 지출 등 — 그냥 시스템 밖으로 사라집니다. 현재 외부통장 ${bank_balance:,.2f})",
+            minvalue=0
+        )
+        if amount and amount > 0:
+            self._send_and_wait('bank_withdraw', amount=amount, label="외부통장 출금")
+
+    def set_interval(self, interval):
+        # 즉시 버튼 색을 눌린 것처럼 바꿔 반응성을 주고(서버 응답은 비동기),
+        # 실제 확정 색상은 다음 poll_files에서 서버가 돌려준 interval로 재반영된다.
+        self._highlight_interval_buttons(interval)
+        self._send_and_wait('set_interval', ticker=interval, label=f"기준봉 {interval} 전환")
+
+    def _highlight_interval_buttons(self, active_interval):
+        for iv, btn in self._tf_btn_widgets.items():
+            if iv == active_interval:
+                self._cfg(btn, bg="#1a7abf", fg="white")
+            else:
+                self._cfg(btn, bg="#eeeeee", fg="black")
+        self._last_interval_shown = active_interval
+
+    def reset_balance(self):
+        if not messagebox.askyesno(
+            "잔고 리셋",
+            "거래소 잔고와 외부통장(누적 입출금 포함)을 모두 0원으로 리셋하시겠습니까?\n(보유 포지션이 있으면 리셋되지 않습니다)"
+        ):
+            return
+        self._send_and_wait('reset', label="리셋")
+
+    def toggle_margin_mode(self):
+        new_mode = 'isolated' if current_margin_mode == 'cross' else 'cross'
+        label = "크로스 마진" if new_mode == 'cross' else "격리 마진"
+        if not messagebox.askyesno(
+            "마진 모드 전환",
+            f"{label} 모드로 전환하시겠습니까?\n"
+            + ("크로스: 포지션 손실이 -100%를 넘어도 계좌 잔고가 버티면 청산 안 함"
+               if new_mode == 'cross' else
+               "격리: 포지션별 배정 증거금의 90% 손실 시 그 포지션만 즉시 강제청산")
+        ):
+            return
+        self._highlight_margin_mode(new_mode)
+        self._send_and_wait('set_margin_mode', ticker=new_mode, label=f"{label} 전환")
+
+    def _highlight_margin_mode(self, mode):
+        if mode == 'cross':
+            self._cfg(self.btn_margin_mode, text="크로스", bg="#1a7abf", fg="white")
+        else:
+            self._cfg(self.btn_margin_mode, text="격리", bg="#996600", fg="white")
+        self._last_margin_mode_shown = mode
+
+    def open_position(self, position_type):
+        ticker = self.ticker_entry.get().strip().upper()
+        if not ticker:
+            messagebox.showwarning("경고", "티커를 입력하세요.")
+            return
+        try:
+            amount_won = round(float(self.amount_entry.get() or 0), 2)  # 달러
+            leverage = int(self.leverage_entry.get() or DEFAULT_LEVERAGE)
+        except Exception:
+            messagebox.showwarning("경고", "금액/배율을 올바르게 입력하세요.")
+            return
+        if amount_won <= 0:
+            messagebox.showwarning("경고", "금액을 올바르게 입력하세요.")
+            return
+        direction = "롱" if position_type == "long" else "숏"
+        # [2026-10-11 추가] 권장 레버리지 초과 경고(서버 calc_liq_risk: 청산선이 ATR 5배 밖에 있도록,
+        # 최대 10x, 선물 미상장은 절반). 막지는 않고 확인만 받는다.
+        try:
+            info_row = self._latest_rows.get(ticker) or {}
+            max_lev = info_row.get('max_lev')
+            if max_lev and leverage > max_lev:
+                risk_txt = info_row.get('liq_risk') or ''
+                if not messagebox.askyesno(
+                        "청산 위험",
+                        f"{ticker} 권장 최대 레버리지는 {max_lev}x야 (지금 {leverage}x).\n"
+                        f"ATR {info_row.get('atr_pct', 0):.2f}% 기준으로 6시간 안에 청산선까지 갈 수 있는 폭이야."
+                        + (f"\n위험요인: {risk_txt}" if risk_txt else "")
+                        + "\n\n그래도 진입할까?"):
+                    return
+        except Exception:
+            pass
+        self._send_and_wait('open', ticker=ticker, amount=amount_won, leverage=leverage,
+                            position_type=position_type, label=f"{direction} 진입")
+
+    def close_position(self):
+        ticker = self.ticker_entry.get().strip().upper()
+        if not ticker:
+            messagebox.showwarning("경고", "티커를 입력하세요.")
+            return
+        self._send_and_wait('close', ticker=ticker, label="청산")
+
+    def open_filter_dialog(self):
+        """[2026-08-05 추가] 필터 관리 창. 조건식 창이랑 입력방식(지표버튼/직접타이핑/
+        일괄 OR등록/txt 내보내기·가져오기)은 완전히 같지만, 색칠하는 대신 "하나라도
+        통과 못 하면 그 코인 자체를 목록에서 숨긴다"는 점만 다르다. 여러 필터가
+        등록되면 OR로 합쳐진다(하나라도 통과하면 표시). 색상 개념이 없어서 조건식 txt
+        가져오기/내보내기와 같은 4열 형식을 그대로 쓰되(다른 도구 결과물 재사용 가능),
+        색상 칸은 그냥 무시한다."""
+        win = tk.Toplevel(self.root)
+        win.title("필터")
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        win_w = max(700, int(screen_w * 0.55))
+        win_h = int(screen_h * 0.85)
+        win_x = (screen_w - win_w) // 2
+        win_y = (screen_h - win_h) // 2
+        win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+        win.resizable(True, True)
+
+        top = tk.Frame(win)
+        top.pack(fill="x", padx=10, pady=(10, 4))
+
+        expr_entry = tk.Entry(top, font=("Consolas", 11))
+        expr_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        def register():
+            expr = expr_entry.get().strip()
+            ok, err = validate_condition_expr(expr)
+            if not ok:
+                messagebox.showwarning("필터 오류", err, parent=win)
+                return
+            f_ = {"id": f"f{int(time.time()*1000)}", "expr": expr, "enabled": True}
+            self.filter_conditions.append(f_)
+            save_filter_conditions(self.filter_conditions)
+            self._highlight_filter_button()
+            expr_entry.delete(0, tk.END)
+            refresh_list()
+
+        tk.Button(top, text="등록", command=register, bg="#3a7a5a", fg="white",
+                  font=("Arial", 10, "bold"), padx=10).pack(side="left")
+
+        tk.Label(win, text="지표 버튼을 누르면 필터식 입력칸에 삽입됩니다. "
+                            "연산자는 직접 타이핑: && || ! == != < > <= >= ( )\n"
+                            "코인명 비교는 따옴표로: ticker=='xrp' (대소문자 구분 안 함) — "
+                            "필터를 여러 개 등록하면 OR로 합쳐져서, 하나라도 통과하면 표시됩니다.",
+                 font=("Arial", 9), fg="#666666", justify="left", wraplength=win_w-30, anchor="w").pack(
+            fill="x", padx=10, pady=(0, 6))
+
+        grid = tk.Frame(win)
+        grid.pack(fill="x", padx=10)
+        cols = 3
+        for i, (name, label) in enumerate(CONDITION_INDICATORS):
+            r, c = divmod(i, cols)
+            b = tk.Button(grid, text=label, font=("Arial", 9), padx=4, pady=2,
+                          command=lambda n=name: expr_entry.insert(tk.INSERT, n))
+            b.grid(row=r, column=c, sticky="ew", padx=2, pady=2)
+        for c in range(cols):
+            grid.grid_columnconfigure(c, weight=1)
+
+        tk.Label(win, text="여러 줄 붙여넣기 — 줄바꿈된 조건들을 OR로 묶어 한 번에 등록",
+                 font=("Arial", 10, "bold"), fg="#1a4a7a").pack(anchor="w", padx=10, pady=(10, 2))
+
+        bulk_text = tk.Text(win, height=6, font=("Consolas", 9), wrap="none")
+        bulk_text.pack(fill="x", padx=10, pady=(4, 4))
+        bulk_text.insert("1.0", "rsi < 30 && bb_percent < 20\nrsi > 70 && bb_percent > 80")
+
+        def register_bulk():
+            raw = bulk_text.get("1.0", tk.END)
+            lines = [ln.strip().rstrip(',').strip() for ln in raw.splitlines() if ln.strip()]
+            if not lines:
+                messagebox.showwarning("경고", "붙여넣은 필터식이 없습니다.", parent=win)
+                return
+            bad = []
+            for i, ln in enumerate(lines, 1):
+                ok, err = validate_condition_expr(ln)
+                if not ok:
+                    bad.append(f"{i}번째 줄: {err}\n  → {ln}")
+            if bad:
+                messagebox.showwarning("필터 오류",
+                                        f"{len(bad)}개 줄에 문제가 있습니다. 고친 뒤 다시 시도하세요:\n\n" +
+                                        "\n\n".join(bad[:5]) +
+                                        (f"\n\n...외 {len(bad)-5}개 더" if len(bad) > 5 else ""),
+                                        parent=win)
+                return
+            combined = " || ".join(f"({ln})" for ln in lines)
+            ok, err = validate_condition_expr(combined)
+            if not ok:
+                messagebox.showwarning("필터 오류", f"묶은 결과가 유효하지 않습니다: {err}", parent=win)
+                return
+            f_ = {"id": f"f{int(time.time()*1000)}", "expr": combined, "enabled": True}
+            self.filter_conditions.append(f_)
+            save_filter_conditions(self.filter_conditions)
+            self._highlight_filter_button()
+            messagebox.showinfo("등록 완료", f"{len(lines)}개 필터를 OR로 묶어 한 개로 등록했습니다.", parent=win)
+            refresh_list()
+
+        tk.Button(win, text="일괄등록 (OR로 묶기)", command=register_bulk, bg="#7a4aa0", fg="white",
+                  font=("Arial", 10, "bold"), padx=10).pack(anchor="w", padx=10, pady=(0, 8))
+
+        def export_filters():
+            if not self.filter_conditions:
+                messagebox.showinfo("내보내기", "등록된 필터가 없습니다.", parent=win)
+                return
+            path = filedialog.asksaveasfilename(
+                parent=win, defaultextension=".txt",
+                initialfile=f"filter_conditions_{time.strftime('%Y%m%d_%H%M%S')}.txt",
+                filetypes=[("Text files", "*.txt")])
+            if not path:
+                return
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("# 필터 내보내기\n")
+                    f.write("# 형식: 색상(무시됨)\\t사용여부(1/0)\\t알림여부(무시됨)\\t필터식\n")
+                    for f_ in self.filter_conditions:
+                        f.write(f"-\t{1 if f_.get('enabled', True) else 0}\t0\t{f_['expr']}\n")
+                messagebox.showinfo("내보내기 완료", f"{len(self.filter_conditions)}개 필터를 저장했습니다.\n{path}", parent=win)
+            except Exception as e:
+                messagebox.showerror("오류", f"저장 실패: {e}", parent=win)
+
+        def import_filters():
+            path = filedialog.askopenfilename(parent=win, filetypes=[("Text files", "*.txt")])
+            if not path:
+                return
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+            except Exception as e:
+                messagebox.showerror("오류", f"파일 읽기 실패: {e}", parent=win)
+                return
+            added, bad = 0, []
+            for i, raw in enumerate(lines, 1):
+                line = raw.rstrip("\n")
+                if not line.strip() or line.startswith("# "):
+                    continue
+                parts = line.split("\t")
+                if len(parts) != 4:
+                    bad.append(f"{i}번째 줄: 형식 오류(탭 4개 구간이 아님)")
+                    continue
+                _color, enabled_s, _alert_s, expr = parts
+                expr = expr.strip()
+                ok, err = validate_condition_expr(expr)
+                if not ok:
+                    bad.append(f"{i}번째 줄: {err}")
+                    continue
+                self.filter_conditions.append({
+                    "id": f"f{int(time.time()*1000)}_{added}", "expr": expr,
+                    "enabled": enabled_s.strip() == "1",
+                })
+                added += 1
+            if added:
+                save_filter_conditions(self.filter_conditions)
+                self._highlight_filter_button()
+                refresh_list()
+            msg = f"{added}개 필터를 불러왔습니다."
+            if bad:
+                msg += f"\n\n실패 {len(bad)}개:\n" + "\n".join(bad[:8]) + (f"\n...외 {len(bad)-8}개" if len(bad) > 8 else "")
+            messagebox.showinfo("가져오기 완료", msg, parent=win)
+
+        io_row = tk.Frame(win)
+        io_row.pack(fill="x", padx=10, pady=(0, 4))
+        tk.Button(io_row, text="📤 전체 내보내기(txt)", command=export_filters,
+                  font=("Arial", 9), padx=8).pack(side="left", padx=(0, 6))
+        tk.Button(io_row, text="📥 가져오기(txt)", command=import_filters,
+                  font=("Arial", 9), padx=8).pack(side="left")
+
+        tk.Label(win, text="등록된 필터 (하나라도 통과하면 표시됨 — OR)", font=("Arial", 11, "bold")).pack(
+            anchor="w", padx=10, pady=(4, 2))
+
+        list_canvas = tk.Canvas(win, highlightthickness=0)
+        list_vsb = ttk.Scrollbar(win, orient="vertical", command=list_canvas.yview)
+        list_canvas.configure(yscrollcommand=list_vsb.set)
+        list_vsb.pack(side="right", fill="y")
+        list_canvas.pack(side="top", fill="both", expand=True, padx=(10, 0), pady=(0, 10))
+        list_inner = tk.Frame(list_canvas)
+        win_id = list_canvas.create_window((0, 0), window=list_inner, anchor="nw")
+        list_inner.bind("<Configure>", lambda e: list_canvas.configure(scrollregion=list_canvas.bbox("all")))
+        list_canvas.bind("<Configure>", lambda e: list_canvas.itemconfig(win_id, width=e.width))
+
+        def refresh_list():
+            for w in list_inner.winfo_children():
+                w.destroy()
+            if not self.filter_conditions:
+                tk.Label(list_inner, text="등록된 필터가 없습니다 — 필터가 하나도 없으면 전체 코인이 표시됩니다.",
+                         fg="#888888", font=("Arial", 10)).pack(pady=10)
+                return
+            for idx, f_ in enumerate(self.filter_conditions):
+                row = tk.Frame(list_inner, bd=1, relief="solid", bg="#f7f7f7")
+                row.pack(fill="x", pady=3, padx=2)
+                tk.Label(row, text=f"#{idx+1} {f_['expr']}", font=("Consolas", 9),
+                         bg="#f7f7f7", anchor="w", wraplength=win_w-140, justify="left").pack(
+                    side="left", fill="x", expand=True, padx=6)
+
+                en_var = tk.BooleanVar(value=f_.get("enabled", True))
+
+                def on_toggle_enabled(f2=f_, v=en_var):
+                    f2["enabled"] = v.get()
+                    save_filter_conditions(self.filter_conditions)
+                    self._highlight_filter_button()
+
+                tk.Checkbutton(row, text="사용", variable=en_var, bg="#f7f7f7",
+                               command=on_toggle_enabled, font=("Arial", 9)).pack(side="left")
+
+                def on_delete(f2=f_):
+                    if not messagebox.askyesno("삭제 확인", f"필터를 삭제할까요?\n{f2['expr']}", parent=win):
+                        return
+                    self.filter_conditions.remove(f2)
+                    save_filter_conditions(self.filter_conditions)
+                    self._highlight_filter_button()
+                    refresh_list()
+
+                tk.Button(row, text="삭제", command=on_delete, fg="white", bg="#cc4444",
+                          font=("Arial", 9), padx=6).pack(side="left", padx=4)
+
+        refresh_list()
+
+    def _load_prob_filter(self):
+        try:
+            with open(PROB_FILTER_FILE, 'r', encoding='utf-8') as f:
+                return bool(json.load(f).get('on', True))
+        except Exception:
+            return True
+
+    def _toggle_prob_filter(self):
+        self.prob_filter_on = not self.prob_filter_on
+        try:
+            with open(PROB_FILTER_FILE, 'w', encoding='utf-8') as f:
+                json.dump({'on': self.prob_filter_on}, f)
+        except Exception as e:
+            print(f"확률필터 설정 저장 실패: {e}")
+        self._highlight_prob_filter_button()
+        self._market_mtime = None  # 다음 폴링(1초 안)에 스냅샷 다시 읽어서 새 설정으로 렌더
+
+    def _highlight_prob_filter_button(self):
+        if self.prob_filter_on:
+            self._cfg(self.btn_prob_filter, text="확률필터 ON", bg="#2f7fbf", fg="white")
+        else:
+            self._cfg(self.btn_prob_filter, text="확률필터 OFF", bg="#555555", fg="white")
+
+    def _highlight_filter_button(self):
+        """필터가 하나라도 활성화돼있으면 버튼을 눈에 띄게 바꿔서, 지금 코인 목록이
+        걸러진 상태라는 걸 잊지 않게 한다."""
+        active = any(f_.get("enabled", True) for f_ in self.filter_conditions)
+        if active:
+            n = sum(1 for f_ in self.filter_conditions if f_.get("enabled", True))
+            self._cfg(self.btn_filter, text=f"필터 ({n})", bg="#c77d1a", fg="white")
+        else:
+            self._cfg(self.btn_filter, text="필터", bg="#555555", fg="white")
+
+    def open_custom_condition_dialog(self):
+        """[2026-07-21 추가] 사용자 정의 조건식(커스텀 알림) 관리 창. C스타일(&&, ||, !)
+        조건식을 등록하면 매 폴링마다 전 코인에 대해 평가해서, 맞는 코인은 지정한 색으로
+        카드가 칠해지고(항상) 디스코드 알림도 뜬다(알림여부 체크 시). 서버는 안 건드리고
+        클라이언트가 이미 읽고 있는 지표값만으로 전부 처리한다(_render_table에서 평가)."""
+        win = tk.Toplevel(self.root)
+        win.title("커스텀 조건식")
+        # [2026-08-05 수정] 예전엔 480px 고정폭이라 OR로 여러 줄 묶은 긴 조건식이
+        # 좁은 칸에 계속 줄바꿈돼서 읽기 힘들었다 — 화면 크기에 비례하게 바꿈
+        # (거래기록 창 등 다른 팝업이랑 같은 방식). 최소 700px은 보장.
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        win_w = max(700, int(screen_w * 0.55))
+        win_h = int(screen_h * 0.85)
+        win_x = (screen_w - win_w) // 2
+        win_y = (screen_h - win_h) // 2
+        win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+        win.resizable(True, True)
+
+        self._cond_color = "#ffcc00"
+
+        top = tk.Frame(win)
+        top.pack(fill="x", padx=10, pady=(10, 4))
+
+        color_btn = tk.Button(top, width=3, bg=self._cond_color)
+        def pick_color():
+            c = colorchooser.askcolor(color=self._cond_color, parent=win, title="조건 색상 선택")
+            if c and c[1]:
+                self._cond_color = c[1]
+                color_btn.config(bg=self._cond_color)
+        color_btn.config(command=pick_color)
+        color_btn.pack(side="left", padx=(0, 6))
+
+        expr_entry = tk.Entry(top, font=("Consolas", 11))
+        expr_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        def register():
+            expr = expr_entry.get().strip()
+            ok, err = validate_condition_expr(expr)
+            if not ok:
+                messagebox.showwarning("조건식 오류", err, parent=win)
+                return
+            cond = {"id": f"c{int(time.time()*1000)}", "expr": expr, "color": self._cond_color,
+                     "enabled": True, "alert": False}
+            self.custom_conditions.append(cond)
+            save_custom_conditions(self.custom_conditions)
+            expr_entry.delete(0, tk.END)
+            refresh_list()
+
+        tk.Button(top, text="등록", command=register, bg="#3a7a5a", fg="white",
+                  font=("Arial", 10, "bold"), padx=10).pack(side="left")
+
+        tk.Label(win, text="지표 버튼을 누르면 조건식 입력칸에 삽입됩니다. "
+                            "연산자는 직접 타이핑: && || ! == != < > <= >= ( )\n"
+                            "코인명 비교는 따옴표로: ticker=='xrp' (대소문자 구분 안 함)",
+                 font=("Arial", 9), fg="#666666", justify="left", wraplength=win_w-30, anchor="w").pack(
+            fill="x", padx=10, pady=(0, 6))
+
+        grid = tk.Frame(win)
+        grid.pack(fill="x", padx=10)
+        cols = 3
+        for i, (name, label) in enumerate(CONDITION_INDICATORS):
+            r, c = divmod(i, cols)
+            b = tk.Button(grid, text=label, font=("Arial", 9), padx=4, pady=2,
+                          command=lambda n=name: expr_entry.insert(tk.INSERT, n))
+            b.grid(row=r, column=c, sticky="ew", padx=2, pady=2)
+        for c in range(cols):
+            grid.grid_columnconfigure(c, weight=1)
+
+        # ============================================================
+        # [2026-07-23 추가] 일괄 등록 — 조건식 미리 여러 개(예: 조건 마이닝 결과) 갖고
+        # 있을 때, 한 줄에 하나씩 붙여넣으면 전부 OR(||)로 묶어서 "조건 하나"로 등록한다.
+        # 색상도 하나만 고르면 그 묶음 전체가 같은 색으로 카드에 표시된다.
+        # ============================================================
+        tk.Label(win, text="여러 줄 붙여넣기 — 줄바꿈된 조건들을 OR로 묶어 한 번에 등록",
+                 font=("Arial", 10, "bold"), fg="#1a4a7a").pack(anchor="w", padx=10, pady=(10, 2))
+
+        bulk_top = tk.Frame(win)
+        bulk_top.pack(fill="x", padx=10)
+        self._bulk_color = "#3a7a5a"
+        bulk_color_btn = tk.Button(bulk_top, width=3, bg=self._bulk_color)
+        def pick_bulk_color():
+            c = colorchooser.askcolor(color=self._bulk_color, parent=win, title="묶음 색상 선택")
+            if c and c[1]:
+                self._bulk_color = c[1]
+                bulk_color_btn.config(bg=self._bulk_color)
+        bulk_color_btn.config(command=pick_bulk_color)
+        bulk_color_btn.pack(side="left", padx=(0, 6))
+        tk.Label(bulk_top, text="이 묶음 전체에 적용할 색상", font=("Arial", 9),
+                 fg="#666666").pack(side="left")
+
+        bulk_text = tk.Text(win, height=6, font=("Consolas", 9), wrap="none")
+        bulk_text.pack(fill="x", padx=10, pady=(4, 4))
+        bulk_text.insert("1.0", "rsi < 30 && bb_percent < 20\nrsi > 70 && bb_percent > 80")
+
+        def register_bulk():
+            raw = bulk_text.get("1.0", tk.END)
+            # 끝에 쉼표 붙은 줄(리스트/CSV에서 복붙할 때 흔함)은 자동으로 떼어낸다 —
+            # 안 떼면 "(조건,)"이 파이썬 튜플이 돼서 내용과 무관하게 항상 참으로 취급돼
+            # "모든 코인이 다 걸리는" 버그가 생긴다(실제로 겪은 사례).
+            lines = [ln.strip().rstrip(',').strip() for ln in raw.splitlines() if ln.strip()]
+            if not lines:
+                messagebox.showwarning("경고", "붙여넣은 조건식이 없습니다.", parent=win)
+                return
+            bad = []
+            for i, ln in enumerate(lines, 1):
+                ok, err = validate_condition_expr(ln)
+                if not ok:
+                    bad.append(f"{i}번째 줄: {err}\n  → {ln}")
+            if bad:
+                messagebox.showwarning("조건식 오류",
+                                        f"{len(bad)}개 줄에 문제가 있습니다. 고친 뒤 다시 시도하세요:\n\n" +
+                                        "\n\n".join(bad[:5]) +
+                                        (f"\n\n...외 {len(bad)-5}개 더" if len(bad) > 5 else ""),
+                                        parent=win)
+                return
+            combined = " || ".join(f"({ln})" for ln in lines)
+            ok, err = validate_condition_expr(combined)
+            if not ok:
+                messagebox.showwarning("조건식 오류", f"묶은 결과가 유효하지 않습니다: {err}", parent=win)
+                return
+            cond = {"id": f"c{int(time.time()*1000)}", "expr": combined, "color": self._bulk_color,
+                     "enabled": True, "alert": False}
+            self.custom_conditions.append(cond)
+            save_custom_conditions(self.custom_conditions)
+            messagebox.showinfo("등록 완료", f"{len(lines)}개 조건을 OR로 묶어 한 개로 등록했습니다.", parent=win)
+            refresh_list()
+
+        tk.Button(win, text=f"일괄등록 (OR로 묶기)", command=register_bulk, bg="#7a4aa0", fg="white",
+                  font=("Arial", 10, "bold"), padx=10).pack(anchor="w", padx=10, pady=(0, 8))
+
+        # ============================================================
+        # [2026-07-23 추가] txt로 전체 내보내기/가져오기 — 조건식+색상+사용여부+알림여부까지
+        # 전부 보존해서 한 파일로 백업하거나 다른 기기로 옮길 수 있게 한다.
+        # 형식: 한 줄에 조건 하나, 탭으로 구분 — 색상\t사용여부\t알림여부\t조건식
+        # ============================================================
+        def export_conditions():
+            if not self.custom_conditions:
+                messagebox.showinfo("내보내기", "등록된 조건식이 없습니다.", parent=win)
+                return
+            path = filedialog.asksaveasfilename(
+                parent=win, defaultextension=".txt",
+                initialfile=f"custom_conditions_{time.strftime('%Y%m%d_%H%M%S')}.txt",
+                filetypes=[("Text files", "*.txt")])
+            if not path:
+                return
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("# 커스텀 조건식 내보내기\n")
+                    f.write("# 형식: 색상\\t사용여부(1/0)\\t알림여부(1/0)\\t조건식\n")
+                    for cond in self.custom_conditions:
+                        f.write(f"{cond['color']}\t{1 if cond.get('enabled', True) else 0}\t"
+                                f"{1 if cond.get('alert', False) else 0}\t{cond['expr']}\n")
+                messagebox.showinfo("내보내기 완료", f"{len(self.custom_conditions)}개 조건식을 저장했습니다.\n{path}", parent=win)
+            except Exception as e:
+                messagebox.showerror("오류", f"저장 실패: {e}", parent=win)
+
+        def import_conditions():
+            path = filedialog.askopenfilename(parent=win, filetypes=[("Text files", "*.txt")])
+            if not path:
+                return
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+            except Exception as e:
+                messagebox.showerror("오류", f"파일 읽기 실패: {e}", parent=win)
+                return
+            added, bad = 0, []
+            for i, raw in enumerate(lines, 1):
+                line = raw.rstrip("\n")
+                # [2026-07-29 버그수정] "#"으로 시작하면 주석으로 건너뛰던 로직이 색상 hex코드
+                # (예: #2eaa4a)로 시작하는 정상 데이터 줄까지 전부 주석으로 오인해서 매번
+                # "0개 불러옴"이 되던 버그가 있었다 — 주석은 "# "(해시+공백)처럼 뒤에 공백이
+                # 오는 경우만 걸러내도록 고쳤다(hex코드는 "#" 바로 뒤에 공백 없이 숫자/글자).
+                if not line.strip() or line.startswith("# "):
+                    continue
+                parts = line.split("\t")
+                if len(parts) != 4:
+                    bad.append(f"{i}번째 줄: 형식 오류(탭 4개 구간이 아님)")
+                    continue
+                color, enabled_s, alert_s, expr = parts
+                expr = expr.strip()
+                ok, err = validate_condition_expr(expr)
+                if not ok:
+                    bad.append(f"{i}번째 줄: {err}")
+                    continue
+                self.custom_conditions.append({
+                    "id": f"c{int(time.time()*1000)}_{added}", "expr": expr, "color": color.strip() or "#ffcc00",
+                    "enabled": enabled_s.strip() == "1", "alert": alert_s.strip() == "1",
+                })
+                added += 1
+            if added:
+                save_custom_conditions(self.custom_conditions)
+                refresh_list()
+            msg = f"{added}개 조건식을 불러왔습니다."
+            if bad:
+                msg += f"\n\n실패 {len(bad)}개:\n" + "\n".join(bad[:8]) + (f"\n...외 {len(bad)-8}개" if len(bad) > 8 else "")
+            messagebox.showinfo("가져오기 완료", msg, parent=win)
+
+        io_row = tk.Frame(win)
+        io_row.pack(fill="x", padx=10, pady=(0, 4))
+        tk.Button(io_row, text="📤 전체 내보내기(txt)", command=export_conditions,
+                  font=("Arial", 9), padx=8).pack(side="left", padx=(0, 6))
+        tk.Button(io_row, text="📥 가져오기(txt)", command=import_conditions,
+                  font=("Arial", 9), padx=8).pack(side="left")
+
+        def delete_all_conditions():
+            if not self.custom_conditions:
+                return
+            if not messagebox.askyesno("전체 삭제", f"등록된 조건식 {len(self.custom_conditions)}개를 전부 삭제할까요?", parent=win):
+                return
+            self.custom_conditions.clear()
+            save_custom_conditions(self.custom_conditions)
+            refresh_list()
+
+        tk.Button(io_row, text="🗑 전체 삭제", command=delete_all_conditions, fg="white", bg="#cc4444",
+                  font=("Arial", 9), padx=8).pack(side="right")
+
+        tk.Label(win, text="등록된 조건식", font=("Arial", 11, "bold")).pack(
+            anchor="w", padx=10, pady=(4, 2))
+
+        list_canvas = tk.Canvas(win, highlightthickness=0)
+        list_vsb = ttk.Scrollbar(win, orient="vertical", command=list_canvas.yview)
+        list_canvas.configure(yscrollcommand=list_vsb.set)
+        list_vsb.pack(side="right", fill="y")
+        list_canvas.pack(side="top", fill="both", expand=True, padx=(10, 0), pady=(0, 10))
+        list_inner = tk.Frame(list_canvas)
+        win_id = list_canvas.create_window((0, 0), window=list_inner, anchor="nw")
+        list_inner.bind("<Configure>", lambda e: list_canvas.configure(scrollregion=list_canvas.bbox("all")))
+        list_canvas.bind("<Configure>", lambda e: list_canvas.itemconfig(win_id, width=e.width))
+
+        def refresh_list():
+            for w in list_inner.winfo_children():
+                w.destroy()
+            if not self.custom_conditions:
+                tk.Label(list_inner, text="등록된 조건식이 없습니다.", fg="#888888",
+                         font=("Arial", 10)).pack(pady=10)
+                return
+            for idx, cond in enumerate(self.custom_conditions):
+                row = tk.Frame(list_inner, bd=1, relief="solid", bg="#f7f7f7")
+                row.pack(fill="x", pady=3, padx=2)
+                swatch = tk.Label(row, text="  ", bg=cond["color"], width=2)
+                swatch.pack(side="left", padx=4, pady=4)
+
+                en_var = tk.BooleanVar(value=cond.get("enabled", True))
+                al_var = tk.BooleanVar(value=cond.get("alert", False))
+
+                def on_toggle_enabled(c=cond, v=en_var):
+                    c["enabled"] = v.get()
+                    save_custom_conditions(self.custom_conditions)
+
+                def on_toggle_alert(c=cond, v=al_var):
+                    c["alert"] = v.get()
+                    save_custom_conditions(self.custom_conditions)
+
+                def on_delete(c=cond):
+                    # [2026-10-08] 조건식이 수천 자(OR 17개 등)일 때 확인창이 화면 밖으로 커져서 버튼이
+                    # 안 보여 삭제가 안 되던 문제 → 확인창엔 앞부분만 표시. 또 긴 수식 라벨이 옆 버튼을
+                    # 화면 밖으로 밀어내던 문제 → 아래에서 버튼을 먼저 오른쪽에 고정(pack 순서).
+                    short = c['expr'] if len(c['expr']) <= 150 else c['expr'][:150] + f"... (총 {len(c['expr'])}자)"
+                    if not messagebox.askyesno("삭제 확인", f"조건식을 삭제할까요?\n{short}", parent=win):
+                        return
+                    if c in self.custom_conditions:
+                        self.custom_conditions.remove(c)
+                    save_custom_conditions(self.custom_conditions)
+                    refresh_list()
+
+                # 버튼류를 먼저 오른쪽에 고정 → 수식이 아무리 길어도 삭제 버튼이 밀려나지 않는다
+                tk.Button(row, text="삭제", command=on_delete, fg="white", bg="#cc4444",
+                          font=("Arial", 9), padx=6).pack(side="right", padx=4)
+                tk.Checkbutton(row, text="알림", variable=al_var, bg="#f7f7f7",
+                               command=on_toggle_alert, font=("Arial", 9)).pack(side="right")
+                tk.Checkbutton(row, text="사용", variable=en_var, bg="#f7f7f7",
+                               command=on_toggle_enabled, font=("Arial", 9)).pack(side="right")
+                expr_txt = cond['expr'] if len(cond['expr']) <= 400 else cond['expr'][:400] + f"... (총 {len(cond['expr'])}자)"
+                tk.Label(row, text=f"#{idx+1} {expr_txt}", font=("Consolas", 9),
+                         bg="#f7f7f7", anchor="w", wraplength=max(120, win_w-230), justify="left").pack(
+                    side="left", fill="x", expand=True, padx=4)
+
+        refresh_list()
+
+    def open_chart_for_entry(self):
+        """티커 입력칸에 있는 코인의 차트를 띄운다 — 포지션 카드 클릭 시 뜨는 것과 동일한 팝업."""
+        ticker = self.ticker_entry.get().strip().upper()
+        if not ticker:
+            messagebox.showwarning("경고", "티커를 입력하세요.")
+            return
+        self.show_chart_popup(ticker)
+
+    def open_quick_entry_dialog(self):
+        """[2026-07-21 추가] 빠른 입력 — 실제 거래소(바이낸스 등)에서 이미 체결한 포지션을
+        페이퍼 계좌에 그대로 옮겨 등록한다. 코인/방향/레버리지/진입가/투입금액을 입력하면
+        수수료·청산가를 미리 계산해서 보여주고, 등록을 누르면 그 진입가 그대로(라이브
+        시세 무관) 서버에 포지션이 생성된다(서버 srv_open_manual 참고)."""
+        win = tk.Toplevel(self.root)
+        win.title("빠른 입력 — 포지션 직접 등록")
+        win.geometry("420x460")
+
+        tk.Label(win, text="실제로 체결된 포지션을 그대로 옮겨 등록합니다\n(진입가를 직접 지정 — 라이브 시세와 무관)",
+                 font=("Arial", 10), fg="#555555", justify="left").pack(pady=(10, 6), padx=14, anchor="w")
+
+        form = tk.Frame(win)
+        form.pack(fill="x", padx=14, pady=4)
+
+        def add_row(label_text, default=""):
+            row = tk.Frame(form)
+            row.pack(fill="x", pady=4)
+            tk.Label(row, text=label_text, width=9, anchor="w", font=("Arial", 11)).pack(side="left")
+            ent = tk.Entry(row, font=("Arial", 12))
+            ent.insert(0, default)
+            ent.pack(side="left", fill="x", expand=True)
+            return ent
+
+        ticker_entry = add_row("코인", self.ticker_entry.get().strip().upper())
+
+        dir_var = tk.StringVar(value="long")
+        dir_row = tk.Frame(form)
+        dir_row.pack(fill="x", pady=4)
+        tk.Label(dir_row, text="방향", width=9, anchor="w", font=("Arial", 11)).pack(side="left")
+        tk.Radiobutton(dir_row, text="롱", variable=dir_var, value="long", font=("Arial", 11)).pack(side="left")
+        tk.Radiobutton(dir_row, text="숏", variable=dir_var, value="short", font=("Arial", 11)).pack(side="left")
+
+        lev_entry = add_row("레버리지", "10")
+        entry_price_entry = add_row("진입가")
+        amount_entry = add_row("투입금액($)")
+
+        preview_lbl = tk.Label(win, text="값을 입력하면 수수료·청산가 미리보기가 표시됩니다.",
+                                font=("Arial", 10), fg="#1a4a7a", justify="left", anchor="w")
+        preview_lbl.pack(fill="x", padx=14, pady=(10, 4))
+
+        def update_preview(*_):
+            try:
+                entry_price = float(entry_price_entry.get())
+                amount = float(amount_entry.get())
+                lev = float(lev_entry.get() or 10)
+                if entry_price <= 0 or amount <= 0 or lev <= 0:
+                    raise ValueError
+                fee = amount * lev * 0.0004  # FEE_RATE — 서버 상수와 동일 값
+                notional = amount * lev
+                liq = entry_price * (1 - 0.9 / lev) if dir_var.get() == "long" else entry_price * (1 + 0.9 / lev)
+                preview_lbl.config(text=(f"명목가치: ${notional:,.2f}   예상 수수료: ${fee:,.2f}\n"
+                                          f"청산가: ${liq:,.4f}\n"
+                                          f"※ 격리마진 기준(포지션별 개별 청산) — 서버 CROSS_MARGIN_MODE 설정에 따름"))
+            except Exception:
+                preview_lbl.config(text="값을 정확히 입력하면 미리보기가 표시됩니다.")
+
+        for e in (lev_entry, entry_price_entry, amount_entry):
+            e.bind("<KeyRelease>", update_preview)
+        dir_var.trace_add("write", lambda *a: update_preview())
+
+        def submit():
+            ticker = ticker_entry.get().strip().upper()
+            if not ticker:
+                messagebox.showwarning("경고", "코인을 입력하세요.", parent=win)
+                return
+            try:
+                entry_price = float(entry_price_entry.get())
+                amount = float(amount_entry.get())
+                lev = int(float(lev_entry.get() or 10))
+                if entry_price <= 0 or amount <= 0 or lev <= 0:
+                    raise ValueError
+            except Exception:
+                messagebox.showwarning("경고", "레버리지/진입가/투입금액을 정확히 입력하세요.", parent=win)
+                return
+
+            def on_success(msg):
+                messagebox.showinfo("등록 완료", msg)
+                if win.winfo_exists():
+                    win.destroy()
+
+            self._send_and_wait_callback('open_manual', on_success, ticker=ticker, amount=amount,
+                                          leverage=lev, position_type=dir_var.get(), entry_price=entry_price,
+                                          label="빠른입력 등록")
+
+        btn_row = tk.Frame(win)
+        btn_row.pack(fill="x", padx=14, pady=14)
+        tk.Button(btn_row, text="취소", command=win.destroy, font=("Arial", 11), padx=20, pady=8).pack(side="left", padx=6)
+        tk.Button(btn_row, text="등록", command=submit, bg="#7a4aa0", fg="white",
+                  font=("Arial", 11, "bold"), padx=20, pady=8).pack(side="left", padx=6)
+
+    def close_ticker(self, ticker):
+        if not messagebox.askyesno("청산 확인", f"{ticker} 포지션을 청산하시겠습니까?"):
+            return
+        self._send_and_wait('close', ticker=ticker, label="청산")
+
+    def _show_leverage_info(self, ticker):
+        _, _, pos_list = self._account
+        for p in pos_list:
+            if p['ticker'] == ticker:
+                messagebox.showinfo("Leverage", f"{ticker} 현재 배율: {p['leverage']}x\n(배율 변경은 신규 진입 시 설정하세요.)")
+                return
+
+    def show_help(self):
+        """각 지표에 대한 설명 팝업 (스크롤 가능)"""
+        if getattr(self, 'help_win', None) and self.help_win.winfo_exists():
+            self.help_win.lift()
+            return
+        self.help_win = tk.Toplevel(self.root)
+        self.help_win.title("지표 설명")
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        self.help_win.geometry(f"{sw}x{sh}")
+        canvas = tk.Canvas(self.help_win, highlightthickness=0)
+        vsb = ttk.Scrollbar(self.help_win, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        inner = tk.Frame(canvas)
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
+        # 마우스 휠 — 윈도우/맥(<MouseWheel>, e.delta)과 리눅스(X11, <Button-4/5>) 둘 다 지원
+        canvas.bind("<MouseWheel>", lambda e: canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+        canvas.bind("<Button-4>", lambda e: canvas.yview_scroll(-2, "units"))
+        canvas.bind("<Button-5>", lambda e: canvas.yview_scroll(2, "units"))
+        drag = {"y": 0, "top": 0.0}
+        def _press(e):
+            drag["y"] = e.y_root
+            drag["top"] = canvas.yview()[0]
+        def _motion(e):
+            dy = e.y_root - drag["y"]
+            h = max(canvas.winfo_height(), 1)
+            ylo, yhi = canvas.yview()
+            yspan = max(yhi - ylo, 0.0001)
+            canvas.yview_moveto(max(0.0, min(1.0, drag["top"] - (dy / h) * yspan)))
+        wrap = max(sw - 40, 200)
+        fs = self.ui_font_base
+        helps = [
+            ("구조", "이 앱은 주문 전용입니다. 실시간 계산(지표/점수)과 계좌(잔고/포지션/강제청산)는 "
+                    "trading_server.py 가 담당하고, 이 앱은 서버가 갱신하는 CSV를 읽어 표시하며 "
+                    "주문 명령만 보냅니다. 이 앱을 꺼도 포지션은 서버가 계속 감시합니다. "
+                    "서버는 빗썸과 업비트 두 거래소를 동시에 수집·채점합니다(아래 '거래소 토글' 참고)."),
+            ("거래소 토글 (빗썸/업비트)", "코인탭 상단의 '빗썸 | 업비트' 버튼으로 어느 거래소 시세/점수를 볼지 "
+                    "고를 수 있습니다. 선택한 거래소가 코인 목록·차트·롱숏 진입·청산 명령에 그대로 적용됩니다. "
+                    "단, 포지션/잔고/손익은 거래소와 무관하게 하나로 공유됩니다 — 실제 체결가가 바이낸스 "
+                    "USD 마크가격 기준이라(빗썸/업비트 KRW가는 표시·채점용), 어느 탭에서 진입하든 같은 계좌를 씁니다."),
+            ("카드 색깔", "🟢 초록=롱 신호(long_score≥컷) | 🔴 빨강=숏 신호(short_score≥컷) | "
+                        "🔵 파랑=매집(prepump_score≥80) | 🟣 보라=분산(preshort_score≥80) | "
+                        "🟡 노랑=관심(65점은 넘었지만 진입 컷 미달, 참고만 할 것) | 흰색=신호 없음. "
+                        "롱/숏이 매집/분산보다 우선순위 높음(둘 다 해당하면 롱/숏 색이 뜸)."),
+            ("현재가 / 24시간 변동률", "바이낸스 선물 최종 체결가(USD) 기준. 괄호 안은 현재 선택된 거래소의 "
+                    "원화 실시간 가격이고, 그 앞의 %는 24시간 변동률입니다(빗썸은 자체 24h 변동률 필드, "
+                    "업비트는 전일 종가 대비 변동률). 바이낸스 미상장 코인은 N/A로 표시. 두 가격 차이는 김치프리미엄."),
+            ("RSI", "상대강도지수(0~100). 30 이하 과매도(롱 유리), 70 이상 과매수(숏 유리). "
+                    "괄호 안은 5캔들 전 대비 변화량(RSI△). 표시용이면서, 이제 '가격위치' 세부점수의 "
+                    "반전가드에도 실제로 쓰입니다 — RSI가 이미 반대로 꺾이기 시작한 순간이면 그 구간 "
+                    "만점을 안 줍니다(아래 '롱/숏 Score'의 RSI 반전가드 참고, 2026-07-19 추가)."),
+            ("BB%", "볼린저밴드 폭 대비 가격 위치. 0%=하단 밴드, 100%=상단 밴드. "
+                    "마이너스면 하단 밴드 아래로 이탈(극단적 과매도→롱 유리), "
+                    "100% 초과면 상단 이탈(극단적 과매수→숏 유리)."),
+            ("VolZ", "거래량 Z-스코어. 최근 20캔들 평균 대비 현재 캔들 거래량이 얼마나 튀는지. "
+                     "롱/숏 Score 반영(2026-07-19 6단계 세분화): 3.5↑→15 / 2.5↑→13 / 2.0↑→11 / "
+                     "1.5↑→8 / 1.2↑→5 / 그 외→3."),
+            ("CVD", "누적 볼륨 델타(최근 2시간, OHLCV 추정). +면 매수세 우위, -면 매도세 우위. "
+                    "롱/숏 Score에서는(2026-07-19 세분화) 방향 일치 여부뿐 아니라 거래량 대비 "
+                    "강도까지 5단계로 채점됩니다(강한 일치 15 ~ 반대방향 0)."),
+            ("30m%", "최근 30분간 가격 변동률(표시값은 순수 30분 기준 그대로). 롱/숏 Score의 "
+                     "'모멘텀' 세부점수는(2026-07-19부터) 5분 40%+15분 30%+30분 30% 가중평균을 "
+                     "쓰기 시작했습니다 — 5분·30분 단일값보다 신호가 덜 튐. 매집/분산 점수는 "
+                     "그대로 순수 30분값을 씁니다."),
+            ("ATR%", "1시간봉 기준 평균 변동폭(현재가 대비 %). v3에서는 등급 점수가 아니라 "
+                     "24h거래대금과 묶어 '최소 유동성 필터'로만 쓰인다(통과 시 5점, 미통과 0점). "
+                     "전 코인 평균 ATR%로 진입 컷과 시장 레짐(아래 참고)도 자동 조정됨(추세장 70 / 보통 75 / 횡보장 80)."),
+            ("OI%", "미체결약정 1시간 변동률. 숏: ΔOI≥3%→15점, ≥1%→7점, 그 외 0점. "
+                    "롱은 미반영(0점 고정) — 실측상 OI 급증이 롱보다 오히려 하락과 상관관계가 있었음."),
+            ("L/S", "바이낸스 전체 계정 롱/숏 비율. 표시용이며 현재 어떤 점수 계산에도 반영되지 않습니다 "
+                    "(롱/숏 Score, 매집/분산 점수 모두 미사용 — 참고 지표로만 보세요)."),
+            ("Fund", "펀딩레이트(%). +면 롱 과열, -면 숏 과열. 표시용이며 어떤 점수에도 미반영."),
+            ("롱/숏 Score", f"89점 만점 → /89×100 환산. [2026-07-21] 실측 검증(총 88,343건, 그중 26,496건은 "
+                          f"설계에 전혀 안 쓰인 순수 홀드아웃 기간)에서 롱과 숏의 유효 신호가 서로 달라서 "
+                          f"이제 두 방향의 배점 구조 자체가 다릅니다.\n"
+                          f"롱: EMA 10 + 가격위치(RSI중심) 40 + CVD 8 + VolZ 8 + 모멘텀 8 + 유동성 5 (OI 0 고정 — "
+                          f"실측상 롱은 OI 급증이 오히려 하락과 상관관계).\n"
+                          f"숏: 가격위치(RSI중심) 55 + EMA 3 + CVD 2 + VolZ 2 + 모멘텀 2 + 유동성 5 (OI 0 고정) — "
+                          f"[2026-07-21] EMA·CVD·OI·VolZ·모멘텀이 숏 방향에서 전부 역신호(높을수록 오히려 상승)로 "
+                          f"확인돼서 사실상 타이브레이커 수준까지 축소하고 가격위치로 몰았습니다(\"다 떨어진 뒤에 "
+                          f"뒤늦게 진입컷 넘는\" 문제의 원인이 이거였음).\n"
+                          f"가격위치(양쪽 공통 철학, RSI중심 저가매수/과매수반락형): 과매도(롱)·과매수(숏) + 반전 "
+                          f"시작(rsi_delta)일 때 만점. L/S·Funding은 계속 노이즈 유발로 제외.\n"
+                          f"추세소진 페널티: 직전 10캔들 동안 이미 크게 움직였으면(롱+10%↑/숏-10%↓ 등) 최대 -25점.\n"
+                          f"조합보정(콤보): 롱만 유지(가격위치강세+OI감소/CVD동조/VolZ강세 시 가점) — 숏 콤보는 "
+                          f"홀드아웃 재검증에서 재현 안 돼 비활성화.\n"
+                          f"과열 상한 캡: 7개 항목 중 5개 이상이 90%+ 만점이면 최종점수 45점 강제 제한.\n"
+                          f"레짐/학습 배수: 시장상태별 자동 배수(상승·하락·횡보·고변동성) + 거래소별 실측 자동학습 "
+                          f"배수(v8)가 곱해져 최종 반영됩니다.\n"
+                          f"진입 컷은 시장 상태에 따라 70(추세장)~80(횡보장) 자동 조정(현재 {current_min_score}점, "
+                          f"참고용 관심선 {watch_current_min_score}점). 빗썸/업비트는 컷·레짐·학습배수가 각각 독립 계산됩니다."),
+            ("매집(Pre-pump)", "prepump_score v7(2026-10-12), 100점 만점, '조용한 눌림 매집' 탐지 — 12~48시간 상승 기대. "
+                    "3일 등락이 낮을수록(최대 20) + 20캔들 박스 하단일수록(15) + 가격이 EMA20 아래 0.5~4%(15) "
+                    "+ RSI 40 이하 우대(15) + ATR 1.5~3% 우대(10) + 하루 가격변동계수 적정구간(10). "
+                    "3일 +10% 넘게 오른 코인은 감점. 하락장에서는 컷이 사실상 90으로 올라감(×0.89). "
+                    f"컷 {pp_current_min_score}점 이상 파랑. 검증(12h/24h 승률): v6 52/55% → v7 71/71%(~10/4), 최근3일 84/85%. "
+                    "단독 진입보다 롱 조건식(v5)과 같이 뜰 때 판정 롱."),
+            ("분산(Pre-short)", "preshort_score v7(2026-10-12), 100점 만점, '과열 분산' 탐지 — 12~48시간 하락 기대. "
+                    "3일 급등(최대 25) + RSI 60/70 이상(18) + 가격이 EMA20 위 2~4%+(18) + BB% 80/100 이상(12) "
+                    "+ 박스 상단(8) + ATR 높을수록(9). "
+                    f"컷 {pp_current_min_score}점 이상 보라. 검증: 12h/24h 70/68%(~10/4, 81건). "
+                    "10배 기준 6시간 내 청산 7~17% — 카드의 권장 레버리지를 꼭 지킬 것."),
+            ("Predict Score (P##)", "포지션 카드의 'Cross Nx' 옆 P##▲▼ 표시. 지금 수익(PNL)과는 완전 별개로, "
+                        "'보유 방향이 앞으로도 유지될지'만 100점 만점(v2, 차감식)으로 예측한 값이다 — "
+                        "가격 기울기(Slope) 30 + 가속도(Acceleration) 25 + CVD 방향일치 20 "
+                        "+ EMA 방향일치 15 + Level(진입 당시 원본 점수) 10. "
+                        "Slope/Accel은 점수가 아니라 '가격 자체'의 최근 변화 추세를 본다 — "
+                        "기울기가 유지/가속되면 고득점, 완만해지거나 CVD가 반대로 틀면 감점. "
+                        "화살표는 ▲유리한 방향 유지/▼불리하게 전환/‒횡보. 점수가 낮으면(특히 50 미만) "
+                        "지금 수익이 나 있어도 우측에 PRED⚠ 경고가 뜬다 — 이건 오류가 아니라, "
+                        "'수익 중일 때일수록 근거가 식어가는 걸 미리 알려주는' 게 원래 목적이다. "
+                        "히스토리가 아직 안 쌓인 직후(서버/앱 재시작 직후)엔 중간값으로 보수적 처리된다."),
+            ("차트 보기", "포지션 카드 탭, 또는 코인탭 하단 '차트' 버튼(티커 입력칸 값 기준)으로 차트 팝업이 "
+                    "뜹니다. 시간봉 버튼: 10분/30분/1시간/2시간/6시간/12시간(2026-07-19, 10분·30분 추가). "
+                    "이 시간봉은 점수계산 기준(화면 상단 '기준봉' 버튼)과는 완전히 별개입니다."),
+            ("기록 보기", "청산된 거래 내역을 봅니다. '청산 기록 초기화' 버튼(2026-07-19 추가)으로 이 "
+                    "기록만 지울 수 있고, 보유 중인 포지션은 전혀 영향받지 않습니다(별도로 관리됨)."),
+            ("카드 조작", "탭 1번: 티커 자동 입력. 더블탭: 상단 고정/해제. "
+                        "고정 코인은 [코인명]으로 표시되고 항상 맨 위."),
+            ("포지션 패널", "화면 하단 검은 패널. 한 번에 최대 2개 표시, 나머지는 위아래 드래그로 스크롤. "
+                          "카드 탭 → 티커 자동 입력, Close 버튼 → 즉시 청산, "
+                          "청산가는 증거금 90% 소진 지점(진입가 × (1∓0.9/배율)) — [2026-07-21] 기본이 "
+                          "격리마진(CROSS_MARGIN_MODE=False)으로 바뀌어서 포지션별로 이 지점에서 개별 청산됨."),
+        ]
+        for title, desc in helps:
+            t = tk.Label(inner, text=f"■ {title}", font=("Arial", fs, "bold"), anchor="w", fg="#1a5fb4")
+            t.pack(fill="x", padx=8, pady=(8, 0))
+            d = tk.Label(inner, text=desc, font=("Arial", max(fs - 1, 4)), anchor="w", justify="left",
+                         wraplength=wrap, fg="#333333")
+            d.pack(fill="x", padx=12, pady=(1, 2))
+        btn_close = tk.Label(inner, text="닫기", bg="#cc0000", fg="white", font=("Arial", fs, "bold"),
+                             relief="raised", bd=1, cursor="hand2", padx=10, pady=4)
+        btn_close.pack(pady=12)
+        btn_close.bind("<ButtonRelease-1>", lambda e: self.help_win.destroy())
+        for wdg in (canvas, inner):
+            wdg.bind("<ButtonPress-1>", _press, add="+")
+            wdg.bind("<B1-Motion>", _motion, add="+")
+        for child in inner.winfo_children():
+            if child is not btn_close:
+                child.bind("<ButtonPress-1>", _press, add="+")
+                child.bind("<B1-Motion>", _motion, add="+")
+
+    def safe_exit(self):
+        msg = ("주문용 앱을 종료합니다.\n"
+               "포지션과 잔고는 서버(trading_server.py)가 계속 관리합니다.\n\n"
+               "종료하시겠습니까?")
+        if messagebox.askyesno("종료", msg):
+            self.root.destroy()
+
+    def run(self):
+        self.root.mainloop()
+
+
+if __name__ == "__main__":
+    print(f"주문용 클라이언트 시작 | 데이터 폴더: {SCRIPT_DIR}")
+    if not os.path.exists(MARKET_SNAPSHOT):
+        print("서버 스냅샷이 아직 없습니다. trading_server.py 를 먼저 실행하세요.")
+    app = TradingClient()
+    app.run()
