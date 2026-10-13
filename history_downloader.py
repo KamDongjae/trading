@@ -208,6 +208,37 @@ def _download_one(source, ticker, kind, status):
     return f"{len(rows)}개(+{added})"
 
 
+LEGACY_URL = "https://api.bithumb.com/public/candlestick/{t}_KRW/{iv}"  # 서버가 쓰는 빗썸 구 API
+
+
+def _download_legacy(ticker, kind, status):
+    """[2026-10-13 추가] 업비트에도 빗썸 v1에도 없을 때 마지막 수단 — 빗썸 구 캔들 API.
+    페이지 넘김이 없어 한 번에 주는 만큼만(보통 최근 수천 개) 받는다. 매번 받아서 기존 파일과 합친다."""
+    key = f"bithumb_{ticker}_{kind}"
+    path = os.path.join(HIST_DIR, f"{key}.csv")
+    data = _get(LEGACY_URL.format(t=ticker, iv="1h" if kind == "1h" else "24h"), {})
+    if not data or str(data.get("status")) != "0000" or not data.get("data"):
+        return "missing"
+    rows = _read_csv(path)
+    added = 0
+    for c in data["data"]:
+        try:
+            ts = datetime.fromtimestamp(int(c[0]) / 1000, timezone.utc).replace(tzinfo=None)
+        except Exception:
+            continue
+        k = ts.strftime("%Y-%m-%dT%H:%M:%S")
+        if k not in rows:
+            added += 1
+        rows[k] = {"ts_kst": (ts + timedelta(hours=9)).strftime("%Y-%m-%dT%H:%M:%S"), "ts_utc": k,
+                   "open": c[1], "high": c[3], "low": c[4], "close": c[2], "volume": c[5], "value": ""}
+    if not rows:
+        return "missing"
+    _write_csv(path, rows)
+    status[key] = {"rows": len(rows), "first": min(rows), "last": max(rows), "legacy": True,
+                   "updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    return f"{len(rows)}개(+{added}, 구API)"
+
+
 def _tickers():
     tks = set()
     files = sorted(glob.glob(os.path.join(SCRIPT_DIR, "market_data_log_v3_*.csv")))[-3:]
@@ -242,6 +273,13 @@ def run():
                 if r != "missing":
                     got = f"{source} {r}"
                     break
+            if got is None:
+                try:
+                    r = _download_legacy(t, kind, status)
+                    if r != "missing":
+                        got = f"bithumb {r}"
+                except Exception as e:
+                    got = f"오류({e})"
             res[kind] = got or "없음"
             _save_status(status)
         _log(f"({i}/{len(tickers)}) {t}: 일봉 {res['1d']} | 1시간봉 {res['1h']}")
