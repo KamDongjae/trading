@@ -18,6 +18,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_DIR = os.path.join(BASE_DIR, "history")
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 MODEL_PATH = os.path.join(MODEL_DIR, "prob_model.pkl")
+# [2026-10-14] scikit-learn 없는 기기(태블릿 Termux 등)용 — 트리 구조만 JSON으로 내보내서 numpy로 예측.
+# models/*.pkl은 git에 안 올라가지만 이 JSON은 올라가서 pull만 하면 다른 기기에서도 p_up이 나온다.
+LITE_PATH = os.path.join(MODEL_DIR, "prob_model_lite.json")
 TRAIN_LOG = os.path.join(MODEL_DIR, "train_log.txt")
 HORIZON_H = 24
 RETRAIN_HOURS = 20          # 이보다 오래된 모델이면 재학습 대상
@@ -191,6 +194,10 @@ def train(history_dir=HISTORY_DIR, holdout_days=60):
     with open(tmp, 'wb') as fp:
         pickle.dump(obj, fp)
     os.replace(tmp, MODEL_PATH)
+    try:
+        export_lite(obj)
+    except Exception as e:
+        _log(f"경량 모델 내보내기 실패: {e}")
     _log(f"학습 완료 {time.time() - t0:.0f}s rows={len(L)} tickers={obj['tickers']} "
          f"{obj['data_from'][:10]}~{obj['data_to'][:10]} " + json.dumps(meta, ensure_ascii=False))
     return True
@@ -208,27 +215,106 @@ def due():
     return a is None or a >= RETRAIN_HOURS
 
 
+# ───────────────────────── 경량 모델(sklearn 없이 예측) ─────────────────────────
+def export_lite(obj, path=LITE_PATH):
+    """학습된 HistGradientBoostingClassifier의 트리들을 JSON으로 저장(이진분류 전용)."""
+    m = obj['model']
+    trees = []
+    for it in m._predictors:
+        nd = it[0].nodes
+        trees.append({
+            'f': nd['feature_idx'].astype(int).tolist(),
+            't': [float(v) for v in nd['num_threshold']],
+            'm': nd['missing_go_to_left'].astype(int).tolist(),
+            'l': nd['left'].astype(int).tolist(),
+            'r': nd['right'].astype(int).tolist(),
+            'k': nd['is_leaf'].astype(int).tolist(),
+            'v': [float(v) for v in nd['value']],
+        })
+    lite = {'features': obj['features'], 'baseline': float(np.ravel(m._baseline_prediction)[0]),
+            'trees': trees, **{k: v for k, v in obj.items() if k not in ('model', 'features')}}
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as fp:
+        json.dump(lite, fp, ensure_ascii=False, separators=(',', ':'))
+    os.replace(tmp, path)
+
+
+class _LiteModel:
+    def __init__(self, d):
+        self.baseline = d['baseline']
+        self.trees = [{k: np.asarray(t[k], dtype=float if k in ('t', 'v') else np.int64) for k in 'ftmlrkv'}
+                      for t in d['trees']]
+
+    def predict_proba(self, X):
+        X = np.asarray(X, dtype=float)
+        n = len(X)
+        raw = np.full(n, self.baseline)
+        rows = np.arange(n)
+        for t in self.trees:
+            idx = np.zeros(n, dtype=np.int64)
+            for _ in range(64):
+                leaf = t['k'][idx] == 1
+                if leaf.all():
+                    break
+                x = X[rows, t['f'][idx]]
+                go_left = np.where(np.isnan(x), t['m'][idx] == 1, x <= t['t'][idx])
+                nxt = np.where(go_left, t['l'][idx], t['r'][idx])
+                idx = np.where(leaf, idx, nxt)
+            raw += t['v'][idx]
+        p = 1.0 / (1.0 + np.exp(-raw))
+        return np.column_stack([1 - p, p])
+
+
 # ───────────────────────── 예측 ─────────────────────────
 _lock = threading.Lock()
 _cache = {'mtime': None, 'obj': None}
 
 
 def load_model():
+    """sklearn 모델(pkl)을 우선 쓰고, sklearn이 없거나 pkl이 없으면 경량 JSON 모델을 쓴다.
+    pkl을 읽은 기기(PC)는 경량 JSON이 없거나 낡았으면 자동으로 다시 내보낸다."""
     try:
         mt = os.path.getmtime(MODEL_PATH)
+        src = MODEL_PATH
     except Exception:
-        return None
+        mt = None
+    try:
+        lmt = os.path.getmtime(LITE_PATH)
+    except Exception:
+        lmt = None
+    key = (mt, lmt)
     with _lock:
-        if _cache['mtime'] != mt:
+        if _cache['mtime'] == key:
+            return _cache['obj']
+        obj = None
+        if mt is not None:
             try:
                 with open(MODEL_PATH, 'rb') as fp:
-                    _cache['obj'] = pickle.load(fp)
-                _cache['mtime'] = mt
+                    obj = pickle.load(fp)
+                if lmt is None or lmt < mt:
+                    try:
+                        export_lite(obj)
+                        lmt = os.path.getmtime(LITE_PATH)
+                    except Exception as e:
+                        print(f"[prob_model] 경량 모델 내보내기 실패: {e}")
             except Exception as e:
-                print(f"[prob_model] 모델 로드 실패: {e}")
-                _cache['obj'] = None
-                _cache['mtime'] = mt
-        return _cache['obj']
+                obj = None
+                if lmt is None:
+                    print(f"[prob_model] 모델 로드 실패: {e}")
+        if obj is None and lmt is not None:
+            try:
+                with open(LITE_PATH, 'r', encoding='utf-8') as fp:
+                    d = json.load(fp)
+                obj = {k: v for k, v in d.items() if k not in ('trees', 'baseline')}
+                obj['model'] = _LiteModel(d)
+                obj['lite'] = True
+            except Exception as e:
+                print(f"[prob_model] 경량 모델 로드 실패: {e}")
+                obj = None
+        _cache['obj'] = obj
+        _cache['mtime'] = (mt, lmt)
+        return obj
 
 
 def model_info():
@@ -268,7 +354,8 @@ def predict(results, key='_pmf'):
         return 0
     try:
         X = add_cross_section(pd.DataFrame(rows))
-        p = obj['model'].predict_proba(X[obj['features']])[:, 1]
+        Xf = X[obj['features']]
+        p = obj['model'].predict_proba(Xf if not obj.get('lite') else Xf.to_numpy(dtype=float))[:, 1]
         pm = dict(zip(X['ticker'], p))
         n = 0
         for r in results:

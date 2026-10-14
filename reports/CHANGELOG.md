@@ -1,5 +1,12 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-10-14 (수동, 10:20 KST) — scikit-learn 없는 기기에서도 상승확률 계산
+
+- **변경 prob_model.py**: 학습할 때(또는 PC에서 pkl을 읽을 때) 트리 구조를 `models\prob_model_lite.json`(약 0.5MB)으로 내보내고, sklearn이 없거나 pkl이 없는 기기는 이 JSON을 numpy로 계산(sklearn 예측과 오차 0 확인). JSON은 git에 올라가서 태블릿 등은 pull만 하면 p_up·순위 탭이 동작
+- **이유**: 태블릿(Termux)에 scikit-learn 설치가 안 돼서 순위 탭이 비어 있었음
+- **되돌리는 법**: backups\20261014_lite\prob_model.py
+- **반영 조건**: 수집기 자동 재시작(재시작 후 JSON 생성 → 30분 내 GitHub push). 다른 기기는 pull 후 서버 재시작
+
 ## 2026-10-14 (수동, 08:00 KST) — 순위 탭 스크롤
 
 - **변경 trading_client.py**: 순위 탭에 세로 스크롤 추가(스크롤바 + 마우스휠 + 터치 드래그). 드래그 중엔 줄 클릭(티커 입력)이 안 먹게 처리
