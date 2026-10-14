@@ -269,6 +269,8 @@ def read_market_snapshot(path=None):
                     'verdict_reason': r.get('verdict_reason', '') or '',
                     # [2026-10-13 추가] 24h 상승확률(서버 prob_model, 없으면 None)
                     'p_up': _f(r.get('p_up')) if r.get('p_up') not in (None, '',) else None,
+                    # [2026-10-15 추가] 4h 시장대비 기대수익%(순위 탭 정렬 기준, 구버전 서버면 None)
+                    'exp4': _f(r.get('exp4')) if r.get('exp4') not in (None, '',) else None,
                     # [2026-10-13 추가] 확률필터 적용 전 판정(구버전 서버면 None → 필터 판정 그대로 표시)
                     'verdict_raw': (r.get('verdict_raw') or '') if 'verdict_raw' in r else None,
                     'verdict_reason_raw': r.get('verdict_reason_raw', '') or '',
@@ -944,7 +946,7 @@ class TradingClient:
     # 2년 워크포워드(reports/longterm_20261013.md): 매일 롱 상위5+숏 하위5 동시 운용 승률 62%,
     # 샤프 4.1, MDD -26%. 롱만 단독으로는 약함(일 +0.24%, 최근 구간 +0.10%).
     RANK_N = 10
-    RANK_COLS = ("#", "코인", "확률", "24h", "3일", "RSI", "ATR", "권장", "판정")
+    RANK_COLS = ("#", "코인", "기대4h", "확률", "24h", "3일", "RSI", "ATR", "권장", "판정")
 
     def _build_rank_panel(self):
         fs = self.ui_font_base
@@ -967,8 +969,8 @@ class TradingClient:
         self._rank_info.pack(fill="x", padx=4, pady=(2, 2))
         self._rank_rows = {}
         self._rank_tickers = {}
-        for side, title, color in (("long", "롱 상위 10 — 24h 상승확률 높은 순", "#2fa84f"),
-                                   ("short", "숏 상위 10 — 24h 상승확률 낮은 순", "#e04040")):
+        for side, title, color in (("long", "롱 상위 10 — 4h 예상 수익(시장대비) 높은 순", "#2fa84f"),
+                                   ("short", "숏 상위 10 — 4h 예상 수익(시장대비) 낮은 순", "#e04040")):
             box = tk.Frame(inner, highlightbackground=color, highlightcolor=color, highlightthickness=3)
             box.pack(fill="x", padx=2, pady=4)
             tk.Label(box, text=title, font=("Arial", fs, "bold"), fg=color, anchor="w").grid(
@@ -1035,11 +1037,19 @@ class TradingClient:
             self._cfg(self._rank_info, text=f"[{ex_label}] 상승확률(p_up) 정보 없음 — 서버를 최신 코드로 재시작했는지, "
                                             f"models\\prob_model.pkl이 있는지 확인")
         else:
-            self._cfg(self._rank_info, text=(f"[{ex_label}] 기준: 서버 확률모델의 24h 상승확률 순위({len(rows)}종목). "
-                                             f"점수 누적식과 별개. 2년 검증: 매일 롱 상위5+숏 하위5 같이 운용 시 승률 62%·샤프 4.1 "
-                                             f"(롱 단독은 약함). 시장 대비 상대순위라 하락장엔 롱 상위도 빠질 수 있음. 줄 누르면 티커 입력"))
-        ranked = {"long": sorted(rows, key=lambda r: -r['p_up'])[:self.RANK_N],
-                  "short": sorted(rows, key=lambda r: r['p_up'])[:self.RANK_N]}
+            # [2026-10-15] 정렬 기준을 24h 상승확률 → 4h 시장대비 기대수익(exp4)으로 변경(서버가 exp4를 주면).
+            # 2년 워크포워드(매시 상위5): 롱 4h 승률 55→61%, 숏 57→62%, 순위상관 1h 0.09→0.20.
+            use_e = any(r.get('exp4') is not None for r in rows)
+            key = (lambda r: r['exp4'] if r.get('exp4') is not None else -99) if use_e else (lambda r: r['p_up'])
+            basis = "4h 시장대비 예상수익" if use_e else "24h 상승확률(서버가 구버전이라 기대수익 없음)"
+            self._cfg(self._rank_info, text=(f"[{ex_label}] 기준: 확률모델의 {basis} 순위({len(rows)}종목) — 지금 지표로 앞으로를 예측한 값. "
+                                             f"점수 누적식과 별개. 2년 검증(매시 상위5): 4h 승률 롱 61%·숏 62%. "
+                                             f"시장 대비 상대순위라 시장이 크게 빠지면 롱 상위도 빠질 수 있음. 24h·3일 칸은 지난 등락(참고). 줄 누르면 티커 입력"))
+        if rows:
+            ranked = {"long": sorted(rows, key=key, reverse=True)[:self.RANK_N],
+                      "short": sorted([r for r in rows if not use_e or r.get('exp4') is not None], key=key)[:self.RANK_N]}
+        else:
+            ranked = {"long": [], "short": []}
         for side, lst in ranked.items():
             for i, labs in enumerate(self._rank_rows[side]):
                 if i < len(lst):
@@ -1049,7 +1059,9 @@ class TradingClient:
                         v = r.get('verdict_raw') or ''
                     vtxt = "✅롱" if v == "LONG" else ("✅숏" if v == "SHORT" else "")
                     rp = r.get('recent_pct')
-                    vals = (str(i + 1), r['ticker'], f"{r['p_up']:.2f}", f"{r.get('chg_24h', 0):+.1f}%",
+                    e4 = r.get('exp4')
+                    vals = (str(i + 1), r['ticker'], f"{e4:+.2f}%" if e4 is not None else "-", f"{r['p_up']:.2f}",
+                            f"{r.get('chg_24h', 0):+.1f}%",
                             f"{rp:+.1f}%" if rp is not None else "-", f"{r.get('rsi', 0):.0f}",
                             f"{r.get('atr_pct', 0):.1f}%", f"≤{r['max_lev']}x" if r.get('max_lev') else "-", vtxt)
                     match = (side == "long" and v == "LONG") or (side == "short" and v == "SHORT")

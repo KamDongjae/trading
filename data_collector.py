@@ -72,6 +72,8 @@ CSV_HEADER = [
     "verdict", "verdict_reason",
     # [2026-10-13 추가] 24h 상승확률(prob_model.py, trading_server.apply_prob_filter)
     "p_up",
+    # [2026-10-15 추가] 4h 시장대비 기대수익%(prob_model 회귀) — 순위 탭 정렬 기준
+    "exp4",
 ]
 
 # 현재 로그 구간 상태 (get_output_path가 채워줌)
@@ -182,6 +184,7 @@ def _row_from_result(ts, r):
         r.get("max_lev", ""), r.get("liq_risk", ""),
         r.get("verdict", ""), r.get("verdict_reason", ""),
         r.get("p_up", "") if r.get("p_up") is not None else "",
+        r.get("exp4", "") if r.get("exp4") is not None else "",
     ]
 
 

@@ -3909,7 +3909,8 @@ MARKET_COLS = ['ticker', 'price', 'price_usd', 'chg_24h', 'long_score', 'short_s
                'max_lev', 'liq_risk',  # [2026-10-11 추가] 권장 최대 레버리지 / 청산위험 플래그(calc_liq_risk 참고)
                'verdict', 'verdict_reason',  # [2026-10-11 추가] 단일 판정(calc_verdict 참고)
                'p_up',  # [2026-10-13 추가] 24h 상승확률(apply_prob_filter 참고, 없으면 빈칸)
-               'verdict_raw', 'verdict_reason_raw']  # [2026-10-13 추가] 확률필터 적용 전 판정(클라 토글용)
+               'verdict_raw', 'verdict_reason_raw',  # [2026-10-13 추가] 확률필터 적용 전 판정(클라 토글용)
+               'exp4']  # [2026-10-15 추가] 4h 시장대비 기대수익%(prob_model 회귀, 순위 탭 정렬 기준)
 
 _last_score_time = [""]
 _last_score_time_upbit = [""]
@@ -3964,6 +3965,7 @@ def write_market_snapshot(exchange='bithumb'):
             r.get('verdict', ''), r.get('verdict_reason', ''),
             r.get('p_up', '') if r.get('p_up') is not None else '',
             r.get('verdict_raw', r.get('verdict', '')), r.get('verdict_reason_raw', r.get('verdict_reason', '')),
+            r.get('exp4', '') if r.get('exp4') is not None else '',
         ])
         # [2026-07-21 추가] 커스텀 조건식 — CSV에 쓰는 것과 동일한 값으로 평가
         try:

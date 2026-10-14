@@ -23,6 +23,7 @@ MODEL_PATH = os.path.join(MODEL_DIR, "prob_model.pkl")
 LITE_PATH = os.path.join(MODEL_DIR, "prob_model_lite.json")
 TRAIN_LOG = os.path.join(MODEL_DIR, "train_log.txt")
 HORIZON_H = 24
+MODEL_VERSION = 2           # [2026-10-15] v2 = 24h 상승확률(p_up) + 4h 시장대비 기대수익(exp4) 두 모델
 RETRAIN_HOURS = 20          # 이보다 오래된 모델이면 재학습 대상
 MIN_ROWS_PER_TICKER = 300
 
@@ -126,6 +127,7 @@ def build_dataset(history_dir=HISTORY_DIR):
         f = build_features(d)
         f['ticker'] = tk
         f['f24'] = (d['close'].shift(-HORIZON_H) / d['close'] - 1) * 100
+        f['f4'] = (d['close'].shift(-4) / d['close'] - 1) * 100
         f = f.iloc[200:]
         out.append(f)
     if not out:
@@ -136,6 +138,7 @@ def build_dataset(history_dir=HISTORY_DIR):
     X = add_cross_section(X)
     X = X[~X['_stale']]
     X['x24'] = X['f24'] - X.groupby('ts')['f24'].transform('mean')
+    X['x4'] = X['f4'] - X.groupby('ts')['f4'].transform('mean')
     return X
 
 
@@ -143,6 +146,12 @@ def _new_model():
     from sklearn.ensemble import HistGradientBoostingClassifier
     return HistGradientBoostingClassifier(max_iter=200, learning_rate=0.05, max_leaf_nodes=31,
                                           min_samples_leaf=400, l2_regularization=1.0, random_state=0)
+
+
+def _new_reg():
+    from sklearn.ensemble import HistGradientBoostingRegressor
+    return HistGradientBoostingRegressor(max_iter=200, learning_rate=0.05, max_leaf_nodes=31,
+                                         min_samples_leaf=400, l2_regularization=1.0, random_state=0)
 
 
 def _log(msg):
@@ -184,8 +193,20 @@ def train(history_dir=HISTORY_DIR, holdout_days=60):
                 'holdout_up_rate_all': round(float((te['f24'] > 0).mean() * 100), 1)}
     except Exception as e:
         meta = {'holdout_error': str(e)}
+    # [2026-10-15] 4h 시장대비 기대수익 회귀모델 — 순위 탭 정렬 기준.
+    # 2년 워크포워드: 매시 상위5 롱/하위5 숏 4h 승률 61%/62%(24h확률 순위 55%/57%), 순위상관 1h 0.20·4h 0.18
+    L4 = L[L['x4'].notna()]
+    tr4 = tr[tr['x4'].notna()]; te4 = te[te['x4'].notna()]
+    try:
+        m4 = _new_reg().fit(tr4[FEATURES], tr4['x4'].clip(-15, 15))
+        te4 = te4.assign(e=m4.predict(te4[FEATURES]))
+        meta['holdout_ic_x4'] = round(float(te4.groupby('ts').apply(
+            lambda g: g['e'].corr(g['x4'], method='spearman')).mean()), 3)
+    except Exception as e:
+        meta['holdout_error_x4'] = str(e)
     model = _new_model().fit(L[FEATURES], (L['f24'] > 0).astype(int))
-    obj = {'model': model, 'features': FEATURES, 'trained_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+    model_x4 = _new_reg().fit(L4[FEATURES], L4['x4'].clip(-15, 15))
+    obj = {'model': model, 'model_x4': model_x4, 'version': MODEL_VERSION, 'features': FEATURES, 'trained_at': time.strftime('%Y-%m-%d %H:%M:%S'),
            'trained_ts': time.time(), 'rows': int(len(L)), 'tickers': int(L['ticker'].nunique()),
            'data_from': str(L['ts'].min()), 'data_to': str(L['ts'].max()),
            'sklearn': sklearn.__version__, **meta}
@@ -212,13 +233,17 @@ def model_age_hours():
 
 def due():
     a = model_age_hours()
-    return a is None or a >= RETRAIN_HOURS
+    if a is None or a >= RETRAIN_HOURS:
+        return True
+    try:
+        o = load_model()
+        return not o or o.get('lite') or o.get('version', 1) < MODEL_VERSION
+    except Exception:
+        return False
 
 
 # ───────────────────────── 경량 모델(sklearn 없이 예측) ─────────────────────────
-def export_lite(obj, path=LITE_PATH):
-    """학습된 HistGradientBoostingClassifier의 트리들을 JSON으로 저장(이진분류 전용)."""
-    m = obj['model']
+def _trees_of(m):
     trees = []
     for it in m._predictors:
         nd = it[0].nodes
@@ -231,8 +256,19 @@ def export_lite(obj, path=LITE_PATH):
             'k': nd['is_leaf'].astype(int).tolist(),
             'v': [float(v) for v in nd['value']],
         })
+    return trees
+
+
+def export_lite(obj, path=LITE_PATH):
+    """학습된 HGB 모델들의 트리를 JSON으로 저장(p_up 분류 + exp4 회귀)."""
+    m = obj['model']
     lite = {'features': obj['features'], 'baseline': float(np.ravel(m._baseline_prediction)[0]),
-            'trees': trees, **{k: v for k, v in obj.items() if k not in ('model', 'features')}}
+            'trees': _trees_of(m),
+            **{k: v for k, v in obj.items() if k not in ('model', 'model_x4', 'features')}}
+    if obj.get('model_x4') is not None:
+        m4 = obj['model_x4']
+        lite['baseline_x4'] = float(np.ravel(m4._baseline_prediction)[0])
+        lite['trees_x4'] = _trees_of(m4)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as fp:
@@ -241,12 +277,19 @@ def export_lite(obj, path=LITE_PATH):
 
 
 class _LiteModel:
-    def __init__(self, d):
-        self.baseline = d['baseline']
+    def __init__(self, d, key='trees', base='baseline'):
+        self.baseline = d[base]
         self.trees = [{k: np.asarray(t[k], dtype=float if k in ('t', 'v') else np.int64) for k in 'ftmlrkv'}
-                      for t in d['trees']]
+                      for t in d[key]]
+
+    def predict(self, X):
+        return self._raw(X)
 
     def predict_proba(self, X):
+        p = 1.0 / (1.0 + np.exp(-self._raw(X)))
+        return np.column_stack([1 - p, p])
+
+    def _raw(self, X):
         X = np.asarray(X, dtype=float)
         n = len(X)
         raw = np.full(n, self.baseline)
@@ -262,8 +305,7 @@ class _LiteModel:
                 nxt = np.where(go_left, t['l'][idx], t['r'][idx])
                 idx = np.where(leaf, idx, nxt)
             raw += t['v'][idx]
-        p = 1.0 / (1.0 + np.exp(-raw))
-        return np.column_stack([1 - p, p])
+        return raw
 
 
 # ───────────────────────── 예측 ─────────────────────────
@@ -306,8 +348,10 @@ def load_model():
             try:
                 with open(LITE_PATH, 'r', encoding='utf-8') as fp:
                     d = json.load(fp)
-                obj = {k: v for k, v in d.items() if k not in ('trees', 'baseline')}
+                obj = {k: v for k, v in d.items() if k not in ('trees', 'baseline', 'trees_x4', 'baseline_x4')}
                 obj['model'] = _LiteModel(d)
+                if 'trees_x4' in d:
+                    obj['model_x4'] = _LiteModel(d, 'trees_x4', 'baseline_x4')
                 obj['lite'] = True
             except Exception as e:
                 print(f"[prob_model] 경량 모델 로드 실패: {e}")
@@ -344,6 +388,7 @@ def predict(results, key='_pmf'):
     if not obj:
         for r in results:
             r['p_up'] = None
+            r['exp4'] = None
         return 0
     rows = []
     for r in results:
@@ -355,18 +400,28 @@ def predict(results, key='_pmf'):
     try:
         X = add_cross_section(pd.DataFrame(rows))
         Xf = X[obj['features']]
-        p = obj['model'].predict_proba(Xf if not obj.get('lite') else Xf.to_numpy(dtype=float))[:, 1]
+        Xin = Xf if not obj.get('lite') else Xf.to_numpy(dtype=float)
+        p = obj['model'].predict_proba(Xin)[:, 1]
         pm = dict(zip(X['ticker'], p))
+        em = {}
+        if obj.get('model_x4') is not None:
+            try:
+                em = dict(zip(X['ticker'], obj['model_x4'].predict(Xin)))
+            except Exception as e:
+                print(f"[prob_model] 4h 기대수익 예측 실패: {e}")
         n = 0
         for r in results:
             v = pm.get(r.get('ticker'))
             r['p_up'] = round(float(v), 3) if v is not None else None
+            e4 = em.get(r.get('ticker'))
+            r['exp4'] = round(float(e4), 3) if e4 is not None else None
             n += v is not None
         return n
     except Exception as e:
         print(f"[prob_model] 예측 실패: {e}")
         for r in results:
             r['p_up'] = None
+            r['exp4'] = None
         return 0
 
 
