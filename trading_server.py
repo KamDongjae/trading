@@ -3662,6 +3662,18 @@ USE_PROB_FILTER = True
 #   하락장에선 p_up이 높을수록(급락 종목) 오히려 나빠짐(0.70 이상 승률 45%). 숏은 하락장에서 24h 승률 70%.
 #   레짐은 서버 디바운스 레짐(r['regime'] 또는 current_market_regime). False로 끄면 예전과 같음.
 BEAR_LONG_BLOCK = True
+# [2026-10-15 추가] 판정 v2 — 누적 점수식 판정이 2년 검증에서 무작위에 가까워 확률모델 기준으로 개편.
+# 2년 워크포워드(독립 사건, 12h 쿨다운, 수수료 미반영):
+#   롱 = 기존 롱 판정 ∩ p_up≥0.55 ∩ exp4>0.2
+#        4h 승률 52.2→58.5%(A 52.8→58.1 / B 51.2→58.8), 평균 4h +0.18→+0.48%, 하루 8.3→1.6건
+#   숏 = exp4<-0.5 ∩ p_up<0.45 (점수·조건식 없이 모델만)
+#        4h 61.3→65.9%(A 61.0→61.8 / B 61.6→69.5), 12h 61.5→68.8%, 24h 64.3→70.5%, 평균 4h +0.86→+1.08%, 하루 2.6→2.9건
+#        10배 청산(24h 내 9.5% 역행) 20→22%라 권장 레버리지(max_lev) 지킬 것
+# exp4가 없으면(구버전 모델) 예전 판정 그대로. False면 예전 판정.
+VERDICT_V2 = True
+V2_LONG_EXP4_MIN = 0.2
+V2_SHORT_EXP4_MAX = -0.5
+V2_SHORT_PUP_MAX = 0.45
 PROB_LONG_MIN = 0.55
 PROB_SHORT_MAX = 0.45
 
@@ -3690,6 +3702,24 @@ def apply_prob_filter(results):
         # [2026-10-13] 필터 적용 전 판정도 같이 내보낸다 — 클라이언트 '확률필터' 버튼으로 끄면 이걸 표시
         r['verdict_raw'] = v
         r['verdict_reason_raw'] = f"{why} · 확률 {p:.2f}" if v else ''
+        e4 = r.get('exp4')
+        if VERDICT_V2 and e4 is not None:
+            reg = r.get('regime') or current_market_regime
+            if v == 'LONG':
+                if p < PROB_LONG_MIN:
+                    r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) 확률 {p:.2f} 미달"
+                elif e4 <= V2_LONG_EXP4_MIN:
+                    r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) 4h예상 {e4:+.2f}% 부족"
+                elif BEAR_LONG_BLOCK and reg == '하락장':
+                    r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) 하락장 대기 · 4h예상 {e4:+.2f}%"
+                else:
+                    r['verdict_reason'] = f"{why} · 4h예상 {e4:+.2f}% · 확률 {p:.2f}"
+            elif e4 < V2_SHORT_EXP4_MAX and p < V2_SHORT_PUP_MAX:
+                r['verdict'] = 'SHORT'
+                r['verdict_reason'] = f"모델 숏 · 4h예상 {e4:+.2f}% · 확률 {p:.2f}" + (f" ({why})" if v == 'SHORT' else "")
+            elif v == 'SHORT':
+                r['verdict'], r['verdict_reason'] = '', f"숏후보({why}) 4h예상 {e4:+.2f}% 부족"
+            continue
         if v == 'LONG':
             reg = r.get('regime') or current_market_regime
             if USE_PROB_FILTER and p < PROB_LONG_MIN:

@@ -1814,10 +1814,10 @@ class TradingClient:
                 if 'verdict' in row and row.get('verdict') is not None and verdict_supported_flag[0]:
                     if verdict == "LONG":
                         border_color = "#2fa84f"
-                        v_badge = f"✅ 판정 롱 ({row.get('verdict_reason', '')}) · 2년 검증 24h 승률 54%"
+                        v_badge = f"✅ 판정 롱 ({row.get('verdict_reason', '')}) · 2년 검증 4h 59%·12h 57%"
                     elif verdict == "SHORT":
                         border_color = "#e04040"
-                        v_badge = f"✅ 판정 숏 ({row.get('verdict_reason', '')}) · 2년 검증 24h 승률 64%"
+                        v_badge = f"✅ 판정 숏 ({row.get('verdict_reason', '')}) · 2년 검증 4h 66%·12h 69%·24h 71%"
                     else:
                         v_badge = None
                         if border_color in ("#2fa84f", "#e04040"):
