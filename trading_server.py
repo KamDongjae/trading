@@ -3656,6 +3656,12 @@ def process_ticker_upbit(ticker):  # noqa: F811
 # 모델 파일이 없거나 scikit-learn이 없으면 p_up=None이고 판정은 기존 그대로.
 # ============================================================
 USE_PROB_FILTER = True
+# [2026-10-15 추가] 하락장 롱 대기 — 2년 워크포워드(판정 LONG∩p≥0.55, 독립 사건):
+#   하락장에서의 롱 판정 24h 승률 52%(A 51/B 52)·평균 +0.23%로 사실상 무작위, 하락장 밖은 56%(60/52)·+1.01%.
+#   하락장 롱을 빼면 롱 판정 24h 평균 +0.61→+1.01%(A +0.73→+1.19 / B +0.45→+0.79), 승률 54.0→56.3%.
+#   하락장에선 p_up이 높을수록(급락 종목) 오히려 나빠짐(0.70 이상 승률 45%). 숏은 하락장에서 24h 승률 70%.
+#   레짐은 서버 디바운스 레짐(r['regime'] 또는 current_market_regime). False로 끄면 예전과 같음.
+BEAR_LONG_BLOCK = True
 PROB_LONG_MIN = 0.55
 PROB_SHORT_MAX = 0.45
 
@@ -3685,8 +3691,11 @@ def apply_prob_filter(results):
         r['verdict_raw'] = v
         r['verdict_reason_raw'] = f"{why} · 확률 {p:.2f}" if v else ''
         if v == 'LONG':
+            reg = r.get('regime') or current_market_regime
             if USE_PROB_FILTER and p < PROB_LONG_MIN:
                 r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) 확률 {p:.2f} 미달"
+            elif BEAR_LONG_BLOCK and reg == '하락장':
+                r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) 하락장 대기 · 확률 {p:.2f}"
             else:
                 r['verdict_reason'] = f"{why} · 확률 {p:.2f}"
         elif v == 'SHORT':

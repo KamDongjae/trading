@@ -1042,7 +1042,10 @@ class TradingClient:
             use_e = any(r.get('exp4') is not None for r in rows)
             key = (lambda r: r['exp4'] if r.get('exp4') is not None else -99) if use_e else (lambda r: r['p_up'])
             basis = "4h 시장대비 예상수익" if use_e else "24h 상승확률(서버가 구버전이라 기대수익 없음)"
-            self._cfg(self._rank_info, text=(f"[{ex_label}] 기준: 확률모델의 {basis} 순위({len(rows)}종목) — 지금 지표로 앞으로를 예측한 값. "
+            # [2026-10-15] 하락장이면 경고 — 순위는 시장 대비라 하락장엔 롱 상위도 절대수익은 마이너스가 많음
+            bear_txt = ("⚠ 지금 하락장: 롱 상위도 시장 따라 빠지는 경우가 많음, 숏 쪽이 유리(2년: 하락장 숏 판정 24h 승률 70%). "
+                        if current_regime == '하락장' else "")
+            self._cfg(self._rank_info, text=(f"{bear_txt}[{ex_label}] 기준: 확률모델의 {basis} 순위({len(rows)}종목) — 지금 지표로 앞으로를 예측한 값. "
                                              f"점수 누적식과 별개. 2년 검증(매시 상위5): 4h 승률 롱 61%·숏 62%. "
                                              f"시장 대비 상대순위라 시장이 크게 빠지면 롱 상위도 빠질 수 있음. 24h·3일 칸은 지난 등락(참고). 줄 누르면 티커 입력"))
         if rows:
