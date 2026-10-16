@@ -3674,6 +3674,14 @@ VERDICT_V2 = True
 V2_LONG_EXP4_MIN = 0.2
 V2_SHORT_EXP4_MAX = -0.5
 V2_SHORT_PUP_MAX = 0.45
+# [2026-10-16 추가] 시장 반등 보정 — 10/16 시장 +3% 반등 중 모델 숏 6건 중 5건 손실(BAT·MEV 최대 -24~26%).
+# 2년 워크포워드(판정 v2, 독립 사건):
+#  - 숏: 40종목 평균 4h 등락 ≥ +1%(반등 중)이면 모델 숏 대기 → 4h 승률 65.9→68.2%(A 61.8→65.1 / B 69.5→70.8),
+#        12h 68.8→71.5%, 24h 70.5→71.6%, 하루 2.9→2.3건. (ATR·급등 종목 제외는 청산률이 안 줄어서 미적용)
+#  - 롱: 하락장이라도 40종목 평균 24h 등락 > 0%(반등)이면 롱 허용 → 그 구간 롱 4h 승률 70%(A 73 / B 65), 24h 61%
+#        (2년 중 하루 0.1건 수준이라 표본 적음 n=43)
+V2_SHORT_BLOCK_MKT_R4 = 1.0
+BEAR_LONG_UNLOCK_MKT_R24 = 0.0
 PROB_LONG_MIN = 0.55
 PROB_SHORT_MAX = 0.45
 
@@ -3692,6 +3700,15 @@ def apply_prob_filter(results):
             prob_model.predict(results)
     except Exception as e:
         print(f"상승확률 계산 실패: {e}")
+    # 시장 평균(전 종목 단순평균) 4h/24h 등락 — prob_model 학습 피처(mkt_r24)와 같은 정의
+    try:
+        _f = [r['_pmf'] for r in results if r.get('_pmf')]
+        _r4 = [f['r4'] for f in _f if f.get('r4') == f.get('r4') and f.get('r4') is not None]
+        _r24 = [f['r24'] for f in _f if f.get('r24') == f.get('r24') and f.get('r24') is not None]
+        mkt_r4 = sum(_r4) / len(_r4) if _r4 else None
+        mkt_r24 = sum(_r24) / len(_r24) if _r24 else None
+    except Exception:
+        mkt_r4 = mkt_r24 = None
     for r in results:
         r.pop('_pmf', None)
         p = r.get('p_up')
@@ -3710,10 +3727,12 @@ def apply_prob_filter(results):
                     r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) 확률 {p:.2f} 미달"
                 elif e4 <= V2_LONG_EXP4_MIN:
                     r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) 4h예상 {e4:+.2f}% 부족"
-                elif BEAR_LONG_BLOCK and reg == '하락장':
+                elif BEAR_LONG_BLOCK and reg == '하락장' and not (mkt_r24 is not None and mkt_r24 > BEAR_LONG_UNLOCK_MKT_R24):
                     r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) 하락장 대기 · 4h예상 {e4:+.2f}%"
                 else:
                     r['verdict_reason'] = f"{why} · 4h예상 {e4:+.2f}% · 확률 {p:.2f}"
+            elif e4 < V2_SHORT_EXP4_MAX and p < V2_SHORT_PUP_MAX and mkt_r4 is not None and mkt_r4 >= V2_SHORT_BLOCK_MKT_R4:
+                r['verdict'], r['verdict_reason'] = '', f"숏후보 시장 반등 중(4h {mkt_r4:+.1f}%) 대기 · 4h예상 {e4:+.2f}%"
             elif e4 < V2_SHORT_EXP4_MAX and p < V2_SHORT_PUP_MAX:
                 r['verdict'] = 'SHORT'
                 r['verdict_reason'] = f"모델 숏 · 4h예상 {e4:+.2f}% · 확률 {p:.2f}" + (f" ({why})" if v == 'SHORT' else "")
