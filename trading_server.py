@@ -3114,6 +3114,21 @@ LIQ_LEV_ATR_MULT = 5          # 청산선을 ATR의 몇 배 밖에 둘지
 LIQ_LEV_MAX = 10              # 권장 레버리지 상한
 SHORT_RISK_ATR = 2.0          # 숏 위험: ATR% 이상
 SHORT_RISK_EMA_DIST = 4.0     # 숏 위험: 가격이 EMA20보다 이 % 이상 위
+# [2026-10-17 자동] 숏 위험(ATR≥2% 또는 EMA20 대비 +4% 이상) 종목은 숏점수를 49로 상한 → short≥50 신호에서 제외.
+#   근거(독립 사건 12h 쿨다운, 학습 10/3~10/14 / 홀드 10/14~10/17): 24h 승률 76→81%(88→72건) / 83→87%(18→15건),
+#   초과 +0.13→+0.59 / +1.50→+1.57, 12h 74→76% / 64→68%, 10배 청산 24h 11.4→1.4% / 5.6→0.0%, 1~48h 전 구간 악화 없음.
+#   False로 끄면 예전과 같음. 롱 점수·판정 v2(모델 숏)·레버리지 계산에는 영향 없음.
+USE_SHORT_RISK_CAP = True
+SHORT_RISK_CAP_SCORE = 49
+
+def apply_short_risk_cap(short_score, liq_risk):
+    """liq_risk 플래그에 ATR/EMA가 있으면 숏점수를 SHORT_RISK_CAP_SCORE로 상한."""
+    try:
+        if USE_SHORT_RISK_CAP and liq_risk and ('ATR' in liq_risk.split('|') or 'EMA' in liq_risk.split('|')):
+            return min(short_score, SHORT_RISK_CAP_SCORE)
+    except Exception:
+        pass
+    return short_score
 
 def calc_liq_risk(atr_pct, price, ema20, ls_ratio):
     """권장 최대 레버리지와 위험 플래그 문자열을 돌려준다. 계산 실패 시 (LIQ_LEV_MAX, '')."""
@@ -3314,6 +3329,7 @@ def process_ticker(ticker):
         if atr_pct < LONG_LOW_ATR_THRESHOLD:
             long_score = int(long_score * LONG_LOW_ATR_FACTOR)
         max_lev, liq_risk = calc_liq_risk(atr_pct, current_price, ema20, ls_ratio)
+        short_score = apply_short_risk_cap(short_score, liq_risk)  # [2026-10-17 자동] 24h 승률 76→81% / 83→87%, 청산 11.4→1.4%
         # 항목별 세부점수 (로그 분석/배점 튜닝용 — 총점과 동일한 함수로 계산, 105점 원점수 기준)
         components = {
             "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long', ema20_slope_pct),
@@ -3532,6 +3548,7 @@ def process_ticker_upbit(ticker):
         if atr_pct < LONG_LOW_ATR_THRESHOLD:
             long_score = int(long_score * LONG_LOW_ATR_FACTOR)
         max_lev, liq_risk = calc_liq_risk(atr_pct, current_price, ema20, ls_ratio)
+        short_score = apply_short_risk_cap(short_score, liq_risk)  # [2026-10-17 자동] 24h 승률 76→81% / 83→87%, 청산 11.4→1.4%
         components = {
             "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long', ema20_slope_pct),
             "ema_s": score_ema_trend(current_price, ema20, ema60, ema120, 'short', ema20_slope_pct),
