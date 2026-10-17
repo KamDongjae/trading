@@ -28,7 +28,7 @@
 | `PROB_SHORT_MAX` | 0.45 | (v2 꺼졌을 때) 숏 판정 최대 상승확률 | |
 | `VERDICT_CUT` | 50 | (판정 후보) 롱/숏 점수 컷 | |
 | `VERDICT_PP_CUT` | 80 | (판정 후보) 매집/분산 점수 컷 | |
-| `VERDICT_LONG_COND` / `VERDICT_SHORT_COND` | 조건식 v5 / v1+v2 | (판정 후보) 매집·분산과 같이 봐야 하는 조건식 | |
+| `VERDICT_LONG_COND` / `VERDICT_SHORT_COND` | 조건식 롱 v7 / 숏 v3 | (판정 후보) 매집·분산과 같이 봐야 하는 조건식. 클라 색칠용 같은 내용: `long_conditions_import_v7.txt`, `short_conditions_import_v3.txt` | 예전 식은 v5 / v1+v2 파일에 그대로 있음 |
 
 **검증치(2년 워크포워드, 수수료 미반영)**: 롱 4h 승률 59%·12h 57%, 숏 4h 66%·12h 69%·24h 71%. 시장 반등 보정 후 숏 4h 68%. 숏을 10배로 잡으면 24h 내 청산선 도달 약 22% → 권장 레버리지 필수.
 
@@ -88,3 +88,4 @@
 | 10/15 | VERDICT_V2, V2_* | backups\20261015_v2 |
 | 10/16 | V2_SHORT_BLOCK_MKT_R4, BEAR_LONG_UNLOCK_MKT_R24 | backups\20261016_rebound |
 | 10/17 | USE_SHORT_RISK_CAP, SHORT_RISK_CAP_SCORE (자동) | backups\20261017 |
+| 10/17 | VERDICT_LONG_COND v7, VERDICT_SHORT_COND v3 (승률 저조 절 제거) | backups\20261017_cond |

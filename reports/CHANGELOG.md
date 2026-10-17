@@ -1,5 +1,16 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-10-17 (수동) — 롱/숏 조건식 절 단위 정리 (롱 v7, 숏 v3)
+
+- **변경 trading_server.py**: `VERDICT_LONG_COND` v5→v7, `VERDICT_SHORT_COND` v1+v2→v3. 계정·주문·청산 로직은 그대로
+- **새 파일**(기존 파일은 안 건드림): `long_conditions_import_v7.txt`, `short_conditions_import_v3.txt`
+- **롱 v7**: v5에서 `bb_percent<30 && rsi_delta>0`, `rsi<40 && rsi_delta>0` 제거(12h 초과수익 +0.05, 후반부 마이너스). 남은 절: `rsi<35`, `recent_pct<-5 && chg_30m<-1`, `bb_percent<0 && atr_pct>1 && oi_change_pct<-1`
+- **숏 v3**: v1+v2 합본 24절에서 9절 제거 — `rsi>75&&vol_z<-0.5`, `rsi>75&&ls_ratio>1.5`, `rsi>75&&ls_ratio>1.3`, `rsi>75&&funding>0`, `rsi>70&&atr_pct>1&&funding>0`, `rsi>60&&oi_change_pct>1&&funding<0`, `rsi>60&&atr_pct>1&&funding<0`, `rsi>60&&atr_pct>1&&funding<-0.01`, `vol_z>0.5&&funding>0&&recent_pct>10` (초과수익 마이너스이거나 후반부(10/9~)에서 마이너스)
+- **근거(PC 로그 9/26~10/17, 독립 사건 12h 쿨다운, 2·4·6·8·10·12h)**: 롱 v5→v7 n898→653, 승률 2h 53→55·6h 55→56·8h 52→55·10h 50→54·12h 48→48, 12h 초과 +0.25→+0.47(전반 +0.36→+0.68 / 후반 +0.13→+0.26). 숏 n164→147, 4h 75→78·8h 73→74·12h 76→76, 12h 초과 +1.24→+1.32(후반 승률 63→65, 초과 +0.27→+0.40). 무작위 롱 12h 39%
+- **한계**: 3주치 데이터, 숏 절별 표본 11~41건. 판정 v2에서 숏 판정은 모델만 쓰므로 숏 조건식은 롱 후보 차단(short_confirm)·클라 색칠/알림에만 영향
+- **되돌리는 법**: backups\20261017_cond\trading_server.py
+- **반영 조건**: **서버 재시작 필요**. 클라 조건식 색칠/알림도 바꾸려면 클라 `조건식 → 가져오기`로 새 파일 2개 불러오고 예전 것 끄기
+
 ## 2026-10-17 (수동, 10:10 KST) — Termux 수집기에서 모델 학습 시도 안 함
 
 - **변경 data_collector.py**: 윈도우(PC)가 아니고 scikit-learn도 없으면 과거 캔들 다운로드·scikit-learn 설치·모델 재학습을 건너뜀. 대신 git pull로 받은 models/prob_model_lite.json으로 p_up·exp4 계산(기존 동작). PC 동작은 그대로
