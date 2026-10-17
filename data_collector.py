@@ -503,6 +503,17 @@ def _maybe_background_jobs(force=False):
     if not force and now - _bg_state["last_check"] < MODEL_CHECK_INTERVAL_MIN * 60:
         return
     _bg_state["last_check"] = now
+    # [2026-10-17] 학습(과거 캔들 다운로드·scikit-learn 설치·재학습)은 PC(윈도우)에서만.
+    # Termux 등 다른 기기는 scikit-learn 빌드가 안 되고(매번 설치 시도로 CPU만 씀) 2년치 다운로드도 불필요 —
+    # git pull로 받은 models/prob_model_lite.json으로 p_up·exp4 계산만 한다.
+    if os.name != "nt":
+        try:
+            import sklearn  # noqa: F401
+        except Exception:
+            if not _bg_state.get("lite_notice"):
+                _bg_state["lite_notice"] = True
+                print("ℹ️ 이 기기는 모델 학습 안 함 — PC가 만든 경량 모델(models/prob_model_lite.json, git pull로 갱신) 사용")
+            return
     def _job():
         _bg_state["running"] = True
         try:

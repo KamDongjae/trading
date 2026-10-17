@@ -1,5 +1,12 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-10-17 (수동, 10:10 KST) — Termux 수집기에서 모델 학습 시도 안 함
+
+- **변경 data_collector.py**: 윈도우(PC)가 아니고 scikit-learn도 없으면 과거 캔들 다운로드·scikit-learn 설치·모델 재학습을 건너뜀. 대신 git pull로 받은 models/prob_model_lite.json으로 p_up·exp4 계산(기존 동작). PC 동작은 그대로
+- **이유**: Termux에서 수집기를 켤 때마다 scikit-learn 빌드 시도가 실패하면서 CPU만 씀
+- **되돌리는 법**: backups\20261017_termux\data_collector.py
+- **반영 조건**: 각 기기 git pull 후 수집기 재시작(PC는 자동)
+
 ## 2026-10-17 (수동, 09:40 KST) — 설정값 정리 PDF + 클라 설명 갱신
 
 - **추가**: `reports\SETTINGS.md` / `reports\SETTINGS.pdf` — 조절 가능한 설정값(판정 v2·확률필터·하락장·반등 보정·점수 보정·청산위험·모델·수집기·클라 버튼)의 현재값, 뜻, 끄는 법, 변경 이력·백업 폴더. 생성 스크립트 `analysis\build_settings_pdf.py`(md→pdf)
