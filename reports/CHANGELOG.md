@@ -1,5 +1,14 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-10-17 (수동, 09:40 KST) — 설정값 정리 PDF + 클라 설명 갱신
+
+- **추가**: `reports\SETTINGS.md` / `reports\SETTINGS.pdf` — 조절 가능한 설정값(판정 v2·확률필터·하락장·반등 보정·점수 보정·청산위험·모델·수집기·클라 버튼)의 현재값, 뜻, 끄는 법, 변경 이력·백업 폴더. 생성 스크립트 `analysis\build_settings_pdf.py`(md→pdf)
+- **변경 trading_client.py**: '설명' 창 앞부분에 판정 v2, 확률·4h예상, 확률필터 버튼, 순위 탭, 카드 테두리·뱃지 설명 추가(설정값은 넣지 않음). 동작 변경 없음
+- **변경 .gitignore**: `!reports/SETTINGS.pdf` (이 PDF만 git에 올림)
+- **규칙**: 설정이 새로 생기거나 값이 바뀌면 SETTINGS.md/PDF와 설명 창을 같이 갱신
+- **되돌리는 법**: backups\20261017_help\trading_client.py
+- **반영 조건**: 클라이언트 재시작(설명 창만)
+
 ## 2026-10-17 (자동, 06:00 KST) — 숏 청산위험 종목 숏점수 49 상한
 
 - **변경 trading_server.py**: `USE_SHORT_RISK_CAP = True`, `SHORT_RISK_CAP_SCORE = 49`, `apply_short_risk_cap()` 추가 — process_ticker / process_ticker_upbit에서 calc_liq_risk 직후, 위험 플래그(ATR≥2% 또는 EMA20 대비 +4% 이상)면 숏점수를 49로 상한 → short≥50 신호에서 제외. 판정 v2 모델 숏·롱 점수·레버리지·p_up/exp4 무영향
