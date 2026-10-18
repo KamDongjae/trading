@@ -4,13 +4,16 @@
 - 차트(캔들+BB+EMA20/60/120, RSI, RSI Δ) + 가격/지표 카드만 표시 (점수·판정 없음)
 - 필요: requests (Pydroid: pip install requests)"""
 import tkinter as tk
+import tkinter.font as tkfont
 import threading, queue, json, os, time
 import requests
 
 INTERVALS = ["10m", "30m", "1h", "2h", "6h", "12h", "24h", "48h"]
 SHOW_N = 100           # 화면에 그릴 캔들 수
 AUTO_SEC = 60          # 자동 새로고침 주기(초)
-BG, FG, DIM = "#111111", "#e8e8e8", "#9aa0a6"
+BG, FG, DIM, CARD_BG = "#111111", "#e8e8e8", "#9aa0a6", "#1a1d21"
+CARD_LAYOUT = [("price",), ("usd", "vol24"), ("chg24", "chg30"), ("rsi", "bb"),
+               ("ema", "atr"), ("volz", "cvd"), ("oi", "ls"), ("fund", None)]
 CFG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer_cfg.json")
 BH = "https://api.bithumb.com/public"
 BN = "https://fapi.binance.com"
@@ -131,49 +134,64 @@ def fmt_s(v, f="+.2f", unit=""):
 
 
 # ---------------- 화면 ----------------
+# Pydroid는 화면 DPI에 맞춰 글씨를 크게 키우므로, 간격은 고정 픽셀 대신 실제 글씨 크기를 재서 잡는다.
 class Viewer:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Pyramide 차트")
         self.root.configure(bg=BG)
+        self.f_s = tkfont.Font(family="Arial", size=7)               # 차트 눈금
+        self.f_b = tkfont.Font(family="Arial", size=7, weight="bold")  # 차트 범례
+        self.lh = self.f_s.metrics("linespace")                       # 글자 높이(px)
         self.q = queue.Queue()
         self.data = None
         self.busy = False
         cfg = self._load_cfg()
         self.ticker, self.iv = cfg.get("ticker", "BTC"), cfg.get("iv", "1h")
+        sh = self.root.winfo_screenheight()
 
         top = tk.Frame(self.root, bg=BG); top.pack(fill="x", padx=6, pady=(6, 2))
-        self.ent = tk.Entry(top, font=("Arial", 14), width=8, bg="#22262b", fg="white", insertbackground="white")
+        self.ent = tk.Entry(top, font=("Arial", 12), width=7, bg="#22262b", fg="white", insertbackground="white")
         self.ent.insert(0, self.ticker)
         self.ent.pack(side="left", padx=(0, 4))
         self.ent.bind("<Return>", lambda e: self.search())
-        tk.Button(top, text="조회", font=("Arial", 12, "bold"), bg="#1a7abf", fg="white", command=self.search).pack(side="left")
-        tk.Button(top, text="↻", font=("Arial", 12, "bold"), bg="#2b2f36", fg="white", command=self.load).pack(side="left", padx=4)
-        self.title = tk.Label(top, font=("Arial", 11, "bold"), bg=BG, fg="white", anchor="e")
-        self.title.pack(side="right", fill="x", expand=True)
+        tk.Button(top, text="조회", font=("Arial", 11, "bold"), bg="#1a7abf", fg="white", command=self.search).pack(side="left")
+        tk.Button(top, text="↻", font=("Arial", 11, "bold"), bg="#2b2f36", fg="white", command=self.load).pack(side="left", padx=4)
+        self.title = tk.Label(top, font=("Arial", 10), bg=BG, fg=DIM, anchor="e")   # 갱신 시각만 표시
+        self.title.pack(side="right")
 
         bar = tk.Frame(self.root, bg=BG); bar.pack(fill="x", padx=6)
         self.btns = {}
         for i, iv in enumerate(INTERVALS):
-            b = tk.Label(bar, text=iv, font=("Arial", 11, "bold"), pady=4, relief="raised", bd=1)
+            b = tk.Label(bar, text=iv, font=("Arial", 10, "bold"), pady=4, relief="raised", bd=1)
             b.grid(row=0, column=i, sticky="ew", padx=1)
             bar.columnconfigure(i, weight=1)
             b.bind("<ButtonRelease-1>", lambda e, v=iv: self.set_iv(v))
             self.btns[iv] = b
 
-        self.cv_p = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=420)
+        self.cv_p = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=int(sh * .38))
         self.cv_p.pack(fill="both", expand=True, padx=4, pady=(4, 0))
-        self.cv_r = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=120)
+        self.cv_r = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=max(int(sh * .08), self.lh * 5))
         self.cv_r.pack(fill="x", padx=4, pady=(4, 0))
-        self.cv_d = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=90)
+        self.cv_d = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=max(int(sh * .06), self.lh * 3))
         self.cv_d.pack(fill="x", padx=4, pady=(4, 0))
-        card = tk.Frame(self.root, bg="#1a1d21", bd=1, relief="solid"); card.pack(fill="x", padx=4, pady=6)
-        self.info = tk.Label(card, font=("monospace", 11), bg="#1a1d21", fg=FG, justify="left", anchor="w", text="불러오는 중…")
-        self.info.pack(fill="x", padx=8, pady=6)
-        card.bind("<Configure>", lambda e: self.info.config(wraplength=e.width - 16))
+
+        # 카드: 줄바꿈이 꼬이지 않게 "이름 값" 칸을 2열 격자로 배치
+        self.card = tk.Frame(self.root, bg=CARD_BG, bd=1, relief="solid")
+        self.card.pack(fill="x", padx=4, pady=6)
+        self.card.columnconfigure(0, weight=1, uniform="c"); self.card.columnconfigure(1, weight=1, uniform="c")
+        self.cells = {}
+        for r, row in enumerate(CARD_LAYOUT):
+            for c, key in enumerate(row):
+                if not key:
+                    continue
+                lb = tk.Label(self.card, font=("Arial", 10), bg=CARD_BG, fg=FG, anchor="w")
+                lb.grid(row=r, column=c, columnspan=2 if len(row) == 1 else 1, sticky="w", padx=8, pady=1)
+                self.cells[key] = lb
+        self.cells["price"].config(font=("Arial", 12, "bold"), text="불러오는 중…")
+
         for cv in (self.cv_p, self.cv_r, self.cv_d):
             cv.bind("<Configure>", lambda e: self.draw())
-
         self._hl()
         self.load()
         self.root.after(200, self._poll)
@@ -215,13 +233,12 @@ class Viewer:
         self.root.after(AUTO_SEC * 1000, self._auto)
 
     def load(self, quiet=False):
-        if self.busy:
-            return
-        self.busy = True
-        t, iv = self.ticker, self.iv
         if not quiet:
-            self.title.config(text=f"{t} {iv} 조회 중…")
-        threading.Thread(target=self._work, args=(t, iv), daemon=True).start()
+            self.title.config(text="조회 중…")
+        if self.busy:
+            return          # 끝나면 _poll에서 바뀐 코인/봉을 다시 조회함
+        self.busy = True
+        threading.Thread(target=self._work, args=(self.ticker, self.iv), daemon=True).start()
 
     def _work(self, t, iv):
         try:
@@ -239,35 +256,48 @@ class Viewer:
             while True:
                 kind, t, iv, s, m = self.q.get_nowait()
                 self.busy = False
-                if kind == "err":
-                    self.title.config(text=f"{t} 오류")
-                    self.info.config(text=f"조회 실패: {s}")
-                    continue
                 if (t, iv) != (self.ticker, self.iv):
                     self.load(); continue   # 조회 중에 바뀐 경우 다시
+                if kind == "err":
+                    self.title.config(text="오류")
+                    for lb in self.cells.values():
+                        lb.config(text="")
+                    self.cells["price"].config(text=f"조회 실패: {s}")
+                    continue
                 self.data = s
-                self.title.config(text=f"{t}  {iv}  {time.strftime('%H:%M:%S')}")
-                self.info.config(text=self.card_text(m))
+                self.title.config(text=time.strftime("%H:%M:%S"))
+                self.fill_card(m)
                 self._save_cfg()
                 self.draw()
         except queue.Empty:
             pass
         self.root.after(200, self._poll)
 
-    def card_text(self, m):
-        usd = m.get("usd")
-        usd_s = "" if usd is None else f" (USD {usd:,.4f})" if usd < 1 else f" (USD {usd:,.2f})"
-        cvd = m["cvd"]
-        cvd_s = f"{cvd:+,.0f}" if abs(cvd) >= 100 else f"{cvd:+.2f}"
+    def fill_card(self, m):
+        usd, cvd = m.get("usd"), m["cvd"]
         e20 = (m["price"] / m["ema20"] - 1) * 100 if m.get("ema20") else None
-        return "\n".join([
-            f"[가격] {fmt_p(m['price'])}원{usd_s}",
-            f"       24h {fmt_s(m.get('chg24'), unit='%')}   30m {m['chg30']:+.2f}%",
-            f"[위치] RSI {m['rsi']:.1f}({fmt_s(m['rd'], '+.1f')})   BB% {m['bb']:.0f}%   EMA20比 {fmt_s(e20, unit='%')}",
-            f"[수급] VolZ {m['volz']:+.1f}   CVD {cvd_s}   OI {fmt_s(m.get('oi'), unit='%')}",
-            f"       L/S {fmt_s(m.get('ls'), '.2f')}   Fund {fmt_s(m.get('fund'), '+.3f', '%')}",
-            f"[변동] ATR {m['atr']:.2f}%   거래대금 {fmt_s(m.get('vol24'), ',.0f', 'M')}",
-        ])
+        txt = {
+            "price": f"{self.ticker}  {fmt_p(m['price'])}원",
+            "usd": "USD N/A" if usd is None else f"USD {usd:,.4f}" if usd < 1 else f"USD {usd:,.2f}",
+            "vol24": f"거래대금 {fmt_s(m.get('vol24'), ',.0f', 'M')}",
+            "chg24": f"24h  {fmt_s(m.get('chg24'), unit='%')}",
+            "chg30": f"30m  {m['chg30']:+.2f}%",
+            "rsi": f"RSI  {m['rsi']:.1f} ({fmt_s(m['rd'], '+.1f')})",
+            "bb": f"BB%  {m['bb']:.0f}%",
+            "ema": f"EMA20比  {fmt_s(e20, unit='%')}",
+            "atr": f"ATR  {m['atr']:.2f}%",
+            "volz": f"VolZ  {m['volz']:+.1f}",
+            "cvd": f"CVD  {cvd:+,.0f}" if abs(cvd) >= 100 else f"CVD  {cvd:+.2f}",
+            "oi": f"OI  {fmt_s(m.get('oi'), unit='%')}",
+            "ls": f"L/S  {fmt_s(m.get('ls'), '.2f')}",
+            "fund": f"Fund  {fmt_s(m.get('fund'), '+.3f', '%')}",
+        }
+        for k, lb in self.cells.items():
+            v = txt.get(k, "")
+            col = FG
+            if k in ("chg24", "chg30") and ("+" in v or "-" in v):
+                col = "#00ff88" if "+" in v else "#ff5555"
+            lb.config(text=v, fg=col)
 
     # ---- 그리기 ----
     def draw(self):
@@ -275,16 +305,17 @@ class Viewer:
             return
         self._draw_price(); self._draw_rsi(); self._draw_rd()
 
-    def _frame(self, cv, pb=6):
+    def _frame(self, cv, pr, pb=None):
         cv.delete("all")
         w, h = cv.winfo_width(), cv.winfo_height()
         n = len(self.data["rows"])
-        pl, pr, pt = 6, 70, 6
+        pl, pt = 4, self.lh // 2 + 2          # 맨 위 눈금 글자가 잘리지 않게
+        pb = self.lh // 2 + 2 if pb is None else pb
         pw, ph = w - pl - pr, h - pt - pb
         if n == 0 or pw <= 0 or ph <= 0:
             return None
         cw = pw / n
-        return w, pl, pr, pt, ph, cw, (lambda i: pl + i * cw + cw / 2)
+        return w, pl, pt, ph, cw, (lambda i: pl + i * cw + cw / 2)
 
     def _line(self, cv, vals, y, xf, color, width=1):
         pts = []
@@ -294,21 +325,32 @@ class Viewer:
         if len(pts) >= 4:
             cv.create_line(*pts, fill=color, width=width)
 
+    def _legend(self, cv, x, y, items):
+        """범례를 가로 한 줄로(글자 폭을 재서 간격 잡음)."""
+        for txt, col in items:
+            cv.create_text(x, y, text=txt, fill=col, font=self.f_b, anchor="nw")
+            x += self.f_b.measure(txt) + self.f_b.measure("  ")
+
     def _draw_price(self):
         cv, d = self.cv_p, self.data
-        f = self._frame(cv, pb=20)
-        if not f:
-            return
-        w, pl, pr, pt, ph, cw, xf = f
         rows = d["rows"]
         vals = [x for r in rows for x in (r[2], r[3])] + [v for v in d["bbu"] + d["bbl"] if v is not None]
         hi, lo = max(vals), min(vals)
         rg = (hi - lo) or 1
+        pr = max(self.f_s.measure(fmt_p(v)) for v in (hi, lo, rows[-1][4])) + 10   # 가격 글자 폭만큼 오른쪽 여백
+        f = self._frame(cv, pr, pb=self.lh + 8)                                    # 날짜 줄 높이만큼 아래 여백
+        if not f:
+            return
+        w, pl, pt, ph, cw, xf = f
         y = lambda p: pt + (hi - p) / rg * ph
-        for fr in (0, .25, .5, .75, 1):
+        last = rows[-1][4]
+        ticks = max(2, min(5, int(ph // (self.lh * 2.5))))
+        for k in range(ticks):
+            fr = k / (ticks - 1)
             yy = pt + fr * ph
             cv.create_line(pl, yy, w - pr, yy, fill="#2a2a2a")
-            cv.create_text(w - pr + 4, yy, text=fmt_p(hi - fr * rg), fill="#cccccc", font=("Arial", 8), anchor="w")
+            if abs(yy - y(last)) > self.lh:          # 현재가 라벨과 겹치면 생략
+                cv.create_text(w - pr + 5, yy, text=fmt_p(hi - fr * rg), fill="#aaaaaa", font=self.f_s, anchor="w")
         for k in ("bbu", "bbm", "bbl"):
             self._line(cv, d[k], y, xf, "#5a6a7a")
         for i, (_, o, h, l, c, _) in enumerate(rows):
@@ -319,51 +361,84 @@ class Viewer:
             cv.create_rectangle(x - bw / 2, t, x + bw / 2, max(b, t + 1), fill=col, outline=col)
         for k, col in (("ema20", "#ffff00"), ("ema60", "#00ffff"), ("ema120", "#ff00ff")):
             self._line(cv, d[k], y, xf, col)
-        last = rows[-1][4]
         cv.create_line(pl, y(last), w - pr, y(last), fill="#888888", dash=(2, 3))
-        cv.create_text(w - pr + 4, y(last), text=fmt_p(last), fill="white", font=("Arial", 8, "bold"), anchor="w")
-        ly = pt + 2
-        for txt, col in (("EMA20", "#ffff00"), ("EMA60", "#00ffff"), ("EMA120", "#ff00ff"), ("BB", "#5a6a7a")):
-            cv.create_text(pl + 4, ly, text=txt, fill=col, font=("Arial", 8, "bold"), anchor="nw"); ly += 12
+        cv.create_text(w - pr + 5, y(last), text=fmt_p(last), fill="white", font=self.f_b, anchor="w")
+        self._legend(cv, pl + 2, 2, (("EMA20", "#ffff00"), ("EMA60", "#00ffff"), ("EMA120", "#ff00ff"), ("BB", "#7a8a9a")))
+        # x축 날짜: 글자 폭 기준으로 들어갈 개수만 찍고, 양 끝은 화면 안쪽으로 붙임
         ay = pt + ph
         cv.create_line(pl, ay, w - pr, ay, fill="#444444")
-        intra = self.iv in ("10m", "30m", "1h", "2h")
-        fmt = "%H:%M" if self.iv in ("10m", "30m") else "%m.%d %H시" if intra else "%m.%d"
-        step = max(len(rows) // 4, 1)
-        for i in range(0, len(rows), step):
+        fmt = "%H:%M" if self.iv in ("10m", "30m") else "%m.%d %Hh" if self.iv in ("1h", "2h") else "%m.%d"
+        lab_w = self.f_s.measure(time.strftime(fmt)) + 16
+        cnt = max(2, int((w - pr - pl) // lab_w))
+        step = max(1, len(rows) // cnt)
+        for i in range(step // 2, len(rows), step):
             lab = time.strftime(fmt, time.gmtime(rows[i][0] / 1000 + 9 * 3600))
-            cv.create_text(xf(i), ay + 4, text=lab, fill="#999999", font=("Arial", 8), anchor="n")
+            x = min(max(xf(i), pl + lab_w / 2), w - pr - lab_w / 2)
+            cv.create_line(xf(i), ay, xf(i), ay + 3, fill="#666666")
+            cv.create_text(x, ay + 4, text=lab, fill="#999999", font=self.f_s, anchor="n")
 
     def _draw_rsi(self):
-        cv, f = self.cv_r, self._frame(self.cv_r)
+        cv = self.cv_r
+        pr = self.f_s.measure("100") + 10
+        f = self._frame(cv, pr)
         if not f:
             return
-        w, pl, pr, pt, ph, cw, xf = f
+        w, pl, pt, ph, cw, xf = f
         y = lambda v: pt + (100 - max(0, min(100, v))) / 100 * ph
+        lvls = (30, 50, 70) if ph * .2 > self.lh else (30, 70)     # 좁으면 50 라벨 생략
         for lv in (30, 50, 70):
-            cv.create_line(pl, y(lv), w - pr, y(lv), fill="#3a3a3a")
-            cv.create_text(w - pr + 4, y(lv), text=str(lv), fill="#999999", font=("Arial", 7), anchor="w")
-        cv.create_text(pl + 4, pt + 2, text="RSI(14)", fill="#ffa500", font=("Arial", 8, "bold"), anchor="nw")
-        self._line(cv, self.data["rsi"], y, xf, "#ffa500", 1.3)
+            cv.create_line(pl, y(lv), w - pr, y(lv), fill="#3a3a3a", dash=(2, 3) if lv != 50 else None)
+        for lv in lvls:
+            cv.create_text(w - pr + 5, y(lv), text=str(lv), fill="#999999", font=self.f_s, anchor="w")
+        cv.create_text(pl + 2, 0, text="RSI(14)", fill="#ffa500", font=self.f_b, anchor="nw")
+        self._line(cv, self.data["rsi"], y, xf, "#ffa500", 1.5)
 
     def _draw_rd(self):
-        cv, f = self.cv_d, self._frame(self.cv_d)
+        cv = self.cv_d
+        pr = self.f_s.measure("100") + 10
+        f = self._frame(cv, pr)
         if not f:
             return
-        w, pl, pr, pt, ph, cw, xf = f
+        w, pl, pt, ph, cw, xf = f
         ds = [v for v in self.data["rd"] if v is not None]
         if not ds:
             return
         m = max(max(ds), -min(ds), 1)
         y = lambda v: pt + (m - v) / (2 * m) * ph
         cv.create_line(pl, y(0), w - pr, y(0), fill="#555555")
-        cv.create_text(w - pr + 4, y(0), text="0", fill="#999999", font=("Arial", 7), anchor="w")
-        cv.create_text(pl + 4, pt + 2, text="RSI Δ", fill="#00ccff", font=("Arial", 8, "bold"), anchor="nw")
-        self._line(cv, self.data["rd"], y, xf, "#00ccff", 1.3)
+        cv.create_text(w - pr + 5, y(0), text="0", fill="#999999", font=self.f_s, anchor="w")
+        cv.create_text(pl + 2, 0, text="RSI Δ", fill="#00ccff", font=self.f_b, anchor="nw")
+        self._line(cv, self.data["rd"], y, xf, "#00ccff", 1.5)
 
     def run(self):
         self.root.mainloop()
 
 
+def show_error(err):
+    """에러를 파일로 저장하고 Tk 창에 그대로 띄운다(Pydroid 그래픽 모드는 콘솔이 없어서)."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer_error.txt"), "w", encoding="utf-8") as f:
+            f.write(err)
+    except Exception:
+        pass
+    r = tk.Tk()
+    r.title("에러")
+    t = tk.Text(r, wrap="word", font=("monospace", 9), bg="#200", fg="white")
+    t.insert("1.0", "에러 발생 - 이 화면 캡처해서 보내줘\n\n" + err)
+    t.pack(fill="both", expand=True)
+    r.mainloop()
+
+
 if __name__ == "__main__":
-    Viewer().run()
+    import traceback
+    try:
+        v = Viewer()
+        v.root.report_callback_exception = lambda *a: (v.root.destroy(), show_error("".join(traceback.format_exception(*a))))
+        v.run()
+    except Exception:
+        err = traceback.format_exc()
+        try:
+            tk._default_root and tk._default_root.destroy()
+        except Exception:
+            pass
+        show_error(err)
