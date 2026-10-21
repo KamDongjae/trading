@@ -1,6 +1,6 @@
 # Pyramide 설정값 정리
 
-마지막 갱신: 2026-10-17 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
+마지막 갱신: 2026-10-21 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
 
 ## 바꾸는 법
 
@@ -21,6 +21,8 @@
 | `V2_SHORT_EXP4_MAX` | -0.5 | 숏 판정 기준 4h 예상수익(%) 상한 | 더 낮추면(-0.7) 숏 신호 줄고 승률↑ |
 | `V2_SHORT_PUP_MAX` | 0.45 | 숏 판정에 필요한 24h 상승확률 상한 | |
 | `V2_SHORT_BLOCK_MKT_R4` | 1.0 | 40종목 평균 4h 등락이 이 % 이상(반등 중)이면 모델 숏 대기 | 999로 하면 끔 |
+| `USE_SHORT_STOP_BLOCK` | True | 숏 손절 후 차단. 숏 판정이 뜬 뒤 그 코인이 판정 시점 가격보다 일정 % 이상 오르면 그 코인 숏 판정을 일정 시간 막음(같은 코인 반복 손실 방지). 카드엔 "숏 손절차단 ~시각"으로 표시 | False면 끔 |
+| `SHORT_STOP_PCT` / `SHORT_STOP_WATCH_H` / `SHORT_STOP_BLOCK_H` | 3.0 / 24 / 24 | 판정 후 24h 안에 +3% 역행하면 24h 차단. 1년 검증: 12h 승률 62→65%, 10% 이상 역행 9.4→6.6% | 서버·수집기 재시작하면 차단 기록 초기화 |
 | `BEAR_LONG_BLOCK` | True | 레짐이 하락장이면 롱 판정 대기 | False면 하락장에도 롱 |
 | `BEAR_LONG_UNLOCK_MKT_R24` | 0.0 | 하락장이라도 40종목 평균 24h 등락이 이 %보다 크면 롱 허용 | 999로 하면 해제 기능 끔 |
 | `USE_PROB_FILTER` | True | 24h 상승확률 필터(롱 p_up≥0.55, 숏 p_up≤0.45) | False면 필터 없이(표시는 유지) |
@@ -89,3 +91,4 @@
 | 10/16 | V2_SHORT_BLOCK_MKT_R4, BEAR_LONG_UNLOCK_MKT_R24 | backups\20261016_rebound |
 | 10/17 | USE_SHORT_RISK_CAP, SHORT_RISK_CAP_SCORE (자동) | backups\20261017 |
 | 10/17 | VERDICT_LONG_COND v7, VERDICT_SHORT_COND v3 (승률 저조 절 제거) | backups\20261017_cond |
+| 10/21 | USE_SHORT_STOP_BLOCK, SHORT_STOP_* (숏 손절 후 차단) | backups\20261021_shortstop |

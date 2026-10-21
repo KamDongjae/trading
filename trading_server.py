@@ -3699,6 +3699,47 @@ V2_SHORT_PUP_MAX = 0.45
 #        (2년 중 하루 0.1건 수준이라 표본 적음 n=43)
 V2_SHORT_BLOCK_MKT_R4 = 1.0
 BEAR_LONG_UNLOCK_MKT_R24 = 0.0
+# [2026-10-21 추가] 숏 손절 후 차단 — 10/20 BAT 하루 6번 숏(12h -5~-9%), IOST 숏 스퀴즈(12h -37%) 반복 손실 대응.
+# 모델 숏 판정이 새로 뜬 뒤 SHORT_STOP_WATCH_H 시간 안에 진입가 대비 +SHORT_STOP_PCT% 이상 오르면
+# 그 코인 숏 판정을 SHORT_STOP_BLOCK_H 시간 동안 막는다(메모리 상태 — 서버/수집기 재시작 시 초기화).
+# 1년 워크포워드(25/11~26/10, 숏 판정 시작 시점 기준):
+#   12h 승률 62.4→65.0%, 평균 12h +1.06→+1.34%, 12h 내 10% 이상 역행 9.4→6.6%, 하위5% 12h -5.0→-3.5%, 건수 1238→822
+#   전반(25/11~26/04) 12h 62.6→66.3% / 후반(26/05~10) 62.3→63.9% / 최근(26/09~10) 59.8→62.4% — 모든 구간 개선
+#   (같이 검증한 코인별 12h 쿨다운, 반등차단 24h 기준·4h 0.5% 강화는 효과 없거나 구간별로 엇갈려 미적용)
+USE_SHORT_STOP_BLOCK = True
+SHORT_STOP_PCT = 3.0
+SHORT_STOP_WATCH_H = 24
+SHORT_STOP_BLOCK_H = 24
+_short_stop_track = {}   # (거래소, 티커) -> (숏 판정 시작가, 시각)
+_short_stop_block = {}   # (거래소, 티커) -> 차단 해제 시각
+_short_stop_prev = {}    # (거래소, 티커) -> 직전 사이클 차단 전 숏 판정 여부
+
+
+def _short_stop_apply(r, exchange='bithumb'):
+    """모델 숏 판정 시작가를 기억해 두고, 그 뒤 +SHORT_STOP_PCT% 역행하면 그 코인 숏을 일정 시간 막는다."""
+    if not USE_SHORT_STOP_BLOCK:
+        return
+    t = r.get('ticker')
+    px = r.get('price') or 0
+    if not t or px <= 0:
+        return
+    key, now = (exchange, t), time.time()
+    tr = _short_stop_track.get(key)
+    if tr:
+        if now - tr[1] > SHORT_STOP_WATCH_H * 3600:
+            _short_stop_track.pop(key, None)
+        elif px >= tr[0] * (1 + SHORT_STOP_PCT / 100):
+            _short_stop_block[key] = now + SHORT_STOP_BLOCK_H * 3600
+            _short_stop_track.pop(key, None)
+    raw_short = r.get('verdict') == 'SHORT'
+    until = _short_stop_block.get(key, 0)
+    if raw_short and now < until:
+        r['verdict'] = ''
+        r['verdict_reason'] = (f"숏 손절차단(판정 후 +{SHORT_STOP_PCT:g}% 역행) ~"
+                               f"{time.strftime('%m-%d %H:%M', time.localtime(until))} · {r.get('verdict_reason', '')}")
+    elif raw_short and not _short_stop_prev.get(key):
+        _short_stop_track[key] = (px, now)
+    _short_stop_prev[key] = raw_short
 PROB_LONG_MIN = 0.55
 PROB_SHORT_MAX = 0.45
 
@@ -3710,7 +3751,7 @@ def _pm_ticker_features(df):
     except Exception:
         return None
 
-def apply_prob_filter(results):
+def apply_prob_filter(results, exchange='bithumb'):
     """results 전체에 p_up을 채우고, 확률이 판정 방향과 안 맞으면 판정을 대기로 내린다."""
     try:
         if prob_model is not None:
@@ -3755,6 +3796,7 @@ def apply_prob_filter(results):
                 r['verdict_reason'] = f"모델 숏 · 4h예상 {e4:+.2f}% · 확률 {p:.2f}" + (f" ({why})" if v == 'SHORT' else "")
             elif v == 'SHORT':
                 r['verdict'], r['verdict_reason'] = '', f"숏후보({why}) 4h예상 {e4:+.2f}% 부족"
+            _short_stop_apply(r, exchange)
             continue
         if v == 'LONG':
             reg = r.get('regime') or current_market_regime
@@ -3870,7 +3912,7 @@ def score_updater(tickers_ref, exchange='bithumb'):
                 if res:
                     results.append(res)
         if results:
-            apply_prob_filter(results)
+            apply_prob_filter(results, exchange)
             results.sort(key=lambda x: x['long_score'] + x['short_score'], reverse=True)
             if exchange == 'bithumb':
                 global current_min_score, current_market_regime
