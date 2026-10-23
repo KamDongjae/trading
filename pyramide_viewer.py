@@ -3,10 +3,50 @@
 - 서버 없이 빗썸/바이낸스 공개 API 직접 조회
 - 차트(캔들+BB+EMA20/60/120, RSI, RSI Δ) + 가격/지표 카드만 표시 (점수·판정 없음)
 - 필요: requests (Pydroid: pip install requests)"""
+import os, sys, time, faulthandler, traceback, threading
+
+
+# ---------------- 크래시 기록 ----------------
+# Pydroid에서 앱이 통째로 튕기면 파이썬 예외로 못 잡는다. 그래서
+#  1) faulthandler: 네이티브 크래시(SIGSEGV/SIGABRT 등) 순간의 파이썬 스택을 파일에 기록
+#  2) log(): 초기화 단계마다 즉시 기록 → 마지막 줄이 "어디까지 갔다가 죽었는지"
+# 파일: 이 스크립트 옆 viewer_crash.txt (못 쓰면 홈 폴더)
+def _open_log():
+    for d in (os.path.dirname(os.path.abspath(__file__)), os.path.expanduser("~"), "/sdcard"):
+        try:
+            return open(os.path.join(d, "viewer_crash.txt"), "w", encoding="utf-8", buffering=1)
+        except Exception:
+            continue
+    return None
+
+
+_LOG = _open_log()
+
+
+def log(msg):
+    if _LOG:
+        try:
+            _LOG.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+            _LOG.flush()
+            os.fsync(_LOG.fileno())
+        except Exception:
+            pass
+
+
+if _LOG:
+    faulthandler.enable(file=_LOG, all_threads=True)
+    sys.excepthook = lambda *a: log("예외(메인):\n" + "".join(traceback.format_exception(*a)))
+    threading.excepthook = lambda a: log(f"예외(스레드 {a.thread.name}):\n" + "".join(
+        traceback.format_exception(a.exc_type, a.exc_value, a.exc_traceback)))
+log(f"시작 python {sys.version.split()[0]} / {sys.platform} / {os.path.abspath(__file__)}")
+
+log("import tkinter")
 import tkinter as tk
-import tkinter.font as tkfont
-import threading, queue, json, os, time
+log(f"import tkinter OK (Tk {tk.TkVersion})")
+import queue, json
+log("import requests")
 import requests
+log("import 완료")
 
 INTERVALS = ["10m", "30m", "1h", "2h", "6h", "12h", "24h", "48h"]
 SHOW_N = 100           # 화면에 그릴 캔들 수
@@ -137,18 +177,24 @@ def fmt_s(v, f="+.2f", unit=""):
 # Pydroid는 화면 DPI에 맞춰 글씨를 크게 키우므로, 간격은 고정 픽셀 대신 실제 글씨 크기를 재서 잡는다.
 class Viewer:
     def __init__(self):
+        log("Tk() 생성")
         self.root = tk.Tk()
+        log("Tk() OK")
         self.root.title("Pyramide 차트")
         self.root.configure(bg=BG)
-        self.f_s = tkfont.Font(family="Arial", size=7)               # 차트 눈금
-        self.f_b = tkfont.Font(family="Arial", size=7, weight="bold")  # 차트 범례
-        self.lh = self.f_s.metrics("linespace")                       # 글자 높이(px)
+        self.f_s, self.f_b = ("Arial", 7), ("Arial", 7, "bold")      # 차트 눈금/범례
+        try:
+            sc = float(self.root.tk.call("tk", "scaling"))            # 1pt당 픽셀
+        except Exception:
+            sc = 1.33
+        log(f"tk scaling {sc:.2f}")
+        self.lh = int(7 * sc * 1.5) + 2                               # 글자 높이(px) 추정
+        self.cw = 7 * sc * 0.65                                       # 글자 1개 폭(px) 추정
         self.q = queue.Queue()
         self.data = None
         self.busy = False
         cfg = self._load_cfg()
         self.ticker, self.iv = cfg.get("ticker", "BTC"), cfg.get("iv", "1h")
-        sh = self.root.winfo_screenheight()
 
         top = tk.Frame(self.root, bg=BG); top.pack(fill="x", padx=6, pady=(6, 2))
         self.ent = tk.Entry(top, font=("Arial", 12), width=7, bg="#22262b", fg="white", insertbackground="white")
@@ -169,11 +215,11 @@ class Viewer:
             b.bind("<ButtonRelease-1>", lambda e, v=iv: self.set_iv(v))
             self.btns[iv] = b
 
-        self.cv_p = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=int(sh * .38))
+        self.cv_p = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=self.lh * 22)
         self.cv_p.pack(fill="both", expand=True, padx=4, pady=(4, 0))
-        self.cv_r = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=max(int(sh * .08), self.lh * 5))
+        self.cv_r = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=self.lh * 5)
         self.cv_r.pack(fill="x", padx=4, pady=(4, 0))
-        self.cv_d = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=max(int(sh * .06), self.lh * 3))
+        self.cv_d = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=self.lh * 4)
         self.cv_d.pack(fill="x", padx=4, pady=(4, 0))
 
         # 카드: 줄바꿈이 꼬이지 않게 "이름 값" 칸을 2열 격자로 배치
@@ -192,10 +238,16 @@ class Viewer:
 
         for cv in (self.cv_p, self.cv_r, self.cv_d):
             cv.bind("<Configure>", lambda e: self.draw())
+        log("위젯 구성 OK")
         self._hl()
         self.load()
         self.root.after(200, self._poll)
+        self._ndraw = 0
         self.root.after(AUTO_SEC * 1000, self._auto)
+
+    def _tw(self, text):
+        """글자 폭(px) 추정 — tkinter.font 측정은 Pydroid에서 튕겨서 안 씀."""
+        return int(len(text) * self.cw) + 2
 
     def _load_cfg(self):
         try:
@@ -241,14 +293,18 @@ class Viewer:
         threading.Thread(target=self._work, args=(self.ticker, self.iv), daemon=True).start()
 
     def _work(self, t, iv):
+        log(f"조회 시작 {t} {iv}")
         try:
             h1 = bithumb_candles(t, "1h")
             rows = h1 if iv == "1h" else bithumb_candles(t, iv)
             m10 = rows if iv == "10m" else bithumb_candles(t, "10m")
             s = build_series(rows)
             s = {k: v[-SHOW_N:] for k, v in s.items()}
-            self.q.put(("ok", t, iv, s, card_metrics(t, h1, m10)))
+            m = card_metrics(t, h1, m10)
+            log(f"조회 OK {t} {iv} 캔들 {len(rows)}개")
+            self.q.put(("ok", t, iv, s, m))
         except Exception as e:
+            log(f"조회 실패 {t} {iv}: {e!r}")
             self.q.put(("err", t, iv, str(e), None))
 
     def _poll(self):
@@ -303,7 +359,15 @@ class Viewer:
     def draw(self):
         if not self.data:
             return
-        self._draw_price(); self._draw_rsi(); self._draw_rd()
+        n = getattr(self, "_ndraw", 0)
+        self._ndraw = n + 1
+        if n < 3:   # 처음 몇 번만 단계별 기록(이후엔 로그가 너무 길어짐)
+            log(f"그리기#{n} 가격 (캔버스 {self.cv_p.winfo_width()}x{self.cv_p.winfo_height()})")
+            self._draw_price(); log(f"그리기#{n} RSI")
+            self._draw_rsi(); log(f"그리기#{n} RSI델타")
+            self._draw_rd(); log(f"그리기#{n} 완료")
+        else:
+            self._draw_price(); self._draw_rsi(); self._draw_rd()
 
     def _frame(self, cv, pr, pb=None):
         cv.delete("all")
@@ -329,7 +393,7 @@ class Viewer:
         """범례를 가로 한 줄로(글자 폭을 재서 간격 잡음)."""
         for txt, col in items:
             cv.create_text(x, y, text=txt, fill=col, font=self.f_b, anchor="nw")
-            x += self.f_b.measure(txt) + self.f_b.measure("  ")
+            x += self._tw(txt) + self._tw("  ")
 
     def _draw_price(self):
         cv, d = self.cv_p, self.data
@@ -337,7 +401,7 @@ class Viewer:
         vals = [x for r in rows for x in (r[2], r[3])] + [v for v in d["bbu"] + d["bbl"] if v is not None]
         hi, lo = max(vals), min(vals)
         rg = (hi - lo) or 1
-        pr = max(self.f_s.measure(fmt_p(v)) for v in (hi, lo, rows[-1][4])) + 10   # 가격 글자 폭만큼 오른쪽 여백
+        pr = max(self._tw(fmt_p(v)) for v in (hi, lo, rows[-1][4])) + 10   # 가격 글자 폭만큼 오른쪽 여백
         f = self._frame(cv, pr, pb=self.lh + 8)                                    # 날짜 줄 높이만큼 아래 여백
         if not f:
             return
@@ -368,7 +432,7 @@ class Viewer:
         ay = pt + ph
         cv.create_line(pl, ay, w - pr, ay, fill="#444444")
         fmt = "%H:%M" if self.iv in ("10m", "30m") else "%m.%d %Hh" if self.iv in ("1h", "2h") else "%m.%d"
-        lab_w = self.f_s.measure(time.strftime(fmt)) + 16
+        lab_w = self._tw(time.strftime(fmt)) + 16
         cnt = max(2, int((w - pr - pl) // lab_w))
         step = max(1, len(rows) // cnt)
         for i in range(step // 2, len(rows), step):
@@ -379,7 +443,7 @@ class Viewer:
 
     def _draw_rsi(self):
         cv = self.cv_r
-        pr = self.f_s.measure("100") + 10
+        pr = self._tw("100") + 10
         f = self._frame(cv, pr)
         if not f:
             return
@@ -395,7 +459,7 @@ class Viewer:
 
     def _draw_rd(self):
         cv = self.cv_d
-        pr = self.f_s.measure("100") + 10
+        pr = self._tw("100") + 10
         f = self._frame(cv, pr)
         if not f:
             return
@@ -411,11 +475,14 @@ class Viewer:
         self._line(cv, self.data["rd"], y, xf, "#00ccff", 1.5)
 
     def run(self):
+        log("mainloop 시작")
         self.root.mainloop()
+        log("mainloop 정상 종료")
 
 
 def show_error(err):
     """에러를 파일로 저장하고 Tk 창에 그대로 띄운다(Pydroid 그래픽 모드는 콘솔이 없어서)."""
+    log("파이썬 에러:\n" + err)
     try:
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer_error.txt"), "w", encoding="utf-8") as f:
             f.write(err)
@@ -430,7 +497,6 @@ def show_error(err):
 
 
 if __name__ == "__main__":
-    import traceback
     try:
         v = Viewer()
         v.root.report_callback_exception = lambda *a: (v.root.destroy(), show_error("".join(traceback.format_exception(*a))))
