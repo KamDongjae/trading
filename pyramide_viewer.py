@@ -10,9 +10,9 @@ import os, sys, time, faulthandler, traceback, threading
 # Pydroid에서 앱이 통째로 튕기면 파이썬 예외로 못 잡는다. 그래서
 #  1) faulthandler: 네이티브 크래시(SIGSEGV/SIGABRT 등) 순간의 파이썬 스택을 파일에 기록
 #  2) log(): 초기화 단계마다 즉시 기록 → 마지막 줄이 "어디까지 갔다가 죽었는지"
-# 파일: 이 스크립트 옆 viewer_crash.txt (못 쓰면 홈 폴더)
+# 파일: 내장메모리 Download/viewer_crash.txt (못 쓰면 스크립트 옆 → 홈 폴더)
 def _open_log():
-    for d in (os.path.dirname(os.path.abspath(__file__)), os.path.expanduser("~"), "/sdcard"):
+    for d in ("/sdcard/Download", "/storage/emulated/0/Download", os.path.dirname(os.path.abspath(__file__)), os.path.expanduser("~")):
         try:
             return open(os.path.join(d, "viewer_crash.txt"), "w", encoding="utf-8", buffering=1)
         except Exception:
@@ -42,6 +42,7 @@ log(f"시작 python {sys.version.split()[0]} / {sys.platform} / {os.path.abspath
 
 log("import tkinter")
 import tkinter as tk
+import tkinter.font as tkfont
 log(f"import tkinter OK (Tk {tk.TkVersion})")
 import queue, json
 log("import requests")
@@ -182,14 +183,29 @@ class Viewer:
         log("Tk() OK")
         self.root.title("Pyramide 차트")
         self.root.configure(bg=BG)
-        self.f_s, self.f_b = ("Arial", 7), ("Arial", 7, "bold")      # 차트 눈금/범례
+        # 창을 화면 크기에 딱 맞춤(넘치면 위/아래가 잘림)
         try:
-            sc = float(self.root.tk.call("tk", "scaling"))            # 1pt당 픽셀
-        except Exception:
-            sc = 1.33
-        log(f"tk scaling {sc:.2f}")
-        self.lh = int(7 * sc * 1.5) + 2                               # 글자 높이(px) 추정
-        self.cw = 7 * sc * 0.65                                       # 글자 1개 폭(px) 추정
+            sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+            self.root.geometry(f"{sw}x{sh}+0+0")
+            log(f"화면 {sw}x{sh}")
+        except Exception as e:
+            log(f"화면 크기 실패 {e!r}")
+        # 차트 글자 폭/높이는 실제 폰트로 잰다(Pydroid는 DPI 배율로 글자를 크게 키움)
+        try:
+            self.f_s = tkfont.Font(family="Arial", size=7)
+            self.f_b = tkfont.Font(family="Arial", size=7, weight="bold")
+            self.lh = self.f_s.metrics("linespace")
+            self._meas = self.f_s.measure
+            log(f"폰트 실측 OK 글자높이 {self.lh}px, '88.88' 폭 {self._meas('88.88')}px")
+        except Exception as e:
+            log(f"폰트 실측 실패 {e!r} → 추정값 사용")
+            self.f_s, self.f_b = ("Arial", 7), ("Arial", 7, "bold")
+            try:
+                sc = float(self.root.tk.call("tk", "scaling"))
+            except Exception:
+                sc = 1.33
+            self.lh = int(7 * sc * 1.5) + 2
+            self._meas = lambda t, w=7 * sc * 0.75: int(len(t) * w) + 2
         self.q = queue.Queue()
         self.data = None
         self.busy = False
@@ -197,7 +213,7 @@ class Viewer:
         self.ticker, self.iv = cfg.get("ticker", "BTC"), cfg.get("iv", "1h")
 
         top = tk.Frame(self.root, bg=BG); top.pack(fill="x", padx=6, pady=(6, 2))
-        self.ent = tk.Entry(top, font=("Arial", 12), width=7, bg="#22262b", fg="white", insertbackground="white")
+        self.ent = tk.Entry(top, font=("Arial", 11), width=7, bg="#22262b", fg="white", insertbackground="white")
         self.ent.insert(0, self.ticker)
         self.ent.pack(side="left", padx=(0, 4))
         self.ent.bind("<Return>", lambda e: self.search())
@@ -215,16 +231,13 @@ class Viewer:
             b.bind("<ButtonRelease-1>", lambda e, v=iv: self.set_iv(v))
             self.btns[iv] = b
 
-        self.cv_p = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=self.lh * 22)
-        self.cv_p.pack(fill="both", expand=True, padx=4, pady=(4, 0))
-        self.cv_r = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=self.lh * 5)
-        self.cv_r.pack(fill="x", padx=4, pady=(4, 0))
-        self.cv_d = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=self.lh * 4)
-        self.cv_d.pack(fill="x", padx=4, pady=(4, 0))
+        # 배치는 카드 생성 뒤에: 카드·RSI Δ·RSI를 아래부터 먼저 고정하고 가격차트가 남는 공간을 다 씀
+        self.cv_p = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=50)
+        self.cv_r = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=self.lh * 4)
+        self.cv_d = tk.Canvas(self.root, bg=BG, highlightthickness=0, height=self.lh * 3)
 
         # 카드: 줄바꿈이 꼬이지 않게 "이름 값" 칸을 2열 격자로 배치
         self.card = tk.Frame(self.root, bg=CARD_BG, bd=1, relief="solid")
-        self.card.pack(fill="x", padx=4, pady=6)
         self.card.columnconfigure(0, weight=1, uniform="c"); self.card.columnconfigure(1, weight=1, uniform="c")
         self.cells = {}
         for r, row in enumerate(CARD_LAYOUT):
@@ -235,6 +248,10 @@ class Viewer:
                 lb.grid(row=r, column=c, columnspan=2 if len(row) == 1 else 1, sticky="w", padx=8, pady=1)
                 self.cells[key] = lb
         self.cells["price"].config(font=("Arial", 12, "bold"), text="불러오는 중…")
+        self.card.pack(side="bottom", fill="x", padx=4, pady=(2, 6))
+        self.cv_d.pack(side="bottom", fill="x", padx=4, pady=(2, 0))
+        self.cv_r.pack(side="bottom", fill="x", padx=4, pady=(2, 0))
+        self.cv_p.pack(side="top", fill="both", expand=True, padx=4, pady=(4, 0))
 
         for cv in (self.cv_p, self.cv_r, self.cv_d):
             cv.bind("<Configure>", lambda e: self.draw())
@@ -246,8 +263,8 @@ class Viewer:
         self.root.after(AUTO_SEC * 1000, self._auto)
 
     def _tw(self, text):
-        """글자 폭(px) 추정 — tkinter.font 측정은 Pydroid에서 튕겨서 안 씀."""
-        return int(len(text) * self.cw) + 2
+        """글자 폭(px)."""
+        return self._meas(text) + 2
 
     def _load_cfg(self):
         try:
