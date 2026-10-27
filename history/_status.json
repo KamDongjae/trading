@@ -4,49 +4,49 @@
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:28"
+  "updated": "2026-10-28 05:30:01"
  },
  "upbit_A_1h": {
   "complete_back": true,
-  "rows": 17922,
+  "rows": 17941,
   "first": "2024-10-07T13:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:30"
+  "last": "2026-10-27T19:00:00",
+  "updated": "2026-10-28 05:30:03"
  },
  "upbit_ADA_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:31"
+  "updated": "2026-10-28 05:30:05"
  },
  "upbit_ADA_1h": {
   "complete_back": true,
-  "rows": 17921,
+  "rows": 17941,
   "first": "2024-10-08T18:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:33"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:06"
  },
  "upbit_AMO_1d": {
   "missing": true
  },
  "bithumb_AMO_1d": {
-  "rows": 213,
+  "rows": 214,
   "first": "2026-03-28T15:00:00",
-  "last": "2026-10-26T15:00:00",
+  "last": "2026-10-27T15:00:00",
   "legacy": true,
-  "updated": "2026-10-27 09:25:35",
+  "updated": "2026-10-28 05:30:07",
   "complete_back": false
  },
  "upbit_AMO_1h": {
   "missing": true
  },
  "bithumb_AMO_1h": {
-  "rows": 410,
+  "rows": 426,
   "first": "2026-10-03T07:00:00",
-  "last": "2026-10-26T23:00:00",
+  "last": "2026-10-27T17:00:00",
   "legacy": true,
-  "updated": "2026-10-27 09:25:37",
+  "updated": "2026-10-28 05:30:09",
   "complete_back": false
  },
  "upbit_ANKR_1d": {
@@ -54,113 +54,113 @@
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:39"
+  "updated": "2026-10-28 05:30:09"
  },
  "upbit_ANKR_1h": {
   "complete_back": true,
-  "rows": 17717,
+  "rows": 17736,
   "first": "2024-10-12T09:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:40"
+  "last": "2026-10-27T19:00:00",
+  "updated": "2026-10-28 05:30:10"
  },
  "upbit_BAT_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:41"
+  "updated": "2026-10-28 05:30:11"
  },
  "upbit_BAT_1h": {
   "complete_back": true,
-  "rows": 17721,
+  "rows": 17741,
   "first": "2024-10-11T11:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:42"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:12"
  },
  "upbit_BCH_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:43"
+  "updated": "2026-10-28 05:30:13"
  },
  "upbit_BCH_1h": {
   "complete_back": true,
-  "rows": 17921,
+  "rows": 17941,
   "first": "2024-10-08T17:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:44"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:13"
  },
  "upbit_BSV_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:45"
+  "updated": "2026-10-28 05:30:14"
  },
  "upbit_BSV_1h": {
   "complete_back": true,
-  "rows": 17921,
+  "rows": 17940,
   "first": "2024-10-08T12:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:46"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:15"
  },
  "upbit_BTC_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:46"
+  "updated": "2026-10-28 05:30:16"
  },
  "upbit_BTC_1h": {
   "complete_back": true,
-  "rows": 17922,
+  "rows": 17942,
   "first": "2024-10-08T20:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:48"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:16"
  },
  "upbit_CHR_1d": {
   "missing": true
  },
  "bithumb_CHR_1d": {
-  "rows": 213,
+  "rows": 214,
   "first": "2026-03-28T15:00:00",
-  "last": "2026-10-26T15:00:00",
+  "last": "2026-10-27T15:00:00",
   "legacy": true,
-  "updated": "2026-10-27 09:25:49",
+  "updated": "2026-10-28 05:30:18",
   "complete_back": false
  },
  "upbit_CHR_1h": {
   "missing": true
  },
  "bithumb_CHR_1h": {
-  "rows": 480,
+  "rows": 493,
   "first": "2026-10-05T23:00:00",
-  "last": "2026-10-27T00:00:00",
+  "last": "2026-10-27T20:00:00",
   "legacy": true,
-  "updated": "2026-10-27 09:25:51",
+  "updated": "2026-10-28 05:30:19",
   "complete_back": false
  },
  "upbit_COS_1d": {
   "missing": true
  },
  "bithumb_COS_1d": {
-  "rows": 213,
+  "rows": 214,
   "first": "2026-03-28T15:00:00",
-  "last": "2026-10-26T15:00:00",
+  "last": "2026-10-27T15:00:00",
   "legacy": true,
-  "updated": "2026-10-27 09:25:53",
+  "updated": "2026-10-28 05:30:20",
   "complete_back": false
  },
  "upbit_COS_1h": {
   "missing": true
  },
  "bithumb_COS_1h": {
-  "rows": 500,
+  "rows": 519,
   "first": "2026-10-06T00:00:00",
-  "last": "2026-10-27T00:00:00",
+  "last": "2026-10-27T19:00:00",
   "legacy": true,
-  "updated": "2026-10-27 09:25:54",
+  "updated": "2026-10-28 05:30:21",
   "complete_back": false
  },
  "upbit_CRO_1d": {
@@ -168,49 +168,49 @@
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:55"
+  "updated": "2026-10-28 05:30:22"
  },
  "upbit_CRO_1h": {
   "complete_back": true,
-  "rows": 17921,
+  "rows": 17940,
   "first": "2024-10-07T17:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:56"
+  "last": "2026-10-27T19:00:00",
+  "updated": "2026-10-28 05:30:23"
  },
  "upbit_CVC_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:57"
+  "updated": "2026-10-28 05:30:24"
  },
  "upbit_CVC_1h": {
   "complete_back": true,
-  "rows": 17719,
+  "rows": 17739,
   "first": "2024-10-12T21:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:25:59"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:25"
  },
  "upbit_EL_1d": {
   "missing": true
  },
  "bithumb_EL_1d": {
-  "rows": 213,
+  "rows": 214,
   "first": "2026-03-28T15:00:00",
-  "last": "2026-10-26T15:00:00",
+  "last": "2026-10-27T15:00:00",
   "legacy": true,
-  "updated": "2026-10-27 09:26:00",
+  "updated": "2026-10-28 05:30:26",
   "complete_back": false
  },
  "upbit_EL_1h": {
   "missing": true
  },
  "bithumb_EL_1h": {
-  "rows": 481,
+  "rows": 500,
   "first": "2026-10-05T17:00:00",
-  "last": "2026-10-26T23:00:00",
+  "last": "2026-10-27T20:00:00",
   "legacy": true,
-  "updated": "2026-10-27 09:26:02",
+  "updated": "2026-10-28 05:30:27",
   "complete_back": false
  },
  "upbit_ELF_1d": {
@@ -218,35 +218,35 @@
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:03"
+  "updated": "2026-10-28 05:30:28"
  },
  "upbit_ELF_1h": {
   "complete_back": true,
-  "rows": 17698,
+  "rows": 17718,
   "first": "2024-10-05T14:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:04"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:29"
  },
  "upbit_ENJ_1d": {
   "missing": true
  },
  "bithumb_ENJ_1d": {
-  "rows": 213,
+  "rows": 214,
   "first": "2026-03-28T15:00:00",
-  "last": "2026-10-26T15:00:00",
+  "last": "2026-10-27T15:00:00",
   "legacy": true,
-  "updated": "2026-10-27 09:26:06",
+  "updated": "2026-10-28 05:30:30",
   "complete_back": false
  },
  "upbit_ENJ_1h": {
   "missing": true
  },
  "bithumb_ENJ_1h": {
-  "rows": 484,
+  "rows": 500,
   "first": "2026-10-05T21:00:00",
-  "last": "2026-10-27T00:00:00",
+  "last": "2026-10-27T20:00:00",
   "legacy": true,
-  "updated": "2026-10-27 09:26:07",
+  "updated": "2026-10-28 05:30:31",
   "complete_back": false
  },
  "upbit_ETC_1d": {
@@ -254,56 +254,56 @@
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:08"
+  "updated": "2026-10-28 05:30:32"
  },
  "upbit_ETC_1h": {
   "complete_back": true,
-  "rows": 17921,
+  "rows": 17941,
   "first": "2024-10-08T16:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:09"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:33"
  },
  "upbit_ETH_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:10"
+  "updated": "2026-10-28 05:30:33"
  },
  "upbit_ETH_1h": {
   "complete_back": true,
-  "rows": 17922,
+  "rows": 17942,
   "first": "2024-10-08T19:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:11"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:34"
  },
  "upbit_FCT2_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:11"
+  "updated": "2026-10-28 05:30:35"
  },
  "upbit_FCT2_1h": {
   "complete_back": true,
-  "rows": 17509,
+  "rows": 17529,
   "first": "2024-10-11T19:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:12"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:36"
  },
  "upbit_GLM_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:13"
+  "updated": "2026-10-28 05:30:37"
  },
  "upbit_GLM_1h": {
   "complete_back": true,
-  "rows": 17710,
+  "rows": 17729,
   "first": "2024-10-11T16:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:14"
+  "last": "2026-10-27T19:00:00",
+  "updated": "2026-10-28 05:30:37"
  },
  "upbit_ICX_1d": {
   "complete_back": true,
@@ -324,77 +324,77 @@
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:16"
+  "updated": "2026-10-28 05:30:40"
  },
  "upbit_IOST_1h": {
   "complete_back": true,
-  "rows": 17921,
+  "rows": 17941,
   "first": "2024-10-06T01:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:17"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:40"
  },
  "upbit_KNC_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:18"
+  "updated": "2026-10-28 05:30:41"
  },
  "upbit_KNC_1h": {
   "complete_back": true,
-  "rows": 17497,
+  "rows": 17513,
   "first": "2024-10-12T17:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:19"
+  "last": "2026-10-27T16:00:00",
+  "updated": "2026-10-28 05:30:42"
  },
  "upbit_LINK_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:20"
+  "updated": "2026-10-28 05:30:43"
  },
  "upbit_LINK_1h": {
   "complete_back": true,
-  "rows": 17921,
+  "rows": 17941,
   "first": "2024-10-08T15:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:20"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:44"
  },
  "upbit_MBL_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:21"
+  "updated": "2026-10-28 05:30:45"
  },
  "upbit_MBL_1h": {
   "complete_back": true,
-  "rows": 17721,
+  "rows": 17740,
   "first": "2024-10-07T14:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:22"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:45"
  },
  "upbit_MEV_1d": {
   "missing": true
  },
  "bithumb_MEV_1d": {
-  "rows": 213,
+  "rows": 214,
   "first": "2026-03-28T15:00:00",
-  "last": "2026-10-26T15:00:00",
+  "last": "2026-10-27T15:00:00",
   "legacy": true,
-  "updated": "2026-10-27 09:26:23",
+  "updated": "2026-10-28 05:30:47",
   "complete_back": false
  },
  "upbit_MEV_1h": {
   "missing": true
  },
  "bithumb_MEV_1h": {
-  "rows": 493,
+  "rows": 513,
   "first": "2026-10-05T20:00:00",
-  "last": "2026-10-27T00:00:00",
+  "last": "2026-10-27T20:00:00",
   "legacy": true,
-  "updated": "2026-10-27 09:26:25",
+  "updated": "2026-10-28 05:30:48",
   "complete_back": false
  },
  "upbit_MTL_1d": {
@@ -402,229 +402,229 @@
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:25"
+  "updated": "2026-10-28 05:30:49"
  },
  "upbit_MTL_1h": {
   "complete_back": true,
-  "rows": 17715,
+  "rows": 17735,
   "first": "2024-10-09T03:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:26"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:49"
  },
  "upbit_ORBS_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:27"
+  "updated": "2026-10-28 05:30:50"
  },
  "upbit_ORBS_1h": {
   "complete_back": true,
-  "rows": 17706,
+  "rows": 17724,
   "first": "2024-10-10T06:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:28"
+  "last": "2026-10-27T19:00:00",
+  "updated": "2026-10-28 05:30:51"
  },
  "upbit_POWR_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:28"
+  "updated": "2026-10-28 05:30:52"
  },
  "upbit_POWR_1h": {
   "complete_back": true,
-  "rows": 17918,
+  "rows": 17938,
   "first": "2024-10-05T03:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:29"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:52"
  },
  "upbit_QTUM_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:31"
+  "updated": "2026-10-28 05:30:53"
  },
  "upbit_QTUM_1h": {
   "complete_back": true,
-  "rows": 17918,
+  "rows": 17938,
   "first": "2024-10-07T16:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:31"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:54"
  },
  "upbit_SNT_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:32"
+  "updated": "2026-10-28 05:30:54"
  },
  "upbit_SNT_1h": {
   "complete_back": true,
-  "rows": 17713,
+  "rows": 17732,
   "first": "2024-10-12T10:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:33"
+  "last": "2026-10-27T19:00:00",
+  "updated": "2026-10-28 05:30:55"
  },
  "upbit_STEEM_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:34"
+  "updated": "2026-10-28 05:30:56"
  },
  "upbit_STEEM_1h": {
   "complete_back": true,
-  "rows": 17918,
+  "rows": 17938,
   "first": "2024-10-05T13:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:35"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:57"
  },
  "upbit_TFUEL_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:36"
+  "updated": "2026-10-28 05:30:58"
  },
  "upbit_TFUEL_1h": {
   "complete_back": true,
-  "rows": 17711,
+  "rows": 17731,
   "first": "2024-10-08T15:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:37"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:30:59"
  },
  "upbit_THETA_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:37"
+  "updated": "2026-10-28 05:30:59"
  },
  "upbit_THETA_1h": {
   "complete_back": true,
-  "rows": 17707,
+  "rows": 17727,
   "first": "2024-10-12T10:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:38"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:31:00"
  },
  "upbit_TRX_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:39"
+  "updated": "2026-10-28 05:31:01"
  },
  "upbit_TRX_1h": {
   "complete_back": true,
-  "rows": 17921,
+  "rows": 17941,
   "first": "2024-10-08T11:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:40"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:31:02"
  },
  "upbit_VET_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:41"
+  "updated": "2026-10-28 05:31:02"
  },
  "upbit_VET_1h": {
   "complete_back": true,
-  "rows": 17920,
+  "rows": 17940,
   "first": "2024-10-07T21:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:41"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:31:03"
  },
  "upbit_WAVES_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:42"
+  "updated": "2026-10-28 05:31:04"
  },
  "upbit_WAVES_1h": {
   "complete_back": true,
-  "rows": 17920,
+  "rows": 17940,
   "first": "2024-10-07T21:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:43"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:31:05"
  },
  "upbit_WAXP_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:44"
+  "updated": "2026-10-28 05:31:05"
  },
  "upbit_WAXP_1h": {
   "complete_back": true,
-  "rows": 17917,
+  "rows": 17935,
   "first": "2024-10-05T08:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:44"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:31:06"
  },
  "upbit_XRP_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:45"
+  "updated": "2026-10-28 05:31:07"
  },
  "upbit_XRP_1h": {
   "complete_back": true,
-  "rows": 17921,
+  "rows": 17941,
   "first": "2024-10-08T20:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:46"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:31:08"
  },
  "upbit_ZIL_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:47"
+  "updated": "2026-10-28 05:31:08"
  },
  "upbit_ZIL_1h": {
   "complete_back": true,
-  "rows": 17920,
+  "rows": 17939,
   "first": "2024-10-07T07:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:48"
+  "last": "2026-10-27T19:00:00",
+  "updated": "2026-10-28 05:31:09"
  },
  "upbit_ZRX_1d": {
   "complete_back": true,
   "rows": 1214,
   "first": "2023-07-02T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:48"
+  "updated": "2026-10-28 05:31:10"
  },
  "upbit_ZRX_1h": {
   "complete_back": true,
-  "rows": 17710,
+  "rows": 17728,
   "first": "2024-10-09T11:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:49"
+  "last": "2026-10-27T20:00:00",
+  "updated": "2026-10-28 05:31:11"
  },
  "_last_run": {
-  "finished": "2026-10-27 09:26:49",
+  "finished": "2026-10-28 05:31:11",
   "tickers": 40,
-  "seconds": 82
+  "seconds": 71
  },
  "upbit_HIVE_1d": {
   "complete_back": true,
   "rows": 1208,
   "first": "2023-07-08T00:00:00",
   "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:15"
+  "updated": "2026-10-28 05:30:38"
  },
  "upbit_HIVE_1h": {
   "complete_back": true,
-  "rows": 17578,
+  "rows": 17597,
   "first": "2024-10-19T01:00:00",
-  "last": "2026-10-27T00:00:00",
-  "updated": "2026-10-27 09:26:16"
+  "last": "2026-10-27T19:00:00",
+  "updated": "2026-10-28 05:30:39"
  },
  "bithumb_ICX_1d": {
   "missing": true
