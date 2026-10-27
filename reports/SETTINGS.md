@@ -1,6 +1,6 @@
 # Pyramide 설정값 정리
 
-마지막 갱신: 2026-10-21 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
+마지막 갱신: 2026-10-27 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
 
 ## 바꾸는 법
 
@@ -70,6 +70,7 @@
 | `COLLECT_INTERVAL_SEC` | 300 | 수집 주기(초) |
 | `AUTO_PUSH_INTERVAL_MIN` | 30 | GitHub 자동 push 주기(분) |
 | `MODEL_CHECK_INTERVAL_MIN` | 60 | 과거 캔들 다운로드·모델 재학습 필요 여부 확인 주기(분) |
+| `WATCHDOG_MIN` | 20 | 이 시간(분) 넘게 로그 저장이 없으면 수집기가 스스로 재시작(멈춤 자동 복구). run_collector.bat로 켜면 bat가 다시 띄우고, 직접 켜면 새 창으로 다시 뜸 |
 
 ## 6. 클라이언트 버튼 설정 (기기별)
 
@@ -92,3 +93,4 @@
 | 10/17 | USE_SHORT_RISK_CAP, SHORT_RISK_CAP_SCORE (자동) | backups\20261017 |
 | 10/17 | VERDICT_LONG_COND v7, VERDICT_SHORT_COND v3 (승률 저조 절 제거) | backups\20261017_cond |
 | 10/21 | USE_SHORT_STOP_BLOCK, SHORT_STOP_* (숏 손절 후 차단) | backups\20261021_shortstop |
+| 10/27 | WATCHDOG_MIN (수집기 멈춤 자동 재시작, data_collector.py·run_collector.bat) | backups\20261027_watchdog |

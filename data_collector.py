@@ -534,6 +534,39 @@ def _maybe_background_jobs(force=False):
     threading.Thread(target=_job, daemon=True).start()
 
 
+# [2026-10-27 추가] 수집 워치독 — 10/24 19:14 수집기가 에러·종료 기록 없이 멈춰서(행)
+# 62시간 동안 로그가 끊겼다. 프로세스가 살아 있으니 run_collector.bat의 재시작 루프도 안 걸렸다.
+# 로그 저장에 성공할 때마다 시각을 남기고, 별도 스레드가 WATCHDOG_MIN분 넘게 갱신이 없으면 재시작한다.
+#  - run_collector.bat로 실행 중(환경변수 PYRAMIDE_BAT=1)이면 그냥 종료 → bat가 30초 뒤 다시 띄움
+#  - 직접 실행 중이면 같은 명령으로 새 프로세스를 띄우고 자기는 종료
+WATCHDOG_MIN = 20
+_last_ok = [time.time()]
+
+
+def _watchdog():
+    while True:
+        time.sleep(60)
+        idle = (time.time() - _last_ok[0]) / 60
+        if idle < WATCHDOG_MIN:
+            continue
+        try:
+            print(f"🐶 워치독: {idle:.0f}분째 로그 저장 없음 — 수집기 재시작", flush=True)
+        except Exception:
+            pass
+        try:
+            if os.environ.get("PYRAMIDE_BAT") != "1":
+                import subprocess
+                flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+                subprocess.Popen([sys.executable, os.path.abspath(__file__)] + sys.argv[1:],
+                                 cwd=SCRIPT_DIR, creationflags=flags)
+        except Exception as e:
+            try:
+                print(f"⚠️ 워치독 새 프로세스 실행 실패: {e}", flush=True)
+            except Exception:
+                pass
+        os._exit(3)
+
+
 def main():
     if CANDLE_INTERVAL_OVERRIDE:
         srv.CANDLE_INTERVAL = CANDLE_INTERVAL_OVERRIDE
@@ -565,6 +598,9 @@ def main():
     # 계속 밀렸다(실측 평균 5.4분 간격). 이제 시작 시각 기준 고정 주기로 돈다 — 수집이
     # 오래 걸려 한 주기를 넘기면 밀린 회차는 건너뛰고 다음 정시 회차부터 다시 맞춘다.
     next_run = time.time()
+    _last_ok[0] = time.time()
+    threading.Thread(target=_watchdog, daemon=True, name="watchdog").start()
+    print(f"🐶 워치독 켜짐: {WATCHDOG_MIN}분 넘게 로그 저장이 없으면 자동 재시작")
     _maybe_auto_push(force=True)
     _maybe_background_jobs(force=True)
     while True:
@@ -580,6 +616,7 @@ def main():
                 time.sleep(2)
                 continue
             collect_once(tickers)
+            _last_ok[0] = time.time()
         except Exception as e:
             print(f"⚠️ 수집 실패: {e}")
         next_run += COLLECT_INTERVAL_SEC

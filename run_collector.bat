@@ -3,6 +3,7 @@ chcp 65001 > nul
 title Pyramide data_collector
 set PYTHONIOENCODING=utf-8
 set PYTHONUNBUFFERED=1
+set PYRAMIDE_BAT=1
 cd /d C:\Users\K\Desktop\trading
 
 :loop
