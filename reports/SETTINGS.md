@@ -1,6 +1,6 @@
 # Pyramide 설정값 정리
 
-마지막 갱신: 2026-10-27 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
+마지막 갱신: 2026-10-29 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
 
 ## 바꾸는 법
 
@@ -30,7 +30,7 @@
 | `PROB_SHORT_MAX` | 0.45 | (v2 꺼졌을 때) 숏 판정 최대 상승확률 | |
 | `VERDICT_CUT` | 50 | (판정 후보) 롱/숏 점수 컷 | |
 | `VERDICT_PP_CUT` | 80 | (판정 후보) 매집/분산 점수 컷 | |
-| `VERDICT_LONG_COND` / `VERDICT_SHORT_COND` | 조건식 롱 v7 / 숏 v3 | (판정 후보) 매집·분산과 같이 봐야 하는 조건식. 클라 색칠용 같은 내용: `long_conditions_import_v7.txt`, `short_conditions_import_v3.txt` | 예전 식은 v5 / v1+v2 파일에 그대로 있음 |
+| `VERDICT_LONG_COND` / `VERDICT_SHORT_COND` | 조건식 롱 v7 / 숏 v3 | (판정 후보) 매집·분산과 같이 봐야 하는 조건식. 클라 색칠용 같은 내용: `long_conditions_import_v7.txt`, `short_conditions_import_v3.txt`. 10/29 클라 색칠용 롱 v8(`long_conditions_import_v8.txt`, v7 각 절에 BB<20 추가)도 생김 — 서버 판정은 v7 그대로 | 예전 식은 v5 / v1+v2 파일에 그대로 있음. v8은 클라 '가져오기'로 넣어야 적용 |
 
 **검증치(2년 워크포워드, 수수료 미반영)**: 롱 4h 승률 59%·12h 57%, 숏 4h 66%·12h 69%·24h 71%. 시장 반등 보정 후 숏 4h 68%. 숏을 10배로 잡으면 24h 내 청산선 도달 약 22% → 권장 레버리지 필수.
 
@@ -94,3 +94,4 @@
 | 10/17 | VERDICT_LONG_COND v7, VERDICT_SHORT_COND v3 (승률 저조 절 제거) | backups\20261017_cond |
 | 10/21 | USE_SHORT_STOP_BLOCK, SHORT_STOP_* (숏 손절 후 차단) | backups\20261021_shortstop |
 | 10/27 | WATCHDOG_MIN (수집기 멈춤 자동 재시작, data_collector.py·run_collector.bat) | backups\20261027_watchdog |
+| 10/29 | 롱 조건식 v8 파일 추가(클라 색칠용, 자동). VERDICT_LONG_COND는 변경 없음 | 새 파일이라 원본 없음(SETTINGS 백업: backups\20261029) |
