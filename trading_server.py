@@ -3740,7 +3740,9 @@ def _short_stop_apply(r, exchange='bithumb'):
     elif raw_short and not _short_stop_prev.get(key):
         _short_stop_track[key] = (px, now)
     _short_stop_prev[key] = raw_short
-PROB_LONG_MIN = 0.55
+# [2026-10-30 수동] 0.55→0.50. 1년 워크포워드(롱 후보 근사, 독립): 하루 1.3→1.6건, 12h 승률 61.3→61.0%·시장대비 +0.57→+0.61,
+# 24h 60.2→58.1%, 10배 청산 1.8→1.4% / 26/05~10 구간 12h 평균 +0.95→+1.19. 실전(10/15~10/30) 확률 0.50~0.55로 막힌 후보 45건 12h 60%·+0.72 초과
+PROB_LONG_MIN = 0.50
 PROB_SHORT_MAX = 0.45
 
 def _pm_ticker_features(df):

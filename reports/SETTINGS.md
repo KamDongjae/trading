@@ -1,6 +1,6 @@
 # Pyramide 설정값 정리
 
-마지막 갱신: 2026-10-29 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
+마지막 갱신: 2026-10-30 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
 
 ## 바꾸는 법
 
@@ -16,7 +16,7 @@
 
 | 설정 | 현재값 | 뜻 | 끄기/되돌리기 |
 |---|---|---|---|
-| `VERDICT_V2` | True | 판정 v2 사용. 롱 = 기존 롱 후보 ∩ p_up≥0.55 ∩ 4h예상>+0.2%, 숏 = 4h예상<-0.5% ∩ p_up<0.45(모델만) | False면 예전 점수식 판정 |
+| `VERDICT_V2` | True | 판정 v2 사용. 롱 = 기존 롱 후보 ∩ p_up≥0.50 ∩ 4h예상>+0.2%, 숏 = 4h예상<-0.5% ∩ p_up<0.45(모델만) | False면 예전 점수식 판정 |
 | `V2_LONG_EXP4_MIN` | 0.2 | 롱 판정에 필요한 최소 4h 예상수익(%) | 높이면 롱 신호 줄고 정확도↑ |
 | `V2_SHORT_EXP4_MAX` | -0.5 | 숏 판정 기준 4h 예상수익(%) 상한 | 더 낮추면(-0.7) 숏 신호 줄고 승률↑ |
 | `V2_SHORT_PUP_MAX` | 0.45 | 숏 판정에 필요한 24h 상승확률 상한 | |
@@ -25,8 +25,8 @@
 | `SHORT_STOP_PCT` / `SHORT_STOP_WATCH_H` / `SHORT_STOP_BLOCK_H` | 3.0 / 24 / 24 | 판정 후 24h 안에 +3% 역행하면 24h 차단. 1년 검증: 12h 승률 62→65%, 10% 이상 역행 9.4→6.6% | 서버·수집기 재시작하면 차단 기록 초기화 |
 | `BEAR_LONG_BLOCK` | True | 레짐이 하락장이면 롱 판정 대기 | False면 하락장에도 롱 |
 | `BEAR_LONG_UNLOCK_MKT_R24` | 0.0 | 하락장이라도 40종목 평균 24h 등락이 이 %보다 크면 롱 허용 | 999로 하면 해제 기능 끔 |
-| `USE_PROB_FILTER` | True | 24h 상승확률 필터(롱 p_up≥0.55, 숏 p_up≤0.45) | False면 필터 없이(표시는 유지) |
-| `PROB_LONG_MIN` | 0.55 | 롱 판정 최소 상승확률 | |
+| `USE_PROB_FILTER` | True | 24h 상승확률 필터(롱 p_up≥0.50, 숏 p_up≤0.45) | False면 필터 없이(표시는 유지) |
+| `PROB_LONG_MIN` | 0.50 | 롱 판정 최소 상승확률 (10/30 0.55→0.50: 1년 검증 신호 +25%, 12h 성적 동일·청산 소폭↓, 24h 승률 -2%p) | 0.55로 되돌리면 이전과 같음 |
 | `PROB_SHORT_MAX` | 0.45 | (v2 꺼졌을 때) 숏 판정 최대 상승확률 | |
 | `VERDICT_CUT` | 50 | (판정 후보) 롱/숏 점수 컷 | |
 | `VERDICT_PP_CUT` | 80 | (판정 후보) 매집/분산 점수 컷 | |
@@ -95,3 +95,4 @@
 | 10/21 | USE_SHORT_STOP_BLOCK, SHORT_STOP_* (숏 손절 후 차단) | backups\20261021_shortstop |
 | 10/27 | WATCHDOG_MIN (수집기 멈춤 자동 재시작, data_collector.py·run_collector.bat) | backups\20261027_watchdog |
 | 10/29 | 롱 조건식 v8 파일 추가(클라 색칠용, 자동). VERDICT_LONG_COND는 변경 없음 | 새 파일이라 원본 없음(SETTINGS 백업: backups\20261029) |
+| 10/30 | PROB_LONG_MIN 0.55→0.50 | backups\20261030_problong |
