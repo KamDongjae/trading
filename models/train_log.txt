@@ -28,3 +28,4 @@
 [2026-11-07 13:27:35] 학습 완료 40s rows=316267 tickers=41 2024-10-13~2026-11-06 {"holdout_days": 60, "holdout_ic": 0.153, "holdout_up_rate_p55": 55.9, "holdout_up_rate_p45": 35.7, "holdout_up_rate_all": 43.9, "holdout_ic_x4": 0.199}
 [2026-11-08 09:57:48] 학습 완료 34s rows=316667 tickers=41 2024-10-13~2026-11-07 {"holdout_days": 60, "holdout_ic": 0.159, "holdout_up_rate_p55": 55.9, "holdout_up_rate_p45": 35.9, "holdout_up_rate_all": 43.7, "holdout_ic_x4": 0.203}
 [2026-11-09 07:02:31] 학습 완료 36s rows=317103 tickers=41 2024-10-13~2026-11-08 {"holdout_days": 60, "holdout_ic": 0.159, "holdout_up_rate_p55": 55.1, "holdout_up_rate_p45": 34.9, "holdout_up_rate_all": 43.0, "holdout_ic_x4": 0.201}
+[2026-11-10 03:57:39] 학습 완료 42s rows=317505 tickers=41 2024-10-13~2026-11-09 {"holdout_days": 60, "holdout_ic": 0.147, "holdout_up_rate_p55": 56.3, "holdout_up_rate_p45": 34.6, "holdout_up_rate_all": 42.9, "holdout_ic_x4": 0.2}
