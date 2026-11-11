@@ -1,6 +1,6 @@
 # Pyramide 설정값 정리
 
-마지막 갱신: 2026-10-30 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
+마지막 갱신: 2026-11-12 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
 
 ## 바꾸는 법
 
@@ -26,7 +26,7 @@
 | `BEAR_LONG_BLOCK` | True | 레짐이 하락장이면 롱 판정 대기 | False면 하락장에도 롱 |
 | `BEAR_LONG_UNLOCK_MKT_R24` | 0.0 | 하락장이라도 40종목 평균 24h 등락이 이 %보다 크면 롱 허용 | 999로 하면 해제 기능 끔 |
 | `USE_PROB_FILTER` | True | 24h 상승확률 필터(롱 p_up≥0.50, 숏 p_up≤0.45) | False면 필터 없이(표시는 유지) |
-| `PROB_LONG_MIN` | 0.50 | 롱 판정 최소 상승확률 (10/30 0.55→0.50: 1년 검증 신호 +25%, 12h 성적 동일·청산 소폭↓, 24h 승률 -2%p) | 0.55로 되돌리면 이전과 같음 |
+| `PROB_LONG_MIN` | 0.55 | 롱 판정 최소 상승확률 (10/30 0.55→0.50 → 11/12 0.55 복귀: 0.50 이후 p_up 0.50~0.55 롱 12h 승률 33%(6건) vs ≥0.55 80%(5건)) | 0.50으로 내리면 롱 판정이 늘어남(10/30~11/11 상태) |
 | `PROB_SHORT_MAX` | 0.45 | (v2 꺼졌을 때) 숏 판정 최대 상승확률 | |
 | `VERDICT_CUT` | 50 | (판정 후보) 롱/숏 점수 컷 | |
 | `VERDICT_PP_CUT` | 80 | (판정 후보) 매집/분산 점수 컷 | |
@@ -96,3 +96,4 @@
 | 10/27 | WATCHDOG_MIN (수집기 멈춤 자동 재시작, data_collector.py·run_collector.bat) | backups\20261027_watchdog |
 | 10/29 | 롱 조건식 v8 파일 추가(클라 색칠용, 자동). VERDICT_LONG_COND는 변경 없음 | 새 파일이라 원본 없음(SETTINGS 백업: backups\20261029) |
 | 10/30 | PROB_LONG_MIN 0.55→0.50 | backups\20261030_problong |
+| 11/12 | PROB_LONG_MIN 0.50→0.55 (복귀, 사용자 승인) | backups\20261112_problong |
