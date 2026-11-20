@@ -46,6 +46,10 @@ ACCOUNT_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_account.csv")
 CMD_DIR = os.path.join(SCRIPT_DIR, "server_cmds")
 RESULTS_FILE = os.path.join(SCRIPT_DIR, "server_results.csv")
 HISTORY_FILE = os.path.join(SCRIPT_DIR, "trade_history_usd.csv")  # 서버가 실제로 쓰는 파일명과 일치시킴(기존엔 이름이 달라서 청산기록이 항상 비어 보였음)
+AUTO_ENTRY_FILE = os.path.join(SCRIPT_DIR, "auto_entry.json")  # [2026-11-21 추가] 자동진입 체크박스 상태(기기별)
+AUTO_ENTRY_LOG = os.path.join(SCRIPT_DIR, "auto_entry_log.csv")  # 자동진입 기록
+AUTO_ENTRY_USD = 200        # 자동진입 증거금($) 기본값 — 설정 창에서 바꿀 수 있음
+AUTO_ENTRY_LEVERAGE = 10    # 자동진입 레버리지 기본값
 PROB_FILTER_FILE = os.path.join(SCRIPT_DIR, "prob_filter.json")  # [2026-10-13 추가] 확률필터 표시 ON/OFF (기기별 설정)
 SIGNAL_SINCE_FILE = os.path.join(SCRIPT_DIR, "signal_since.json")  # [2026-10-12 추가] 카드 롱/숏 신호 시작시각 저장
 CUSTOM_CONDITIONS_FILE = os.path.join(SCRIPT_DIR, "custom_conditions.json")  # [2026-07-21 추가] 사용자 정의 조건식 저장
@@ -634,6 +638,18 @@ class TradingClient:
                                          fg="white", padx=8, pady=2, command=self._toggle_prob_filter)
         self.btn_prob_filter.pack(side="left", padx=2)
         self._highlight_prob_filter_button()
+        # [2026-11-21 추가] 자동진입 — 버튼을 누르면 설정 창(켜기/끄기, 잔고 제한/잔고 무시, 금액·레버리지).
+        # 켜져 있으면 판정 롱/숏이 새로 뜰 때마다 바로 진입. 클라이언트가 켜져 있을 때만 동작.
+        # 켠 순간 이미 떠 있던 신호는 건너뛰고, 그 뒤 새로 뜨는 신호만 산다.
+        self.auto_cfg = self._load_auto_entry()
+        self.btn_auto_entry = tk.Button(exchange_bar, font=("Arial", self.FONT_SMALL, "bold"),
+                                        fg="white", padx=8, pady=2, command=self.open_auto_entry_dialog)
+        self.btn_auto_entry.pack(side="left", padx=(6, 2))
+        self._highlight_auto_entry_button()
+        self.auto_entry_status = tk.Label(exchange_bar, text="", font=("Arial", self.FONT_SMALL), fg="gray")
+        self.auto_entry_status.pack(side="left", padx=2)
+        self._auto_seen = {}       # (거래소, 티커) -> 직전 판정
+        self._auto_primed = set()  # 첫 스냅샷을 이미 본 거래소(켤 때 떠 있던 신호는 안 삼)
 
         # 타임프레임(계산 기준 캔들) 전환 버튼 — 테이블 바로 위
         tf_bar = tk.Frame(self.root)
@@ -1686,6 +1702,10 @@ class TradingClient:
         try:
             self._last_render_data = data_list
             try:
+                self._auto_entry_check(data_list)
+            except Exception as e:
+                print(f"자동진입 확인 실패: {e}")
+            try:
                 self._render_rank_panel(data_list)
             except Exception as e:
                 print(f"순위 탭 갱신 실패: {e}")
@@ -2683,6 +2703,167 @@ class TradingClient:
         cache[bg] = res
         return res
 
+    # ---------- [2026-11-21 추가] 자동진입 ----------
+    def _load_auto_entry(self):
+        cfg = {'on': False, 'force': False, 'usd': AUTO_ENTRY_USD, 'lev': AUTO_ENTRY_LEVERAGE}
+        try:
+            with open(AUTO_ENTRY_FILE, 'r', encoding='utf-8') as f:
+                cfg.update(json.load(f))
+        except Exception:
+            pass
+        return cfg
+
+    def _save_auto_entry(self):
+        try:
+            with open(AUTO_ENTRY_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.auto_cfg, f)
+        except Exception as e:
+            print(f"자동진입 설정 저장 실패: {e}")
+
+    def _highlight_auto_entry_button(self):
+        c = self.auto_cfg
+        if c.get('on'):
+            mode = "잔고무시" if c.get('force') else "잔고내"
+            self._cfg(self.btn_auto_entry, text=f"자동진입 ON ${c['usd']:g}×{c['lev']} {mode}",
+                      bg="#c0392b" if c.get('force') else "#2fa84f", fg="white")
+        else:
+            self._cfg(self.btn_auto_entry, text="자동진입 OFF", bg="#555555", fg="white")
+
+    def open_auto_entry_dialog(self):
+        c = self.auto_cfg
+        dlg = tk.Toplevel(self.root)
+        dlg.title("자동진입 설정")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        fs = self.FONT_SMALL
+        body = tk.Frame(dlg, padx=14, pady=12)
+        body.pack(fill="both", expand=True)
+        on_var = tk.BooleanVar(value=bool(c.get('on')))
+        force_var = tk.StringVar(value="force" if c.get('force') else "limit")
+        usd_var = tk.StringVar(value=f"{c.get('usd', AUTO_ENTRY_USD):g}")
+        lev_var = tk.StringVar(value=str(c.get('lev', AUTO_ENTRY_LEVERAGE)))
+
+        tk.Label(body, text="판정 롱/숏이 새로 뜨면 바로 진입 (클라이언트가 켜져 있을 때만)",
+                 font=("Arial", fs), fg="gray").pack(anchor="w", pady=(0, 8))
+        tk.Checkbutton(body, text="신호 뜨면 자동 구매", variable=on_var,
+                       font=("Arial", fs + 1, "bold")).pack(anchor="w")
+
+        box = tk.LabelFrame(body, text=" 잔고 ", font=("Arial", fs, "bold"), padx=8, pady=6)
+        box.pack(fill="x", pady=(10, 6))
+        tk.Radiobutton(box, text="잔고 제한 — 충전된 잔고 안에서만 진입 (부족하면 건너뜀)",
+                       variable=force_var, value="limit", font=("Arial", fs)).pack(anchor="w")
+        tk.Radiobutton(box, text="잔고 무시 — 부족해도 강제 진입 (잔고 마이너스 가능)",
+                       variable=force_var, value="force", font=("Arial", fs), fg="#c0392b").pack(anchor="w")
+
+        row = tk.Frame(body)
+        row.pack(fill="x", pady=(6, 4))
+        tk.Label(row, text="증거금 $", font=("Arial", fs)).pack(side="left")
+        tk.Entry(row, textvariable=usd_var, width=7, font=("Arial", fs)).pack(side="left", padx=(2, 12))
+        tk.Label(row, text="레버리지", font=("Arial", fs)).pack(side="left")
+        tk.Entry(row, textvariable=lev_var, width=4, font=("Arial", fs)).pack(side="left", padx=2)
+        tk.Label(row, text="배", font=("Arial", fs)).pack(side="left")
+
+        def save():
+            try:
+                usd = float(usd_var.get())
+                lev = int(float(lev_var.get()))
+                if usd <= 0 or lev <= 0:
+                    raise ValueError
+            except Exception:
+                messagebox.showwarning("입력 오류", "증거금과 레버리지는 0보다 큰 숫자로 넣어줘.", parent=dlg)
+                return
+            was_on = bool(self.auto_cfg.get('on'))
+            self.auto_cfg = {'on': bool(on_var.get()), 'force': force_var.get() == "force", 'usd': usd, 'lev': lev}
+            self._save_auto_entry()
+            if self.auto_cfg['on'] and not was_on:
+                self._auto_primed = set()   # 켤 때 이미 떠 있던 신호는 사지 않음
+                self._cfg(self.auto_entry_status, text="켜짐 — 새 신호부터 진입", fg="#2f7fbf")
+            elif not self.auto_cfg['on']:
+                self._cfg(self.auto_entry_status, text="")
+            self._highlight_auto_entry_button()
+            dlg.destroy()
+
+        btns = tk.Frame(body)
+        btns.pack(fill="x", pady=(10, 0))
+        tk.Button(btns, text="저장", font=("Arial", fs, "bold"), bg="#2f7fbf", fg="white",
+                  padx=14, command=save).pack(side="right")
+        tk.Button(btns, text="취소", font=("Arial", fs), padx=10,
+                  command=dlg.destroy).pack(side="right", padx=6)
+        tk.Label(body, text=f"기록: {os.path.basename(AUTO_ENTRY_LOG)}", font=("Arial", fs - 1),
+                 fg="gray").pack(anchor="w", pady=(8, 0))
+
+    def _auto_entry_check(self, data_list):
+        """판정 롱/숏이 새로 뜬 코인을 $AUTO_ENTRY_USD×AUTO_ENTRY_LEVERAGE로 바로 진입(잔고 무시).
+        카드에 보이는 판정(확률필터 ON/OFF 설정 반영)을 기준으로 한다."""
+        ex = self.current_exchange
+        cur = {}
+        for row in data_list:
+            if not getattr(self, 'prob_filter_on', True) and row.get('verdict_raw') is not None:
+                v = row.get('verdict_raw')
+            else:
+                v = row.get('verdict')
+            cur[row['ticker']] = v if v in ("LONG", "SHORT") else ""
+        primed = ex in self._auto_primed
+        self._auto_primed.add(ex)
+        new_signals = []
+        for t, v in cur.items():
+            prev = self._auto_seen.get((ex, t), "")
+            self._auto_seen[(ex, t)] = v
+            if v and v != prev and primed:
+                new_signals.append((t, v))
+        c = self.auto_cfg
+        if not new_signals or not c.get('on'):
+            return
+        usd, lev = float(c.get('usd', AUTO_ENTRY_USD)), int(c.get('lev', AUTO_ENTRY_LEVERAGE))
+        action = 'open_force' if c.get('force') else 'open'
+
+        held = {p['ticker']: p.get('position_type', '') for p in (self._account[2] if self._account else [])}
+        for t, v in new_signals:
+            ptype = 'long' if v == "LONG" else 'short'
+            if held.get(t) == ptype:
+                self._auto_log(ex, t, ptype, "skip", "같은 방향 포지션 보유 중")
+                continue
+            if t in held:
+                self._auto_log(ex, t, ptype, "skip", "반대 방향 포지션 보유 중")
+                continue
+            try:
+                cmd_id = send_command(action, t, usd, lev, ptype, exchange=ex)
+            except Exception as e:
+                self._auto_log(ex, t, ptype, "fail", f"명령 전송 실패: {e}")
+                continue
+            held[t] = ptype
+            self._cfg(self.auto_entry_status, text=f"{t} {ptype.upper()} 진입 요청…", fg="#c9a800")
+            self._auto_wait(cmd_id, ex, t, ptype, tries=16, usd=usd, lev=lev, action=action)
+
+    def _auto_wait(self, cmd_id, ex, t, ptype, tries, usd=0, lev=0, action='open'):
+        res = find_result(cmd_id)
+        if res:
+            status, msg = res
+            ok = status == 'ok'
+            self._auto_log(ex, t, ptype, "ok" if ok else "fail", msg, usd, lev, action)
+            self._cfg(self.auto_entry_status,
+                      text=f"{time.strftime('%H:%M')} {t} {ptype.upper()} {'진입' if ok else '실패'}",
+                      fg="#2fa84f" if ok else "#e04040")
+            return
+        if tries <= 0:
+            self._auto_log(ex, t, ptype, "fail", "서버 응답 없음", usd, lev, action)
+            self._cfg(self.auto_entry_status, text=f"{t} 응답 없음(서버 확인)", fg="#e04040")
+            return
+        self.root.after(500, lambda: self._auto_wait(cmd_id, ex, t, ptype, tries - 1, usd, lev, action))
+
+    def _auto_log(self, ex, t, ptype, status, msg, usd=0, lev=0, action=''):
+        try:
+            new = not os.path.exists(AUTO_ENTRY_LOG)
+            with open(AUTO_ENTRY_LOG, 'a', newline='', encoding='utf-8') as f:
+                w = csv.writer(f)
+                if new:
+                    w.writerow(['time', 'exchange', 'ticker', 'side', 'usd', 'leverage', 'mode', 'status', 'message'])
+                mode = '잔고무시' if action == 'open_force' else ('잔고내' if action else '')
+                w.writerow([time.strftime('%Y-%m-%d %H:%M:%S'), ex, t, ptype, usd or '', lev or '',
+                            mode, status, msg])
+        except Exception as e:
+            print(f"자동진입 기록 실패: {e}")
+
     def _load_prob_filter(self):
         try:
             with open(PROB_FILTER_FILE, 'r', encoding='utf-8') as f:
@@ -3167,6 +3348,11 @@ class TradingClient:
                     "지금 시점까지의 지표만 쓰는 예측이라 24h·3일 등락 칸(지난 등락)과는 다릅니다."),
             ("확률필터 ON/OFF 버튼", "ON(기본)이면 서버가 확률모델로 걸러낸 판정을, OFF면 걸러내기 전 원래 판정을 보여줍니다. "
                     "화면 표시만 바뀌고 서버 판정·수집 로그는 그대로입니다. 기기마다 따로 기억됩니다."),
+            ("자동진입 버튼", "누르면 설정 창이 뜹니다. '신호 뜨면 자동 구매'를 켜면 판정 롱/숏이 새로 뜰 때마다 "
+                    "정한 증거금·레버리지(기본 $200×10배)로 바로 진입합니다. 켜는 순간 이미 떠 있던 신호는 건너뛰고, "
+                    "같은 코인에 포지션이 있으면 건너뜁니다. 잔고 제한은 충전된 잔고 안에서만(부족하면 건너뜀), "
+                    "잔고 무시는 부족해도 강제로 들어가서 잔고가 마이너스가 될 수 있습니다. 클라이언트가 켜져 있을 때만 "
+                    "동작하고, 결과는 버튼 옆과 auto_entry_log.csv에 남습니다. 기기마다 따로 기억됩니다."),
             ("순위 탭", "상단 '코인 | 순위 | 포지션' 중 순위. 점수와 별개로 전 종목을 4h 예상수익 순으로 줄 세워 "
                     "롱 상위 10(높은 순)·숏 상위 10(낮은 순)을 보여줍니다. 판정과 방향이 같은 줄은 색으로 강조. "
                     "줄을 누르면 티커가 입력되고, 위아래로 드래그해 스크롤합니다. "

@@ -1,6 +1,6 @@
 # Pyramide 설정값 정리
 
-마지막 갱신: 2026-11-12 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
+마지막 갱신: 2026-11-21 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
 
 ## 바꾸는 법
 
@@ -77,6 +77,7 @@
 | 버튼 | 저장 파일 | 뜻 |
 |---|---|---|
 | 확률필터 ON/OFF | `prob_filter.json` | OFF면 필터 적용 전 판정을 표시(서버 판정·로그는 그대로) |
+| 자동진입 (설정 창) | `auto_entry.json`, 기록 `auto_entry_log.csv` | 켜면 판정 롱/숏이 새로 뜰 때 증거금·레버리지(기본 $200×10)로 바로 진입. 잔고 제한=충전 잔고 안에서만(부족하면 건너뜀), 잔고 무시=서버 `open_force`로 강제 진입(잔고 마이너스 가능). 클라이언트 켜져 있을 때만 |
 | 순위 탭 | – | 4h 예상수익(exp4) 순 롱/숏 상위 10. 서버가 구버전이면 p_up 순 |
 
 ## 7. 변경 이력(설정 관련)
@@ -97,3 +98,4 @@
 | 10/29 | 롱 조건식 v8 파일 추가(클라 색칠용, 자동). VERDICT_LONG_COND는 변경 없음 | 새 파일이라 원본 없음(SETTINGS 백업: backups\20261029) |
 | 10/30 | PROB_LONG_MIN 0.55→0.50 | backups\20261030_problong |
 | 11/12 | PROB_LONG_MIN 0.50→0.55 (복귀, 사용자 승인) | backups\20261112_problong |
+| 11/21 | 클라 자동진입 버튼(잔고 제한/무시), 서버 open_force 명령 추가 | backups\20261121_autoentry |

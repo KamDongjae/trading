@@ -4579,7 +4579,7 @@ def srv_get_candles(ticker, interval=None, exchange='bithumb'):
         return False, f"차트 데이터 저장 실패: {e}"
     return True, f"차트 데이터 준비 완료 ({interval}): {path}"
 
-def srv_open(ticker, position_type, amount_won, leverage, exchange='bithumb'):
+def srv_open(ticker, position_type, amount_won, leverage, exchange='bithumb', force=False):
     """[2026-07-26 변경] 바이낸스 미상장 코인도 거래 가능하게 확장했다. 바이낸스 USD가
     없으면 그 거래소(빗썸/업비트)의 KRW 시세로 대신 체결한다 — 증거금(amount_won)은
     지금까지와 동일하게 USD로 결제되고, 포지션의 진입가/현재가/미실현손익은 KRW로
@@ -4594,9 +4594,11 @@ def srv_open(ticker, position_type, amount_won, leverage, exchange='bithumb'):
     if leverage <= 0: leverage = DEFAULT_LEVERAGE
     entry_fee = (amount_won * leverage) * FEE_RATE
     total_cost = amount_won + entry_fee
-    if balance < total_cost:
+    # [2026-11-21 추가] force=True(클라 '자동진입' 체크박스의 open_force 명령)면 잔고·유지증거금
+    # 확인을 건너뛰고 무조건 진입한다. 잔고는 마이너스까지 내려갈 수 있다(아래 0 클램프도 건너뜀).
+    if balance < total_cost and not force:
         return False, f"잔고 부족 (현재 ${balance:,.2f})"
-    if CROSS_MARGIN_MODE:
+    if CROSS_MARGIN_MODE and not force:
         # 진입 직후 남는 여유현금이 유지증거금(전체 포지션 명목가치×비율)보다 적으면
         # 가격이 1도 안 움직여도(수수료/슬리피지만으로) 바로 청산되는 상황이 생긴다.
         # 그런 무리한 진입은 미리 막는다. (existing_notional엔 지금 물타기하려는 티커의
@@ -4624,7 +4626,7 @@ def srv_open(ticker, position_type, amount_won, leverage, exchange='bithumb'):
         return False, "시세 없음 (바이낸스에도, 해당 거래소 KRW 시세에도 가격이 없습니다)"
     fill_price = current_price * (1 + SLIPPAGE_RATE) if position_type == "long" else current_price * (1 - SLIPPAGE_RATE)
     balance -= total_cost
-    if balance < 0: balance = 0
+    if balance < 0 and not force: balance = 0
     # 진입 당시 '유효 점수'(추세추종/매집형 중 더 높은 쪽) 저장 — Predict Score의
     # Level 항목이 "진입 당시 원본 스코어"를 기준으로 하기 때문에 이 시점에 스냅샷을 남긴다.
     # (물타기/불타기로 추가 진입할 땐 최초 진입 점수를 그대로 유지 — Level은 '처음' 판단 기준이라서)
@@ -5124,6 +5126,8 @@ def process_commands():
                 ok, msg = srv_bank_withdraw(amount)
             elif action == 'open':
                 ok, msg = srv_open(ticker, ptype, amount, lev, exchange=exchange)
+            elif action == 'open_force':
+                ok, msg = srv_open(ticker, ptype, amount, lev, exchange=exchange, force=True)
             elif action == 'open_manual':
                 ok, msg = srv_open_manual(ticker, ptype, entry_price, amount, lev, exchange=exchange)
             elif action == 'close':
