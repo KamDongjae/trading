@@ -2,7 +2,7 @@
 
 ## 2026-11-21 (수동, 04시 KST) — 클라이언트 자동진입
 
-- **trading_client.py**: 상단 '자동진입' 버튼 → 설정 창(신호 뜨면 자동 구매 on/off, 잔고 제한/잔고 무시, 증거금·레버리지 기본 $200×10). 판정 롱/숏이 새로 뜬 코인만 진입(켤 때 떠 있던 신호·같은 코인 보유 중이면 건너뜀). 클라 켜져 있을 때만. 설정 `auto_entry.json`, 기록 `auto_entry_log.csv`. 도움말에 항목 추가
+- **trading_client.py**: 상단 '자동진입' 버튼 → 설정 창(신호 뜨면 자동 구매 on/off, 잔고 제한/잔고 무시, 증거금·레버리지 기본 $200×10, 진입 후 N시간 자동 정리 기본 12h·0=안 함 — 자동진입 포지션만, `auto_entry_positions.json`). 판정 롱/숏이 새로 뜬 코인만 진입(켤 때 떠 있던 신호·같은 코인 보유 중이면 건너뜀). 클라 켜져 있을 때만. 설정 `auto_entry.json`, 기록 `auto_entry_log.csv`. 도움말에 항목 추가
 - **trading_server.py**: `srv_open(..., force=False)` 인자 + 명령 `open_force` — force면 잔고·유지증거금 확인 생략, 잔고 0 클램프 생략(마이너스 허용). 기존 `open`은 그대로
 - 서버·클라 재시작 필요. 백업: backups\20261121_autoentry
 

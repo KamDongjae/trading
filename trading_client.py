@@ -50,6 +50,8 @@ AUTO_ENTRY_FILE = os.path.join(SCRIPT_DIR, "auto_entry.json")  # [2026-11-21 추
 AUTO_ENTRY_LOG = os.path.join(SCRIPT_DIR, "auto_entry_log.csv")  # 자동진입 기록
 AUTO_ENTRY_USD = 200        # 자동진입 증거금($) 기본값 — 설정 창에서 바꿀 수 있음
 AUTO_ENTRY_LEVERAGE = 10    # 자동진입 레버리지 기본값
+AUTO_ENTRY_HOLD_H = 12      # 자동진입 포지션 자동 정리(시간) 기본값, 0이면 안 함
+AUTO_POS_FILE = os.path.join(SCRIPT_DIR, "auto_entry_positions.json")  # 자동진입으로 산 포지션(정리 예정 시각)
 PROB_FILTER_FILE = os.path.join(SCRIPT_DIR, "prob_filter.json")  # [2026-10-13 추가] 확률필터 표시 ON/OFF (기기별 설정)
 SIGNAL_SINCE_FILE = os.path.join(SCRIPT_DIR, "signal_since.json")  # [2026-10-12 추가] 카드 롱/숏 신호 시작시각 저장
 CUSTOM_CONDITIONS_FILE = os.path.join(SCRIPT_DIR, "custom_conditions.json")  # [2026-07-21 추가] 사용자 정의 조건식 저장
@@ -648,6 +650,8 @@ class TradingClient:
         self._highlight_auto_entry_button()
         self.auto_entry_status = tk.Label(exchange_bar, text="", font=("Arial", self.FONT_SMALL), fg="gray")
         self.auto_entry_status.pack(side="left", padx=2)
+        self._auto_pos = self._load_auto_pos()   # 자동진입 포지션 {티커: {t, side, ex, hold_h}}
+        self._auto_closing = set()
         self._auto_seen = {}       # (거래소, 티커) -> 직전 판정
         self._auto_primed = set()  # 첫 스냅샷을 이미 본 거래소(켤 때 떠 있던 신호는 안 삼)
 
@@ -1512,6 +1516,10 @@ class TradingClient:
         if acc:
             self._account = acc
             self._update_account_labels()
+            try:
+                self._auto_close_check()
+            except Exception as e:
+                print(f"자동정리 확인 실패: {e}")
             if current_margin_mode != self._last_margin_mode_shown:
                 self._highlight_margin_mode(current_margin_mode)
         self.root.after(1000, self.poll_files)
@@ -2705,7 +2713,8 @@ class TradingClient:
 
     # ---------- [2026-11-21 추가] 자동진입 ----------
     def _load_auto_entry(self):
-        cfg = {'on': False, 'force': False, 'usd': AUTO_ENTRY_USD, 'lev': AUTO_ENTRY_LEVERAGE}
+        cfg = {'on': False, 'force': False, 'usd': AUTO_ENTRY_USD, 'lev': AUTO_ENTRY_LEVERAGE,
+               'hold_h': AUTO_ENTRY_HOLD_H}
         try:
             with open(AUTO_ENTRY_FILE, 'r', encoding='utf-8') as f:
                 cfg.update(json.load(f))
@@ -2724,7 +2733,8 @@ class TradingClient:
         c = self.auto_cfg
         if c.get('on'):
             mode = "잔고무시" if c.get('force') else "잔고내"
-            self._cfg(self.btn_auto_entry, text=f"자동진입 ON ${c['usd']:g}×{c['lev']} {mode}",
+            hold = f" {c.get('hold_h', 0):g}h정리" if c.get('hold_h') else ""
+            self._cfg(self.btn_auto_entry, text=f"자동진입 ON ${c['usd']:g}×{c['lev']} {mode}{hold}",
                       bg="#c0392b" if c.get('force') else "#2fa84f", fg="white")
         else:
             self._cfg(self.btn_auto_entry, text="자동진입 OFF", bg="#555555", fg="white")
@@ -2742,6 +2752,7 @@ class TradingClient:
         force_var = tk.StringVar(value="force" if c.get('force') else "limit")
         usd_var = tk.StringVar(value=f"{c.get('usd', AUTO_ENTRY_USD):g}")
         lev_var = tk.StringVar(value=str(c.get('lev', AUTO_ENTRY_LEVERAGE)))
+        hold_var = tk.StringVar(value=f"{c.get('hold_h', AUTO_ENTRY_HOLD_H):g}")
 
         tk.Label(body, text="판정 롱/숏이 새로 뜨면 바로 진입 (클라이언트가 켜져 있을 때만)",
                  font=("Arial", fs), fg="gray").pack(anchor="w", pady=(0, 8))
@@ -2762,18 +2773,26 @@ class TradingClient:
         tk.Label(row, text="레버리지", font=("Arial", fs)).pack(side="left")
         tk.Entry(row, textvariable=lev_var, width=4, font=("Arial", fs)).pack(side="left", padx=2)
         tk.Label(row, text="배", font=("Arial", fs)).pack(side="left")
+        row2 = tk.Frame(body)
+        row2.pack(fill="x", pady=(4, 0))
+        tk.Label(row2, text="진입 후", font=("Arial", fs)).pack(side="left")
+        tk.Entry(row2, textvariable=hold_var, width=4, font=("Arial", fs)).pack(side="left", padx=2)
+        tk.Label(row2, text="시간 지나면 자동 정리 (0 = 안 함, 자동진입 포지션만)",
+                 font=("Arial", fs)).pack(side="left")
 
         def save():
             try:
                 usd = float(usd_var.get())
                 lev = int(float(lev_var.get()))
-                if usd <= 0 or lev <= 0:
+                hold_h = float(hold_var.get() or 0)
+                if usd <= 0 or lev <= 0 or hold_h < 0:
                     raise ValueError
             except Exception:
-                messagebox.showwarning("입력 오류", "증거금과 레버리지는 0보다 큰 숫자로 넣어줘.", parent=dlg)
+                messagebox.showwarning("입력 오류", "증거금·레버리지는 0보다 큰 숫자, 정리 시간은 0 이상으로 넣어줘.", parent=dlg)
                 return
             was_on = bool(self.auto_cfg.get('on'))
-            self.auto_cfg = {'on': bool(on_var.get()), 'force': force_var.get() == "force", 'usd': usd, 'lev': lev}
+            self.auto_cfg = {'on': bool(on_var.get()), 'force': force_var.get() == "force", 'usd': usd, 'lev': lev,
+                             'hold_h': hold_h}
             self._save_auto_entry()
             if self.auto_cfg['on'] and not was_on:
                 self._auto_primed = set()   # 켤 때 이미 떠 있던 신호는 사지 않음
@@ -2841,6 +2860,10 @@ class TradingClient:
             status, msg = res
             ok = status == 'ok'
             self._auto_log(ex, t, ptype, "ok" if ok else "fail", msg, usd, lev, action)
+            if ok:
+                self._auto_pos[t] = {'t': time.time(), 'side': ptype, 'ex': ex,
+                                     'hold_h': float(self.auto_cfg.get('hold_h', 0) or 0)}
+                self._save_auto_pos()
             self._cfg(self.auto_entry_status,
                       text=f"{time.strftime('%H:%M')} {t} {ptype.upper()} {'진입' if ok else '실패'}",
                       fg="#2fa84f" if ok else "#e04040")
@@ -2851,6 +2874,67 @@ class TradingClient:
             return
         self.root.after(500, lambda: self._auto_wait(cmd_id, ex, t, ptype, tries - 1, usd, lev, action))
 
+    def _load_auto_pos(self):
+        try:
+            with open(AUTO_POS_FILE, 'r', encoding='utf-8') as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_auto_pos(self):
+        try:
+            with open(AUTO_POS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self._auto_pos, f)
+        except Exception as e:
+            print(f"자동진입 포지션 저장 실패: {e}")
+
+    def _auto_close_check(self):
+        """자동진입으로 산 포지션이 정한 시간(hold_h)을 넘기면 정리(close) 명령을 보낸다.
+        클라이언트가 꺼져 있던 동안 시간이 지났으면, 켜진 직후 바로 정리한다.
+        포지션이 이미 없어졌으면(수동 정리·청산) 목록에서만 지운다."""
+        if not self._auto_pos:
+            return
+        held = {p['ticker'] for p in (self._account[2] if self._account else [])}
+        changed = False
+        now = time.time()
+        for t, info in list(self._auto_pos.items()):
+            if t not in held:
+                if t not in self._auto_closing and now - info.get('t', now) > 120:
+                    del self._auto_pos[t]   # 진입 직후 스냅샷 반영 전(2분)엔 지우지 않음
+                    changed = True
+                continue
+            h = float(info.get('hold_h', 0) or 0)
+            if h <= 0 or t in self._auto_closing or now - info.get('t', now) < h * 3600:
+                continue
+            try:
+                cmd_id = send_command('close', t, exchange=info.get('ex', self.current_exchange))
+            except Exception as e:
+                self._auto_log(info.get('ex', ''), t, info.get('side', ''), "fail", f"정리 명령 실패: {e}", action='close')
+                continue
+            self._auto_closing.add(t)
+            self._cfg(self.auto_entry_status, text=f"{t} {h:g}h 경과 — 정리 요청…", fg="#c9a800")
+            self._auto_close_wait(cmd_id, t, info, tries=16)
+        if changed:
+            self._save_auto_pos()
+
+    def _auto_close_wait(self, cmd_id, t, info, tries):
+        res = find_result(cmd_id)
+        if res or tries <= 0:
+            status, msg = res if res else ('fail', '서버 응답 없음')
+            ok = status == 'ok'
+            self._auto_log(info.get('ex', ''), t, info.get('side', ''), "ok" if ok else "fail",
+                           f"{float(info.get('hold_h', 0)):g}h 자동정리: {msg}", action='close')
+            self._cfg(self.auto_entry_status,
+                      text=f"{time.strftime('%H:%M')} {t} {'자동정리' if ok else '정리 실패'}",
+                      fg="#2f7fbf" if ok else "#e04040")
+            self._auto_closing.discard(t)
+            if ok:
+                self._auto_pos.pop(t, None)
+                self._save_auto_pos()
+            return
+        self.root.after(500, lambda: self._auto_close_wait(cmd_id, t, info, tries - 1))
+
     def _auto_log(self, ex, t, ptype, status, msg, usd=0, lev=0, action=''):
         try:
             new = not os.path.exists(AUTO_ENTRY_LOG)
@@ -2858,7 +2942,7 @@ class TradingClient:
                 w = csv.writer(f)
                 if new:
                     w.writerow(['time', 'exchange', 'ticker', 'side', 'usd', 'leverage', 'mode', 'status', 'message'])
-                mode = '잔고무시' if action == 'open_force' else ('잔고내' if action else '')
+                mode = {'open_force': '잔고무시', 'open': '잔고내', 'close': '자동정리'}.get(action, '')
                 w.writerow([time.strftime('%Y-%m-%d %H:%M:%S'), ex, t, ptype, usd or '', lev or '',
                             mode, status, msg])
         except Exception as e:
@@ -3352,7 +3436,9 @@ class TradingClient:
                     "정한 증거금·레버리지(기본 $200×10배)로 바로 진입합니다. 켜는 순간 이미 떠 있던 신호는 건너뛰고, "
                     "같은 코인에 포지션이 있으면 건너뜁니다. 잔고 제한은 충전된 잔고 안에서만(부족하면 건너뜀), "
                     "잔고 무시는 부족해도 강제로 들어가서 잔고가 마이너스가 될 수 있습니다. 클라이언트가 켜져 있을 때만 "
-                    "동작하고, 결과는 버튼 옆과 auto_entry_log.csv에 남습니다. 기기마다 따로 기억됩니다."),
+                    "동작하고, 결과는 버튼 옆과 auto_entry_log.csv에 남습니다. '진입 후 N시간 지나면 자동 정리'(기본 12, 0=안 함)는 "
+                    "자동진입으로 산 포지션만 정리하며, 클라이언트가 꺼져 있다가 켜지면 시간이 지난 것부터 바로 정리합니다. "
+                    "기기마다 따로 기억됩니다."),
             ("순위 탭", "상단 '코인 | 순위 | 포지션' 중 순위. 점수와 별개로 전 종목을 4h 예상수익 순으로 줄 세워 "
                     "롱 상위 10(높은 순)·숏 상위 10(낮은 순)을 보여줍니다. 판정과 방향이 같은 줄은 색으로 강조. "
                     "줄을 누르면 티커가 입력되고, 위아래로 드래그해 스크롤합니다. "
