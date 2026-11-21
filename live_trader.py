@@ -38,7 +38,8 @@ live_trader.py — Pyramide 판정 신호 → 바이낸스 USDT-M 선물 실전 
   3) 켜 두는 동안만 동작. 꺼도 거래소 포지션은 그대로고, 다시 켜면 이어서 정리 시간을 관리한다.
      (꺼져 있는 동안 정리 시간이 지났으면 켜자마자 정리)
 
-실행 중 명령어: status / pause / resume / close BTCUSDT / closeall / quit / help
+실행 중 명령어: status / pause / resume / close BTCUSDT / closeall / manual / mclose BTCUSDT / quit / help
+  (manual = 바이낸스 앱 등에서 직접 연 수동 포지션 보기, mclose = 사용자가 요청할 때만 그 수동 포지션 정리. 봇은 수동 포지션을 절대 자동으로 건드리지 않음)
 기록: live_trades.csv(거래), live_log.txt(로그), live_state.json(보유 중 포지션)
 """
 import os
@@ -476,6 +477,45 @@ class Trader:
                 return cand
         return None
 
+    # --- 수동 포지션(봇이 안 연 것): 보기만, 사용자가 요청할 때만 정리 ---
+    def manual_positions(self):
+        """거래소 포지션 중 봇이 연 것이 아닌 것 목록. 모의 모드면 빈 목록."""
+        if self.dry:
+            return []
+        bot = {(t["symbol"], t["direction"]) for t in self.open_trades().values()}
+        out = []
+        for sym, lst in self.bn.positions().items():
+            for p in lst:
+                if (sym, p["side"]) not in bot:
+                    out.append(dict(p, symbol=sym))
+        return out
+
+    def close_manual(self, symbol, side):
+        """수동 포지션 하나를 시장가로 정리(사용자 요청 때만 호출)."""
+        if self.dry:
+            log("ℹ️ 모의 모드에선 수동 포지션을 정리하지 않음")
+            return False
+        if any(t["symbol"] == symbol and t["direction"] == side for t in self.open_trades().values()):
+            log(f"ℹ️ {symbol} {side} 는 봇 포지션이라 수동 정리 대상 아님 — close 를 써")
+            return False
+        lst = [p for p in self.bn.positions().get(symbol, []) if p["side"] == side]
+        if not lst:
+            log(f"ℹ️ {symbol} {side} 수동 포지션 없음")
+            return False
+        if symbol not in self.bn.symbols:
+            self.bn.load_symbols()
+        info = self.bn.symbols.get(symbol)
+        qty = floor_step(lst[0]["qty"], info["step"]) if info else Decimal(str(lst[0]["qty"]))
+        try:
+            res = self.bn.market_order(symbol, "SELL" if side == "LONG" else "BUY", fmt_qty(qty),
+                                       position_side=side, reduce_only=True)
+        except BinanceError as e:
+            log(f"❌ {symbol} 수동 포지션 정리 실패: {e}")
+            return False
+        px = float(res.get("avgPrice") or 0) or lst[0]["mark"]
+        log(f"🔚 수동 포지션 정리 {symbol} {side} 수량 {fmt_qty(qty)} @ {px:g} (미실현손익 약 {lst[0]['upnl']:+.2f} USDT)")
+        return True
+
     def open_trades(self):
         return {k: v for k, v in self.state["trades"].items() if v.get("status") == "open"}
 
@@ -708,6 +748,8 @@ HELP = """
   pause / resume  새 진입 멈춤 / 다시 시작 (보유 포지션 정리는 계속됨)
   close BTCUSDT   그 포지션 바로 정리
   closeall        봇 포지션 전부 바로 정리
+  manual          수동 포지션(바이낸스 앱 등에서 직접 연 것) 보기
+  mclose ZILUSDT  그 수동 포지션 정리 (yes 확인 후)
   quit            종료 (포지션은 그대로 두고, 다시 켜면 이어서 관리)
 """
 
@@ -742,6 +784,24 @@ def command_loop(tr):
                 for k, t in hit:
                     tr.close_trade(k, t, "수동 명령 정리")
                 tr.save_state()
+            elif cmd == "manual":
+                lst = tr.manual_positions()
+                print(f"──────── 수동 포지션 {len(lst)}개 (봇이 관리 안 함) ────────")
+                for p in lst:
+                    print(f" {p['symbol']:<14}{p['side']:<6}수량 {p['qty']:g} 진입 {p['entry']:g} 현재 {p['mark']:g} "
+                          f"미실현 {p['upnl']:+.2f} USDT")
+            elif cmd == "mclose" and args:
+                sym = args[0].upper()
+                sym = sym if sym.endswith("USDT") else sym + "USDT"
+                hit = [p for p in tr.manual_positions() if p["symbol"] == sym]
+                if not hit:
+                    print(f"수동 포지션에 {sym} 없음")
+                for p in hit:
+                    ok = input(f"⚠️ 수동 포지션 {sym} {p['side']} (미실현 {p['upnl']:+.2f}) 을 시장가로 정리할까? yes 입력: ").strip().lower()
+                    if ok == "yes":
+                        tr.close_manual(sym, p["side"])
+                    else:
+                        print("취소")
             elif cmd == "closeall":
                 for k, t in list(tr.open_trades().items()):
                     tr.close_trade(k, t, "수동 명령 전체 정리")
