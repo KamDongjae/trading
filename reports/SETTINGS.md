@@ -78,7 +78,7 @@
 | 버튼 | 저장 파일 | 뜻 |
 |---|---|---|
 | 확률필터 ON/OFF | `prob_filter.json` | OFF면 필터 적용 전 판정을 표시(서버 판정·로그는 그대로) |
-| 자동진입 (설정 창) | `auto_entry.json`, 기록 `auto_entry_log.csv` | 켜면 판정 롱/숏이 새로 뜰 때 증거금·레버리지(기본 $30×3, 하락장이면 롱 자동진입 안 함 체크 기본 켜짐 — `skip_bear_long`)로 바로 진입. 잔고 제한=충전 잔고 안에서만(부족하면 건너뜀), 잔고 무시=서버 `open_force`로 강제 진입(잔고 마이너스 가능). 클라이언트 켜져 있을 때만. 바이낸스 선물에 없는 코인(NOFUT)은 롱·숏 모두 자동진입 안 함(롱 판정 표시는 그대로). "진입 후 N시간 자동 정리"(기본 48, 0=안 함)는 자동진입 포지션만 정리(`auto_entry_positions.json`), 클라가 꺼져 있던 동안 시간이 지났으면 켜질 때 정리 |
+| 자동진입 (설정 창) | `auto_entry.json`, 기록 `auto_entry_log.csv` | 켜면 판정 롱/숏이 새로 뜰 때 증거금·레버리지(기본 $30×3, 하락장이면 롱 자동진입 안 함 체크 기본 켜짐 — `skip_bear_long`, 강한 숏(4h예상 -1% 이하)은 진입 금액 2배 기본 켜짐 — `strong_x2`, `AUTO_ENTRY_STRONG_SHORT_EXP4`=-1.0·`AUTO_ENTRY_STRONG_MULT`=2.0)로 바로 진입. 잔고 제한=충전 잔고 안에서만(부족하면 건너뜀), 잔고 무시=서버 `open_force`로 강제 진입(잔고 마이너스 가능). 클라이언트 켜져 있을 때만. 바이낸스 선물에 없는 코인(NOFUT)은 롱·숏 모두 자동진입 안 함(롱 판정 표시는 그대로). "진입 후 N시간 자동 정리"(기본 48, 0=안 함)는 자동진입 포지션만 정리(`auto_entry_positions.json`), 클라가 꺼져 있던 동안 시간이 지났으면 켜질 때 정리 |
 | 순위 탭 | – | 4h 예상수익(exp4) 순 롱/숏 상위 10. 서버가 구버전이면 p_up 순 |
 
 ## 7. 변경 이력(설정 관련)
@@ -101,5 +101,6 @@
 | 11/12 | PROB_LONG_MIN 0.50→0.55 (복귀, 사용자 승인) | backups\20261112_problong |
 | 11/21 | 클라 자동진입 버튼(잔고 제한/무시, N시간 자동 정리), 서버 open_force 명령 추가 | backups\20261121_autoentry |
 | 11/21 | SHORT_REQUIRE_FUTURES=True(숏 판정 바이낸스 선물 코인만), 자동진입은 바이낸스 선물 없는 코인 롱·숏 모두 건너뜀 (사용자 요청) | backups\20261121_binance_short |
+| 11/21 | 자동진입·live_trader.py 강한 숏(4h예상 ≤-1%) 진입 금액 2배 기본 켜짐(1년 백테스트 +$887→+$1,324) | backups\20261121_strong_short |
 | 11/21 | 자동진입 기본값 $30·3배·48h 정리·하락장 롱 제외(사용자 요청, 1년 백테스트 3배 48h $30: +$887·청산 16·최악월 -$20) | backups\20261121_autoentry_defaults |
 | 11/21 | 자동진입 기본값 레버리지 10→5배, 자동 정리 12→24h (trading_client.py AUTO_ENTRY_LEVERAGE/AUTO_ENTRY_HOLD_H, 이미 저장된 auto_entry.json 설정은 그대로) | backups\20261121_autoentry_24h5x |
