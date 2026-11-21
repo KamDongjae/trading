@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, colorchooser, filedialog
 import os
 import csv
+from datetime import datetime
 import json
 import re
 import time
@@ -752,10 +753,12 @@ class TradingClient:
         self.history_win.title("거래 기록 (진행중 + 청산)")
         self.history_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
 
-        cols = ("status", "type", "ticker", "direction", "amount", "leverage", 
+        # [2026-11-21] '자동' 열 추가 — 자동진입 버튼으로 산 거래면 ✔ (이 기기의 auto_entry_log.csv 기준)
+        cols = ("status", "auto", "type", "ticker", "direction", "amount", "leverage",
                 "entry_price", "current_exit_price", "pnl", "pnl_rate_pct", "time")
-        display_names = ("상태", "유형", "티커", "방향", "금액($)", "배율", 
+        display_names = ("상태", "자동", "유형", "티커", "방향", "금액($)", "배율",
                         "진입가", "현재/청산가", "손익($)", "수익률", "시간")
+        auto_idx = self._auto_entry_index()
 
         tree = ttk.Treeview(self.history_win, columns=cols, show="headings", height=28)
 
@@ -788,6 +791,7 @@ class TradingClient:
             tree.column(col, width=100, anchor="center")
         
         tree.column("ticker", width=85)
+        tree.column("auto", width=50)
         tree.column("amount", width=120)
         tree.column("pnl", width=125)
         tree.column("pnl_rate_pct", width=85)
@@ -797,6 +801,7 @@ class TradingClient:
         for p in open_positions:
             values = (
                 "진행중",
+                "✔" if self._is_auto_entry(auto_idx, p['ticker'], p['position_type'], p.get('entry_time', '')) else "",
                 "포지션",
                 p['ticker'],
                 p['position_type'].upper(),
@@ -814,6 +819,7 @@ class TradingClient:
         for rec in reversed(history):
             values = (
                 "청산",
+                "✔" if self._is_auto_entry(auto_idx, rec['ticker'], rec['direction'], rec.get('entry_time', '')) else "",
                 rec['type'],
                 rec['ticker'],
                 rec['direction'],
@@ -828,7 +834,7 @@ class TradingClient:
             tree.insert("", "end", values=values)
 
         if not open_positions and not history:
-            tree.insert("", "end", values=("아직 기록이 없습니다.", "", "", "", "", "", "", "", "", "", ""))
+            tree.insert("", "end", values=("아직 기록이 없습니다.",) + ("",) * (len(cols) - 1))
 
         tree.pack(fill="both", expand=True, padx=10, pady=10)
 
@@ -842,6 +848,40 @@ class TradingClient:
                   font=("Arial", 11, "bold"), padx=30, pady=8).pack(side="left", padx=6)
         tk.Button(btn_bar, text="청산 기록 초기화", command=self._reset_history_clicked,
                   bg="#cc4444", fg="white", font=("Arial", 11, "bold"), padx=20, pady=8).pack(side="left", padx=6)
+
+    def _auto_entry_index(self):
+        """auto_entry_log.csv에서 성공한 자동진입 [(티커, 'long'|'short', epoch)]."""
+        out = []
+        try:
+            with open(AUTO_ENTRY_LOG, 'r', encoding='utf-8') as f:
+                for r in csv.DictReader(f):
+                    if r.get('status') != 'ok' or r.get('mode') == '자동정리':
+                        continue
+                    try:
+                        ts = datetime.strptime(r['time'], '%Y-%m-%d %H:%M:%S').timestamp()
+                    except Exception:
+                        continue
+                    out.append((r.get('ticker', ''), (r.get('side') or '').lower(), ts))
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            print(f"자동진입 기록 읽기 실패: {e}")
+        return out
+
+    @staticmethod
+    def _is_auto_entry(idx, ticker, side, entry_time):
+        """진입 시각이 자동진입 기록 시각과 몇 초~3분 안으로 맞으면 자동진입으로 본다
+        (서버 진입 직후 클라이언트가 결과를 받아 기록하므로 기록이 조금 늦다)."""
+        if not idx:
+            return False
+        sd = str(side).lower()
+        sd = 'long' if sd in ('long', '롱') else ('short' if sd in ('short', '숏') else sd)
+        try:
+            et = entry_time.timestamp() if isinstance(entry_time, datetime) else \
+                datetime.strptime(str(entry_time)[:19], '%Y-%m-%d %H:%M:%S').timestamp()
+        except Exception:
+            return False
+        return any(t == ticker and s == sd and -30 <= ts - et <= 180 for t, s, ts in idx)
 
     def _reset_history_clicked(self):
         """'끝난 것만 삭제' — 청산/진입 로그(trade_history_usd.csv)만 지운다.

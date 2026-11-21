@@ -3410,7 +3410,7 @@ def process_ticker(ticker):
             "rsi_dwell_os_h": rsi_dwell_os_h, "rsi_dwell_ob_h": rsi_dwell_ob_h,
             "bb_dwell_low_h": bb_dwell_low_h, "bb_dwell_high_h": bb_dwell_high_h,
             "hl_flag": hl_flag,
-            "_pmf": _pm_ticker_features(df),
+            "_pmf": _pm_ticker_features(df, ticker, 'bithumb'),
         }
     except Exception as e:
         print(f"[{ticker}] 데이터 수집 실패: {e}")
@@ -3617,7 +3617,7 @@ def process_ticker_upbit(ticker):
             "components": components,
             "max_lev": max_lev,
             "liq_risk": liq_risk,
-            "_pmf": _pm_ticker_features(df),
+            "_pmf": _pm_ticker_features(df, ticker, 'upbit'),
         }
     except Exception as e:
         print(f"[업비트:{ticker}] 데이터 수집 실패: {e}")
@@ -3768,11 +3768,35 @@ def _short_stop_apply(r, exchange='bithumb'):
 PROB_LONG_MIN = 0.55
 PROB_SHORT_MAX = 0.45
 
-def _pm_ticker_features(df):
-    if prob_model is None or CANDLE_INTERVAL != "1h":
+_pm_feat_cache = {}   # (거래소, 티커) -> (시각, 피처) — 기준봉이 1h가 아닐 때 따로 받은 1h봉 피처 캐시
+_PM_FEAT_TTL = 300
+
+
+def _pm_ticker_features(df, ticker=None, exchange='bithumb'):
+    """확률모델 피처. 모델은 1h봉으로 학습돼서 반드시 1h봉으로 계산해야 한다.
+    [2026-11-21 수정] 예전엔 기준봉이 1h가 아니면(2h/6h/12h) 그냥 None을 돌려줘서 p_up이 비고,
+    그 결과 확률필터·판정 v2가 통째로 꺼진 채 옛 점수 판정이 그대로 나갔다(순위 탭도 빈 화면).
+    이제 기준봉이 1h가 아니면 그 티커의 1h봉을 따로 받아서(5분 캐시) 계산한다."""
+    if prob_model is None:
         return None
     try:
-        return prob_model.ticker_features(df)
+        if CANDLE_INTERVAL == "1h":
+            return prob_model.ticker_features(df)
+        if not ticker:
+            return None
+        key = (exchange, ticker)
+        hit = _pm_feat_cache.get(key)
+        if hit and time.time() - hit[0] < _PM_FEAT_TTL:
+            return hit[1]
+        if exchange == 'upbit':
+            d1 = fetch_candlestick_upbit(ticker, chart_intervals="1h")
+        else:
+            d1 = fetch_candlestick(ticker, chart_intervals="1h")
+        if d1 is None or len(d1) < 30:
+            return hit[1] if hit else None
+        f = prob_model.ticker_features(d1.astype(float))
+        _pm_feat_cache[key] = (time.time(), f)
+        return f
     except Exception:
         return None
 
