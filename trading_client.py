@@ -2856,7 +2856,9 @@ class TradingClient:
         카드에 보이는 판정(확률필터 ON/OFF 설정 반영)을 기준으로 한다."""
         ex = self.current_exchange
         cur = {}
+        rows_by_t = {}  # [2026-11-22 수동] 바이낸스 선물 여부(liq_risk NOFUT) 확인용
         for row in data_list:
+            rows_by_t[row['ticker']] = row
             if not getattr(self, 'prob_filter_on', True) and row.get('verdict_raw') is not None:
                 v = row.get('verdict_raw')
             else:
@@ -2879,6 +2881,10 @@ class TradingClient:
         held = {p['ticker']: p.get('position_type', '') for p in (self._account[2] if self._account else [])}
         for t, v in new_signals:
             ptype = 'long' if v == "LONG" else 'short'
+            # [2026-11-22 수동, 사용자 요청] 바이낸스 선물 없는 코인(NOFUT)은 롱·숏 모두 자동진입 안 함
+            if "NOFUT" in str(rows_by_t.get(t, {}).get('liq_risk', '') or ''):
+                self._auto_log(ex, t, ptype, "skip", "바이낸스 선물 없음")
+                continue
             if held.get(t) == ptype:
                 self._auto_log(ex, t, ptype, "skip", "같은 방향 포지션 보유 중")
                 continue
@@ -3474,7 +3480,7 @@ class TradingClient:
                     "화면 표시만 바뀌고 서버 판정·수집 로그는 그대로입니다. 기기마다 따로 기억됩니다."),
             ("자동진입 버튼", "누르면 설정 창이 뜹니다. '신호 뜨면 자동 구매'를 켜면 판정 롱/숏이 새로 뜰 때마다 "
                     "정한 증거금·레버리지(기본 $200×10배)로 바로 진입합니다. 켜는 순간 이미 떠 있던 신호는 건너뛰고, "
-                    "같은 코인에 포지션이 있으면 건너뜁니다. 잔고 제한은 충전된 잔고 안에서만(부족하면 건너뜀), "
+                    "같은 코인에 포지션이 있으면 건너뜁니다. 바이낸스 선물에 없는 코인(카드의 '선물 미상장')은 롱·숏 모두 자동진입하지 않습니다. 잔고 제한은 충전된 잔고 안에서만(부족하면 건너뜀), "
                     "잔고 무시는 부족해도 강제로 들어가서 잔고가 마이너스가 될 수 있습니다. 클라이언트가 켜져 있을 때만 "
                     "동작하고, 결과는 버튼 옆과 auto_entry_log.csv에 남습니다. '진입 후 N시간 지나면 자동 정리'(기본 12, 0=안 함)는 "
                     "자동진입으로 산 포지션만 정리하며, 클라이언트가 꺼져 있다가 켜지면 시간이 지난 것부터 바로 정리합니다. "
