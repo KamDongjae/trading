@@ -38,7 +38,7 @@ live_trader.py — Pyramide 판정 신호 → 바이낸스 USDT-M 선물 실전 
   3) 켜 두는 동안만 동작. 꺼도 거래소 포지션은 그대로고, 다시 켜면 이어서 정리 시간을 관리한다.
      (꺼져 있는 동안 정리 시간이 지났으면 켜자마자 정리)
 
-실행 중 명령어: status / pause / resume / close BTCUSDT / closeall / manual / mclose BTCUSDT / quit / help
+실행 중 명령어: status / pause / resume / close BTCUSDT / closeall / order / manual / mclose BTCUSDT / quit / help
   (manual = 바이낸스 앱 등에서 직접 연 수동 포지션 보기, mclose = 사용자가 요청할 때만 그 수동 포지션 정리. 봇은 수동 포지션을 절대 자동으로 건드리지 않음)
 기록: live_trades.csv(거래), live_log.txt(로그), live_state.json(보유 중 포지션)
 """
@@ -578,20 +578,24 @@ class Trader:
                 mult = STRONG_MULT
         self.open_position(eid, symbol, direction, reason, regime, mult)
 
-    def open_position(self, eid, symbol, direction, reason, regime, mult=1.0):
+    def open_position(self, eid, symbol, direction, reason, regime, mult=1.0, lev=None, margin=None,
+                      hold=None, record=True):
+        """record=False 면 주문만 넣고 봇 목록에 안 넣음(= 수동 포지션, 자동 정리 안 함). 성공하면 True."""
         info = self.bn.symbols[symbol]
         mark = self.bn.mark_price(symbol)
-        lev, margin = self.lev, self.margin * mult
+        lev = int(lev or self.lev)
+        margin = float(margin if margin is not None else self.margin) * mult
+        hold = float(hold if hold is not None else self.hold_h)
         if mult != 1.0:
             log(f"💪 {symbol} 강한 숏(4h예상 ≤ {STRONG_SHORT_EXP4}%) → 진입 금액 ×{mult:g} = {margin:g} USDT")
         if not self.dry:
             avail, _ = self.bn.usdt_balance()
             if avail < margin * 1.05:
                 log(f"⏭  {symbol} 건너뜀: 사용 가능 잔고 {avail:.2f} < 진입 금액 {margin:.2f}")
-                return
+                return False
             if symbol in self.bn.positions():
                 log(f"⏭  {symbol} 건너뜀: 거래소에 이미 이 코인 포지션 있음(수동 포함)")
-                return
+                return False
             self.bn.set_margin_type(symbol, MARGIN_TYPE)
             real = self.bn.set_leverage(symbol, lev)
             if real != lev:
@@ -603,7 +607,7 @@ class Trader:
         if qty <= 0 or qty < info["min_qty"] or float(qty) * mark < info["min_notional"]:
             log(f"⏭  {symbol} 건너뜀: 주문 금액 {float(qty) * mark:.2f} USDT 가 최소 주문 {info['min_notional']} USDT 미달 "
                 f"— 진입 금액이나 레버리지를 올려야 함")
-            return
+            return False
         side = "BUY" if direction == "LONG" else "SELL"
         entry = mark
         if not self.dry:
@@ -611,19 +615,44 @@ class Trader:
                 res = self.bn.market_order(symbol, side, fmt_qty(qty), position_side=direction)
             except BinanceError as e:
                 log(f"❌ {symbol} 진입 주문 실패: {e}")
-                return
+                return False
             entry = float(res.get("avgPrice") or 0) or mark
             qty = Decimal(str(res.get("executedQty") or qty))
+        liq = entry * (1 - 0.9 / lev) if direction == "LONG" else entry * (1 + 0.9 / lev)
+        if not record:
+            log(f"✅ {'[모의] ' if self.dry else ''}수동 주문 {symbol} {direction} {lev}배 ${margin:.2f} 수량 {fmt_qty(qty)} "
+                f"@ {entry:g} (대략 청산가 {liq:g}) — 봇이 관리 안 함(직접 정리)")
+            return True
         t = {"event_id": eid, "symbol": symbol, "direction": direction, "reason": reason, "regime": regime,
              "mode": "dry" if self.dry else "live", "leverage": lev, "margin": margin, "qty": fmt_qty(qty),
              "entry_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "entry_price": entry,
-             "hold_hours": self.hold_h, "status": "open"}
+             "hold_hours": hold, "status": "open"}
         with self.lock:
             self.state["trades"][eid] = t
         self.save_state()
-        liq = entry * (1 - 0.9 / lev) if direction == "LONG" else entry * (1 + 0.9 / lev)
         log(f"✅ {'[모의] ' if self.dry else ''}진입 {symbol} {direction} {lev}배 ${margin:.2f} 수량 {fmt_qty(qty)} "
-            f"@ {entry:g} (대략 청산가 {liq:g}, {self.hold_h:g}h 뒤 정리) — {reason}")
+            f"@ {entry:g} (대략 청산가 {liq:g}, {hold:g}h 뒤 정리) — {reason}")
+        return True
+
+    def manual_open(self, ticker, direction, margin, lev, managed=True, hold=None):
+        """사용자 수동 주문. managed=True 면 봇 목록에 넣어 hold 시간 뒤 자동 정리, False 면 수동 포지션(직접 정리)."""
+        direction = direction.upper()
+        if direction not in ("LONG", "SHORT"):
+            log("❌ 방향은 LONG/SHORT")
+            return False
+        t = ticker.upper().strip()
+        symbol = t if t in self.bn.symbols else self.to_symbol(t[:-4] if t.endswith("USDT") else t)
+        if not symbol:
+            log(f"❌ {ticker}: 바이낸스 USDT 무기한 심볼 없음")
+            return False
+        if any(x["symbol"] == symbol for x in self.open_trades().values()):
+            log(f"⏭  {symbol}: 이미 봇이 들고 있는 코인")
+            return False
+        eid = f"manual_{datetime.now():%Y%m%d%H%M%S}_{symbol}_{direction}"
+        log(f"🖐  수동 주문 요청 {symbol} {direction} {lev}배 ${float(margin):g} "
+            + (f"(봇이 {float(hold if hold is not None else self.hold_h):g}h 뒤 정리)" if managed else "(직접 정리)"))
+        return self.open_position(eid, symbol, direction, "수동 주문", "", 1.0, lev=lev, margin=margin,
+                                  hold=hold, record=managed)
 
     # --- 보유 관리 ---
     def manage(self):
@@ -748,6 +777,8 @@ HELP = """
   pause / resume  새 진입 멈춤 / 다시 시작 (보유 포지션 정리는 계속됨)
   close BTCUSDT   그 포지션 바로 정리
   closeall        봇 포지션 전부 바로 정리
+  order ZIL short 30 3 [auto|keep]  수동 주문: 코인 방향 금액(USDT) 레버리지
+                  auto(기본) = 봇이 정한 시간 뒤 정리 / keep = 수동 포지션으로 두고 직접 정리
   manual          수동 포지션(바이낸스 앱 등에서 직접 연 것) 보기
   mclose ZILUSDT  그 수동 포지션 정리 (yes 확인 후)
   quit            종료 (포지션은 그대로 두고, 다시 켜면 이어서 관리)
@@ -784,6 +815,19 @@ def command_loop(tr):
                 for k, t in hit:
                     tr.close_trade(k, t, "수동 명령 정리")
                 tr.save_state()
+            elif cmd == "order" and len(args) >= 3:
+                tk_, dr = args[0], args[1].upper()
+                dr = {"L": "LONG", "S": "SHORT", "롱": "LONG", "숏": "SHORT"}.get(dr, dr)
+                amt_ = float(args[2])
+                lev_ = int(float(args[3])) if len(args) > 3 and args[3].replace('.', '', 1).isdigit() else tr.lev
+                managed = not any(a.lower() == "keep" for a in args[3:])
+                ok = input(f"⚠️ 수동 주문 {tk_.upper()} {dr} {lev_}배 ${amt_:g} "
+                           f"({'봇이 ' + format(tr.hold_h, 'g') + 'h 뒤 정리' if managed else '직접 정리'}) — yes 입력: ").strip().lower()
+                if ok == "yes":
+                    tr.manual_open(tk_, dr, amt_, lev_, managed=managed)
+                    tr.save_state()
+                else:
+                    print("취소")
             elif cmd == "manual":
                 lst = tr.manual_positions()
                 print(f"──────── 수동 포지션 {len(lst)}개 (봇이 관리 안 함) ────────")

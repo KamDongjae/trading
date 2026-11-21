@@ -6,6 +6,7 @@ live_trader_gui.py — live_trader.py 의 창(GUI) 버전
   - 창에서 레버리지 / 보유 시간 / 1회 진입 금액 / 강한 숏 2배 / 모의 모드를 고르고 [시작]
   - 보유 포지션 표(10초마다 갱신), 로그 창, 잔고 표시
   - [새 진입 멈춤/재개], [선택 정리], [전부 정리], [종료]
+  - 수동 주문: 코인·롱/숏·금액·레버리지 → '봇이 시간 되면 정리' 또는 '내가 직접 정리'
   - 수동 포지션(직접 연 것) 표: 보기만 하고, [선택 수동 포지션 정리]를 눌러 확인할 때만 정리
 실행:  python live_trader_gui.py   (또는 파일 더블클릭)
 ※ live_trader.py(콘솔판)와 동시에 켜지 마세요 — 같은 잠금 파일로 막혀 있음.
@@ -41,7 +42,7 @@ class App:
         self.tr = None
         self.th = None
         root.title(APP_TITLE)
-        root.geometry("1000x780")
+        root.geometry("1000x830")
         root.minsize(820, 520)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         st = ttk.Style()
@@ -113,6 +114,30 @@ class App:
         self.tv.configure(yscrollcommand=sb1.set)
         sb1.pack(side="right", fill="y")
         self.tv.pack(fill="both", expand=True)
+
+        # ── 수동 주문 (바이낸스 USDT-M 무기한 선물) ──
+        of = ttk.LabelFrame(root, text=" 수동 주문 (바이낸스 USDT-M 무기한 선물 · 시장가 · 격리 마진) ", padding=6)
+        of.pack(fill="x", padx=10, pady=4)
+        self.o_coin = tk.StringVar(value="")
+        self.o_dir = tk.StringVar(value="SHORT")
+        self.o_amt = tk.StringVar(value=f"{L.DEFAULT_MARGIN_USDT:g}")
+        self.o_lev = tk.StringVar(value=str(L.DEFAULT_LEVERAGE))
+        self.o_mode = tk.StringVar(value="auto")
+        ttk.Label(of, text="코인").pack(side="left")
+        ttk.Entry(of, textvariable=self.o_coin, width=10).pack(side="left", padx=(4, 2))
+        ttk.Label(of, text="USDT", foreground="gray").pack(side="left", padx=(0, 10))
+        ttk.Radiobutton(of, text="롱", variable=self.o_dir, value="LONG").pack(side="left")
+        ttk.Radiobutton(of, text="숏", variable=self.o_dir, value="SHORT").pack(side="left", padx=(0, 10))
+        ttk.Label(of, text="금액").pack(side="left")
+        ttk.Entry(of, textvariable=self.o_amt, width=7, justify="right").pack(side="left", padx=(4, 2))
+        ttk.Label(of, text="USDT").pack(side="left", padx=(0, 10))
+        ttk.Label(of, text="레버리지").pack(side="left")
+        ttk.Entry(of, textvariable=self.o_lev, width=4, justify="right").pack(side="left", padx=(4, 2))
+        ttk.Label(of, text="배").pack(side="left", padx=(0, 10))
+        ttk.Radiobutton(of, text="봇이 시간 되면 정리", variable=self.o_mode, value="auto").pack(side="left")
+        ttk.Radiobutton(of, text="내가 직접 정리", variable=self.o_mode, value="keep").pack(side="left", padx=(0, 10))
+        self.btn_order = ttk.Button(of, text="주문", style="Big.TButton", command=self.manual_order, state="disabled")
+        self.btn_order.pack(side="right")
 
         # ── 수동 포지션(봇이 안 연 것): 보기만, 버튼 누를 때만 정리 ──
         mf = ttk.LabelFrame(root, text=" 수동 포지션 (바이낸스 앱 등에서 직접 연 것 — 봇이 자동으로 건드리지 않음) ", padding=4)
@@ -228,7 +253,7 @@ class App:
         dry = self.tr.dry
         self.lbl_state.configure(text="● 모의 실행 중" if dry else "● 실거래 실행 중",
                                  foreground="#2f7fbf" if dry else "#1a8f3c")
-        for b in (self.btn_pause, self.btn_close, self.btn_closeall, self.btn_mclose):
+        for b in (self.btn_pause, self.btn_close, self.btn_closeall, self.btn_mclose, self.btn_order):
             b.configure(state="normal")
         self.btn_start.configure(text="■ 종료", command=self.stop)
         self.btn_start.configure(state="normal")
@@ -279,6 +304,37 @@ class App:
         self.tr.save_state()
         self.root.after(0, self.refresh)
 
+    def manual_order(self):
+        if not self.tr:
+            return
+        coin = self.o_coin.get().strip().upper()
+        if not coin:
+            messagebox.showinfo("수동 주문", "코인 이름을 넣어줘 (예: ZIL, BTC).")
+            return
+        try:
+            amt = float(self.o_amt.get())
+            lev = int(float(self.o_lev.get()))
+            if amt <= 0 or not 1 <= lev <= 20:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning("입력 오류", "금액은 0보다 큰 숫자, 레버리지는 1~20.")
+            return
+        d, keep = self.o_dir.get(), self.o_mode.get() == "keep"
+        how = "내가 직접 정리(수동 포지션 표로 감)" if keep else f"봇이 {self.tr.hold_h:g}시간 뒤 자동 정리"
+        msg = (f"{'[모의] ' if self.tr.dry else '실제 주문 — '}바이낸스 USDT 선물 시장가\n\n"
+               f"{coin} {'롱' if d == 'LONG' else '숏'} · {lev}배 · 증거금 {amt:g} USDT (명목 {amt * lev:g} USDT)\n{how}\n\n주문할까?")
+        if not messagebox.askyesno("수동 주문 확인", msg, icon="warning"):
+            return
+        self._bg(self._order_worker, coin, d, amt, lev, not keep)
+
+    def _order_worker(self, coin, d, amt, lev, managed):
+        try:
+            self.tr.manual_open(coin, d, amt, lev, managed=managed)
+            self.tr.save_state()
+        except Exception as e:
+            L.log(f"❌ 수동 주문 오류: {e}")
+        self.root.after(0, self.refresh_once)
+
     def close_manual(self):
         if not self.tr:
             return
@@ -310,7 +366,7 @@ class App:
         self._shutdown()
         self.btn_start.configure(text="▶ 시작", command=self.start)
         self.set_inputs("normal")
-        for b in (self.btn_pause, self.btn_close, self.btn_closeall, self.btn_mclose):
+        for b in (self.btn_pause, self.btn_close, self.btn_closeall, self.btn_mclose, self.btn_order):
             b.configure(state="disabled")
         self.lbl_state.configure(text="대기 중", foreground="gray")
 
