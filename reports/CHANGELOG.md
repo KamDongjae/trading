@@ -1,5 +1,11 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-11-22 (수동, 07시 KST, 사용자 요청) — 가격 없음 삭제 때 증거금 환불
+
+- **trading_server.py** `_drop_position_no_price`: 포지션 삭제 시 증거금(amount)을 잔고(balance)로 그대로 돌려줌(손익·수수료 0). 진입 기록 삭제·청산 기록 없음은 그대로
+- 스모크 테스트: 잔고 $100 + 가격 없는 $30 포지션 → 삭제 후 잔고 $130, 포지션·진입기록 없음
+- **서버 재시작 필요**. 되돌리기: backups\20261122_drop_noprice\trading_server_refund_before.py(환불 없는 버전) / trading_server.py(기능 넣기 전)
+
 ## 2026-11-22 (수동, 07시 KST, 사용자 요청) — 가격 없어 청산 안 되는 포지션은 돈·기록째 삭제
 
 - **trading_server.py** `srv_close`: 가격을 못 구하면(기존 재시도 후 +3초 더) `_drop_position_no_price()` — 포지션 삭제, 증거금 환불 없음, trade_history에서 그 포지션의 청산 안 된 진입/추가진입 기록 삭제, 청산 기록 안 남김. 성공으로 응답해서 클라 자동 정리 목록에서도 빠짐. 플래그 `DROP_NO_PRICE_ON_CLOSE = True`(False면 예전 동작). 부분청산은 그대로(가격 없으면 실패)

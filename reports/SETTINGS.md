@@ -24,7 +24,7 @@
 | `USE_SHORT_STOP_BLOCK` | True | 숏 손절 후 차단. 숏 판정이 뜬 뒤 그 코인이 판정 시점 가격보다 일정 % 이상 오르면 그 코인 숏 판정을 일정 시간 막음(같은 코인 반복 손실 방지). 카드엔 "숏 손절차단 ~시각"으로 표시 | False면 끔 |
 | `SHORT_STOP_PCT` / `SHORT_STOP_WATCH_H` / `SHORT_STOP_BLOCK_H` | 3.0 / 24 / 24 | 판정 후 24h 안에 +3% 역행하면 24h 차단. 1년 검증: 12h 승률 62→65%, 10% 이상 역행 9.4→6.6% | 서버·수집기 재시작하면 차단 기록 초기화 |
 | `SHORT_REQUIRE_FUTURES` | True (⚠ 11/21 21시 덮어쓰기로 서버 코드에서 빠져 있음 — 복구 전까지 미작동) | 숏 판정은 바이낸스 선물 있는 코인만. 선물이 없는 코인(카드에 '선물 미상장', NOFUT)은 숏 판정 대신 "숏후보 바이낸스 선물 없음 대기". 롱 판정은 그대로. 바이낸스 롱숏비율이 안 잡히면 NOFUT로 보므로, 바이낸스 응답이 잠깐 끊기면 그동안 숏이 대기될 수 있음 | False면 예전처럼 모든 코인 숏 |
-| `DROP_NO_PRICE_ON_CLOSE` | True | 청산을 눌렀는데(자동 정리 포함) 가격을 끝내 못 구하면(약 4초 재시도) 포지션을 지움. 증거금은 돌려주지 않고(돈 날림), 그 포지션의 진입 기록도 지우고 청산 기록도 안 남김. 서버 로그에 🗑️로 표시 | False면 예전처럼 "가격 없음" 실패 |
+| `DROP_NO_PRICE_ON_CLOSE` | True | 청산을 눌렀는데(자동 정리 포함) 가격을 끝내 못 구하면(약 4초 재시도) 포지션을 지움. 증거금은 잔고로 그대로 돌려주고(손익 0), 그 포지션의 진입 기록은 지우고 청산 기록도 안 남김. 서버 로그에 🗑️로 표시 | False면 예전처럼 "가격 없음" 실패 |
 | `BEAR_LONG_BLOCK` | True | 레짐이 하락장이면 롱 판정 대기 | False면 하락장에도 롱 |
 | `BEAR_LONG_UNLOCK_MKT_R24` | 0.0 | 하락장이라도 40종목 평균 24h 등락이 이 %보다 크면 롱 허용 | 999로 하면 해제 기능 끔 |
 | `USE_PROB_FILTER` | True | 24h 상승확률 필터(롱 p_up≥0.50, 숏 p_up≤0.45) | False면 필터 없이(표시는 유지) |
@@ -106,4 +106,4 @@
 | 11/21 | 자동진입 기본값 $30·3배·48h 정리·하락장 롱 제외(사용자 요청, 1년 백테스트 3배 48h $30: +$887·청산 16·최악월 -$20) | backups\20261121_autoentry_defaults |
 | 11/21 | 자동진입 기본값 레버리지 10→5배, 자동 정리 12→24h (trading_client.py AUTO_ENTRY_LEVERAGE/AUTO_ENTRY_HOLD_H, 이미 저장된 auto_entry.json 설정은 그대로) | backups\20261121_autoentry_24h5x |
 | 11/22 | 클라 자동진입 복구(11/21 21시 덮어쓰기로 빠졌던 것): 바이낸스 선물 없는 코인 롱·숏 건너뜀, `AUTO_ENTRY_USD/LEVERAGE/HOLD_H` 200·10·12 → 30·3·48, `AUTO_ENTRY_SKIP_BEAR_LONG`=True, `AUTO_ENTRY_STRONG_SHORT_EXP4`=-1.0·`AUTO_ENTRY_STRONG_MULT`=2.0 (사용자 요청). 서버 SHORT_REQUIRE_FUTURES는 아직 미복구 | backups\20261122_binance_auto (바이낸스만 넣기 전), backups\20261122_autoentry_restore (기본값·2개 규칙 넣기 전) |
-| 11/22 | DROP_NO_PRICE_ON_CLOSE=True (가격 없어 청산 안 되는 포지션은 증거금·기록째 삭제, 사용자 요청, trading_server.py srv_close) | backups\20261122_drop_noprice |
+| 11/22 | DROP_NO_PRICE_ON_CLOSE=True (가격 없어 청산 안 되는 포지션은 기록째 삭제·증거금은 잔고로 환불, 사용자 요청, trading_server.py srv_close) | backups\20261122_drop_noprice |

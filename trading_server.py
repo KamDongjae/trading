@@ -4844,7 +4844,7 @@ def srv_close(ticker):
         auto_fixed = auto_fixed or auto_fixed2
     if not price or price <= 0:
         # [2026-11-22 수동, 사용자 요청] 가격을 끝내 못 구하면(코인이 시세 목록에서 빠짐 등) 청산이 영구히 막히므로
-        # 포지션을 그냥 지운다 — 증거금은 돌려주지 않고(돈 날림), 이 포지션의 진입 기록도 지우고, 청산 기록도 안 남김.
+        # 포지션을 그냥 지운다 — 증거금은 잔고로 돌려주고(손익 0), 이 포지션의 진입 기록은 지우고, 청산 기록도 안 남김.
         if DROP_NO_PRICE_ON_CLOSE:
             return _drop_position_no_price(ticker, pos)
         return False, "가격 없음 (잠시 후 다시 시도)"
@@ -4888,12 +4888,13 @@ def srv_close(ticker):
     fix_note = " [통화표기 자동교정됨 — 진입시 통화 오분류 의심, 손익 재확인 권장]" if auto_fixed else ""
     return True, f"{ticker} {direction} 청산 손익 ${pnl:+,.2f} ({pnl_rate_pct:+.2f}%){fx_note}{fix_note}"
 
-DROP_NO_PRICE_ON_CLOSE = True   # [2026-11-22 수동, 사용자 요청] 청산 때 가격 없음이면 포지션·증거금·진입기록 삭제. False면 예전처럼 "가격 없음" 실패
+DROP_NO_PRICE_ON_CLOSE = True   # [2026-11-22 수동, 사용자 요청] 청산 때 가격 없음이면 포지션·진입기록 삭제(증거금은 잔고로 환불). False면 예전처럼 "가격 없음" 실패
 
 
 def _drop_position_no_price(ticker, pos):
     """[2026-11-22 수동] 가격 없어 청산 못 하는 포지션 삭제. 3초 더 기다려 봐도 가격이 없을 때만.
-    잔고(balance)에 증거금을 돌려주지 않는다. trade_history에서 이 포지션의 진입/추가진입 기록(청산 안 된 것)만 지운다."""
+    증거금(amount)은 잔고(balance)로 그대로 돌려준다(손익·수수료 0). trade_history에서 이 포지션의 진입/추가진입 기록(청산 안 된 것)만 지운다."""
+    global balance
     for _ in range(6):
         time.sleep(0.5)
         price, _fx = _pos_current_price_with_fallback(ticker, pos)
@@ -4909,10 +4910,11 @@ def _drop_position_no_price(ticker, pos):
                                 and str(r.get('entry_time', '')) >= et_s[:16])]
     removed = before - len(trade_history)
     amt = pos.get('amount', 0)
+    balance += amt   # [2026-11-22 수동, 사용자 요청] 증거금 환불
     del positions[ticker]
     save_to_csv()
-    print(f"🗑️ {ticker} 가격 없음 → 포지션 삭제(증거금 ${amt:,.2f} 소멸, 진입기록 {removed}건 삭제)")
-    return True, f"{ticker} 가격 없음 → 포지션 삭제 (증거금 ${amt:,.2f} 소멸, 기록 삭제)"
+    print(f"🗑️ {ticker} 가격 없음 → 포지션 삭제(증거금 ${amt:,.2f} 잔고로 환불, 진입기록 {removed}건 삭제)")
+    return True, f"{ticker} 가격 없음 → 포지션 삭제 (증거금 ${amt:,.2f} 환불, 기록 삭제)"
 
 
 def srv_close_all():
