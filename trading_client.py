@@ -49,9 +49,12 @@ RESULTS_FILE = os.path.join(SCRIPT_DIR, "server_results.csv")
 HISTORY_FILE = os.path.join(SCRIPT_DIR, "trade_history_usd.csv")  # 서버가 실제로 쓰는 파일명과 일치시킴(기존엔 이름이 달라서 청산기록이 항상 비어 보였음)
 AUTO_ENTRY_FILE = os.path.join(SCRIPT_DIR, "auto_entry.json")  # [2026-11-21 추가] 자동진입 체크박스 상태(기기별)
 AUTO_ENTRY_LOG = os.path.join(SCRIPT_DIR, "auto_entry_log.csv")  # 자동진입 기록
-AUTO_ENTRY_USD = 200        # 자동진입 증거금($) 기본값 — 설정 창에서 바꿀 수 있음
-AUTO_ENTRY_LEVERAGE = 10    # 자동진입 레버리지 기본값
-AUTO_ENTRY_HOLD_H = 12      # 자동진입 포지션 자동 정리(시간) 기본값, 0이면 안 함
+AUTO_ENTRY_USD = 30         # 자동진입 증거금($) 기본값 — 설정 창에서 바꿀 수 있음  [2026-11-22 수동] 200→30 (1년 백테스트 3배·48h·$30 추천값)
+AUTO_ENTRY_LEVERAGE = 3     # 자동진입 레버리지 기본값  [2026-11-22 수동] 10→3
+AUTO_ENTRY_HOLD_H = 48      # 자동진입 포지션 자동 정리(시간) 기본값, 0이면 안 함  [2026-11-22 수동] 12→48
+AUTO_ENTRY_SKIP_BEAR_LONG = True     # [2026-11-22 수동] 레짐 하락장이면 롱 자동진입 안 함(1년 백테스트 하락장 롱 35건 승률 37%·-$40)
+AUTO_ENTRY_STRONG_SHORT_EXP4 = -1.0  # [2026-11-22 수동] 숏이고 4h예상(exp4) ≤ 이 값이면 '강한 숏'
+AUTO_ENTRY_STRONG_MULT = 2.0         # 강한 숏 진입 금액 배수(1년 백테스트 +$887→+$1,324)
 AUTO_POS_FILE = os.path.join(SCRIPT_DIR, "auto_entry_positions.json")  # 자동진입으로 산 포지션(정리 예정 시각)
 PROB_FILTER_FILE = os.path.join(SCRIPT_DIR, "prob_filter.json")  # [2026-10-13 추가] 확률필터 표시 ON/OFF (기기별 설정)
 SIGNAL_SINCE_FILE = os.path.join(SCRIPT_DIR, "signal_since.json")  # [2026-10-12 추가] 카드 롱/숏 신호 시작시각 저장
@@ -2754,7 +2757,7 @@ class TradingClient:
     # ---------- [2026-11-21 추가] 자동진입 ----------
     def _load_auto_entry(self):
         cfg = {'on': False, 'force': False, 'usd': AUTO_ENTRY_USD, 'lev': AUTO_ENTRY_LEVERAGE,
-               'hold_h': AUTO_ENTRY_HOLD_H}
+               'hold_h': AUTO_ENTRY_HOLD_H, 'skip_bear_long': AUTO_ENTRY_SKIP_BEAR_LONG, 'strong_x2': True}
         try:
             with open(AUTO_ENTRY_FILE, 'r', encoding='utf-8') as f:
                 cfg.update(json.load(f))
@@ -2774,7 +2777,8 @@ class TradingClient:
         if c.get('on'):
             mode = "잔고무시" if c.get('force') else "잔고내"
             hold = f" {c.get('hold_h', 0):g}h정리" if c.get('hold_h') else ""
-            self._cfg(self.btn_auto_entry, text=f"자동진입 ON ${c['usd']:g}×{c['lev']} {mode}{hold}",
+            extra = (" 숏강2배" if c.get('strong_x2', True) else "") + (" 하락롱X" if c.get('skip_bear_long', True) else "")
+            self._cfg(self.btn_auto_entry, text=f"자동진입 ON ${c['usd']:g}×{c['lev']} {mode}{hold}{extra}",
                       bg="#c0392b" if c.get('force') else "#2fa84f", fg="white")
         else:
             self._cfg(self.btn_auto_entry, text="자동진입 OFF", bg="#555555", fg="white")
@@ -2793,6 +2797,8 @@ class TradingClient:
         usd_var = tk.StringVar(value=f"{c.get('usd', AUTO_ENTRY_USD):g}")
         lev_var = tk.StringVar(value=str(c.get('lev', AUTO_ENTRY_LEVERAGE)))
         hold_var = tk.StringVar(value=f"{c.get('hold_h', AUTO_ENTRY_HOLD_H):g}")
+        bear_var = tk.BooleanVar(value=bool(c.get('skip_bear_long', AUTO_ENTRY_SKIP_BEAR_LONG)))
+        strong_var = tk.BooleanVar(value=bool(c.get('strong_x2', True)))
 
         tk.Label(body, text="판정 롱/숏이 새로 뜨면 바로 진입 (클라이언트가 켜져 있을 때만)",
                  font=("Arial", fs), fg="gray").pack(anchor="w", pady=(0, 8))
@@ -2819,6 +2825,12 @@ class TradingClient:
         tk.Entry(row2, textvariable=hold_var, width=4, font=("Arial", fs)).pack(side="left", padx=2)
         tk.Label(row2, text="시간 지나면 자동 정리 (0 = 안 함, 자동진입 포지션만)",
                  font=("Arial", fs)).pack(side="left")
+        tk.Checkbutton(body, text="하락장이면 롱 자동진입 안 함", variable=bear_var,
+                       font=("Arial", fs)).pack(anchor="w", pady=(6, 0))
+        tk.Checkbutton(body, text=f"강한 숏(4h예상 {AUTO_ENTRY_STRONG_SHORT_EXP4:g}% 이하)은 진입 금액 {AUTO_ENTRY_STRONG_MULT:g}배",
+                       variable=strong_var, font=("Arial", fs)).pack(anchor="w")
+        tk.Label(body, text=f"추천: ${AUTO_ENTRY_USD:g} × {AUTO_ENTRY_LEVERAGE}배 · {AUTO_ENTRY_HOLD_H:g}시간 정리 · 위 두 칸 켬 (1년 백테스트 기준)",
+                 font=("Arial", fs - 1), fg="gray").pack(anchor="w", pady=(4, 0))
 
         def save():
             try:
@@ -2832,7 +2844,7 @@ class TradingClient:
                 return
             was_on = bool(self.auto_cfg.get('on'))
             self.auto_cfg = {'on': bool(on_var.get()), 'force': force_var.get() == "force", 'usd': usd, 'lev': lev,
-                             'hold_h': hold_h}
+                             'hold_h': hold_h, 'skip_bear_long': bool(bear_var.get()), 'strong_x2': bool(strong_var.get())}
             self._save_auto_entry()
             if self.auto_cfg['on'] and not was_on:
                 self._auto_primed = set()   # 켤 때 이미 떠 있던 신호는 사지 않음
@@ -2885,20 +2897,36 @@ class TradingClient:
             if "NOFUT" in str(rows_by_t.get(t, {}).get('liq_risk', '') or ''):
                 self._auto_log(ex, t, ptype, "skip", "바이낸스 선물 없음")
                 continue
+            # [2026-11-22 수동, 사용자 요청] 하락장 롱 제외
+            row_t = rows_by_t.get(t, {})
+            if ptype == 'long' and c.get('skip_bear_long', AUTO_ENTRY_SKIP_BEAR_LONG) \
+                    and (row_t.get('regime') or current_regime) == '하락장':
+                self._auto_log(ex, t, ptype, "skip", "하락장 롱 제외")
+                continue
             if held.get(t) == ptype:
                 self._auto_log(ex, t, ptype, "skip", "같은 방향 포지션 보유 중")
                 continue
             if t in held:
                 self._auto_log(ex, t, ptype, "skip", "반대 방향 포지션 보유 중")
                 continue
+            # [2026-11-22 수동, 사용자 요청] 강한 숏(4h예상 ≤ -1.0%)은 진입 금액 2배
+            amt = usd
+            e4 = row_t.get('exp4')
             try:
-                cmd_id = send_command(action, t, usd, lev, ptype, exchange=ex)
+                e4 = float(e4) if e4 not in (None, '') else None
+            except Exception:
+                e4 = None
+            if ptype == 'short' and c.get('strong_x2', True) and e4 is not None and e4 <= AUTO_ENTRY_STRONG_SHORT_EXP4:
+                amt = usd * AUTO_ENTRY_STRONG_MULT
+            try:
+                cmd_id = send_command(action, t, amt, lev, ptype, exchange=ex)
             except Exception as e:
                 self._auto_log(ex, t, ptype, "fail", f"명령 전송 실패: {e}")
                 continue
             held[t] = ptype
-            self._cfg(self.auto_entry_status, text=f"{t} {ptype.upper()} 진입 요청…", fg="#c9a800")
-            self._auto_wait(cmd_id, ex, t, ptype, tries=16, usd=usd, lev=lev, action=action)
+            tag = f" 강한숏 ${amt:g}" if amt != usd else ""
+            self._cfg(self.auto_entry_status, text=f"{t} {ptype.upper()} 진입 요청…{tag}", fg="#c9a800")
+            self._auto_wait(cmd_id, ex, t, ptype, tries=16, usd=amt, lev=lev, action=action)
 
     def _auto_wait(self, cmd_id, ex, t, ptype, tries, usd=0, lev=0, action='open'):
         res = find_result(cmd_id)
@@ -3479,10 +3507,10 @@ class TradingClient:
             ("확률필터 ON/OFF 버튼", "ON(기본)이면 서버가 확률모델로 걸러낸 판정을, OFF면 걸러내기 전 원래 판정을 보여줍니다. "
                     "화면 표시만 바뀌고 서버 판정·수집 로그는 그대로입니다. 기기마다 따로 기억됩니다."),
             ("자동진입 버튼", "누르면 설정 창이 뜹니다. '신호 뜨면 자동 구매'를 켜면 판정 롱/숏이 새로 뜰 때마다 "
-                    "정한 증거금·레버리지(기본 $200×10배)로 바로 진입합니다. 켜는 순간 이미 떠 있던 신호는 건너뛰고, "
+                    "정한 증거금·레버리지(기본 $30×3배)로 바로 진입합니다. '하락장이면 롱 자동진입 안 함'(기본 켬)을 켜면 시장 레짐이 하락장일 때 롱은 건너뛰고, '강한 숏 2배'(기본 켬)를 켜면 4h 예상이 -1% 이하인 숏은 금액을 2배로 넣습니다. 켜는 순간 이미 떠 있던 신호는 건너뛰고, "
                     "같은 코인에 포지션이 있으면 건너뜁니다. 바이낸스 선물에 없는 코인(카드의 '선물 미상장')은 롱·숏 모두 자동진입하지 않습니다. 잔고 제한은 충전된 잔고 안에서만(부족하면 건너뜀), "
                     "잔고 무시는 부족해도 강제로 들어가서 잔고가 마이너스가 될 수 있습니다. 클라이언트가 켜져 있을 때만 "
-                    "동작하고, 결과는 버튼 옆과 auto_entry_log.csv에 남습니다. '진입 후 N시간 지나면 자동 정리'(기본 12, 0=안 함)는 "
+                    "동작하고, 결과는 버튼 옆과 auto_entry_log.csv에 남습니다. '진입 후 N시간 지나면 자동 정리'(기본 48, 0=안 함)는 "
                     "자동진입으로 산 포지션만 정리하며, 클라이언트가 꺼져 있다가 켜지면 시간이 지난 것부터 바로 정리합니다. "
                     "기기마다 따로 기억됩니다."),
             ("순위 탭", "상단 '코인 | 순위 | 포지션' 중 순위. 점수와 별개로 전 종목을 4h 예상수익 순으로 줄 세워 "

@@ -1,5 +1,16 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-11-22 (수동, 06시 KST, 사용자 요청) — 클라 자동진입 복구: 바이낸스 코인만 + 기본값 $30·3배·48h + 하락장 롱 제외 + 강한 숏 2배
+
+- 배경: 11/21 21:16 덮어쓰기로 trading_client.py가 11/21 새벽 버전으로 돌아가 자동진입 기본값이 $200·10배·12h, 아래 규칙들이 빠져 있었음
+- **trading_client.py**
+  - `_auto_entry_check`: 카드 행 liq_risk에 NOFUT이면 롱·숏 모두 건너뜀(기록 "바이낸스 선물 없음") / 롱이고 레짐 하락장이면 건너뜀(`AUTO_ENTRY_SKIP_BEAR_LONG`, 설정 창 체크 `skip_bear_long` 기본 켬, 기록 "하락장 롱 제외") / 숏이고 exp4 ≤ -1.0%면 진입 금액 ×2(`AUTO_ENTRY_STRONG_SHORT_EXP4`·`AUTO_ENTRY_STRONG_MULT`, 체크 `strong_x2` 기본 켬, 기록 금액에 반영)
+  - 기본값 `AUTO_ENTRY_USD` 200→30, `AUTO_ENTRY_LEVERAGE` 10→3, `AUTO_ENTRY_HOLD_H` 12→48. 설정 창에 체크박스 2개·추천 문구, 버튼 표시에 '숏강2배·하락롱X', 설명 창 문구 갱신
+  - 이미 저장된 auto_entry.json이 있는 기기는 그 값(usd·lev·hold_h)이 우선 — 설정 창에서 직접 바꿔야 함
+- 스모크 테스트(가짜 판정): SNT(NOFUT) 건너뜀, ETH 롱(하락장) 건너뜀, CHR 숏(4h예상 -1.11%) $60, A 숏(-0.94%) $30. 두 체크 끄면 CHR $30·ETH 롱 진입. py_compile 통과
+- 아직 미복구: 서버 `SHORT_REQUIRE_FUTURES`(NOFUT 숏 판정 대기)
+- SETTINGS.md/PDF 갱신. **클라 재시작 필요**. 되돌리기: backups\20261122_autoentry_restore\trading_client.py(바이낸스만 넣은 상태) / backups\20261122_binance_auto\trading_client.py(손대기 전)
+
 ## 2026-11-22 (자동, 06:00 KST) — 변경 없음 · ⚠ 11/21 수동 변경 소실 발견
 
 - **적용**: 없음 (코드/조건식/SETTINGS 무변경, 백업 없음). 후보 14개 중 기준 통과 0건 — 롱후보 +ATR≥1.2는 학습 12h 49→56%·홀드 54→66%로 이틀째 양쪽 개선이지만 학습 12h 10배 청산 1.3→2.7%. 사용자 추적 후보: 숏 +RSI≥60은 학습 12h 82→90%지만 홀드 24h 83→78%·자동진입 시뮬 $118→$49, 숏−롱점수>20 대기는 시뮬 +180→+101%(최근 2주 근거 없음)
