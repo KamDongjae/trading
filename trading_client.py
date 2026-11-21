@@ -2816,7 +2816,10 @@ class TradingClient:
         카드에 보이는 판정(확률필터 ON/OFF 설정 반영)을 기준으로 한다."""
         ex = self.current_exchange
         cur = {}
+        nofut = set()  # [2026-11-21 수동] 바이낸스 선물 없는 코인 — 자동진입(롱·숏 모두) 제외
         for row in data_list:
+            if 'NOFUT' in str(row.get('liq_risk') or '').split('|'):
+                nofut.add(row['ticker'])
             if not getattr(self, 'prob_filter_on', True) and row.get('verdict_raw') is not None:
                 v = row.get('verdict_raw')
             else:
@@ -2839,6 +2842,9 @@ class TradingClient:
         held = {p['ticker']: p.get('position_type', '') for p in (self._account[2] if self._account else [])}
         for t, v in new_signals:
             ptype = 'long' if v == "LONG" else 'short'
+            if t in nofut:
+                self._auto_log(ex, t, ptype, "skip", "바이낸스 선물 없음")
+                continue
             if held.get(t) == ptype:
                 self._auto_log(ex, t, ptype, "skip", "같은 방향 포지션 보유 중")
                 continue
@@ -3423,7 +3429,7 @@ class TradingClient:
                     "· 롱: 롱 후보(롱점수 또는 매집+롱조건) 중에서 24h 상승확률이 충분하고 4h 예상수익이 플러스로 "
                     "충분할 때만. 하락장이면 대기(단, 시장 전체가 24h 플러스로 반등 중이면 허용).\n"
                     "· 숏: 점수와 상관없이 모델이 4h 예상수익을 충분히 마이너스로 보고 상승확률이 낮을 때. "
-                    "시장 전체가 4h 동안 크게 반등 중이면 대기.\n"
+                    "시장 전체가 4h 동안 크게 반등 중이면 대기. 바이낸스 선물에 없는 코인은 숏을 칠 곳이 없어 숏 판정을 내지 않고 '숏후보 바이낸스 선물 없음 대기'로 표시(롱 판정은 그대로).\n"
                     "· 뱃지에 2년 검증 승률이 같이 표시됩니다(롱 4h 59%, 숏 4h 66%·24h 71%, 수수료 미반영).\n"
                     "· 후보였지만 조건이 모자라면 '⏸ 대기: 롱후보(…) 4h예상 부족 / 하락장 대기 / 시장 반등 중' 처럼 이유가 뜹니다."),
             ("확률 · 4h예상", "카드 2번째 줄 끝 '확률 0.62'는 24시간 뒤 지금보다 오를 확률, 순위 탭의 '기대4h'는 "
@@ -3434,7 +3440,7 @@ class TradingClient:
                     "화면 표시만 바뀌고 서버 판정·수집 로그는 그대로입니다. 기기마다 따로 기억됩니다."),
             ("자동진입 버튼", "누르면 설정 창이 뜹니다. '신호 뜨면 자동 구매'를 켜면 판정 롱/숏이 새로 뜰 때마다 "
                     "정한 증거금·레버리지(기본 $200×10배)로 바로 진입합니다. 켜는 순간 이미 떠 있던 신호는 건너뛰고, "
-                    "같은 코인에 포지션이 있으면 건너뜁니다. 잔고 제한은 충전된 잔고 안에서만(부족하면 건너뜀), "
+                    "같은 코인에 포지션이 있거나 바이낸스 선물에 없는 코인이면(롱·숏 모두) 건너뜁니다. 잔고 제한은 충전된 잔고 안에서만(부족하면 건너뜀), "
                     "잔고 무시는 부족해도 강제로 들어가서 잔고가 마이너스가 될 수 있습니다. 클라이언트가 켜져 있을 때만 "
                     "동작하고, 결과는 버튼 옆과 auto_entry_log.csv에 남습니다. '진입 후 N시간 지나면 자동 정리'(기본 12, 0=안 함)는 "
                     "자동진입으로 산 포지션만 정리하며, 클라이언트가 꺼져 있다가 켜지면 시간이 지난 것부터 바로 정리합니다. "

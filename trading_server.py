@@ -3710,6 +3710,16 @@ USE_SHORT_STOP_BLOCK = True
 SHORT_STOP_PCT = 3.0
 SHORT_STOP_WATCH_H = 24
 SHORT_STOP_BLOCK_H = 24
+# [2026-11-21 수동(사용자 요청)] 숏 판정은 바이낸스 선물 있는 코인만(liq_risk에 NOFUT이면 숏 대기). 롱 판정은 그대로.
+# 근거(10/26~11/21 판정 v2 숏, signal_outcomes): 바이낸스X 숏 12h 86%(111)이지만 실제로 숏 칠 곳이 없음. 바이낸스O만 10배·12h 시뮬 4주 -$57 / 5배 +$33($20씩).
+# NOFUT = 바이낸스 롱숏비율이 안 잡힌 코인(바이낸스 API가 일시적으로 실패하면 그 사이클엔 전 종목 숏이 대기될 수 있음). 되돌리기: False 또는 backups\20261121_binance_short\trading_server.py
+SHORT_REQUIRE_FUTURES = True
+
+def _short_futures_apply(r):
+    """숏 판정인데 바이낸스 선물이 없는 코인(NOFUT)이면 판정을 대기로 내린다."""
+    if SHORT_REQUIRE_FUTURES and r.get('verdict') == 'SHORT' and 'NOFUT' in str(r.get('liq_risk') or '').split('|'):
+        r['verdict'] = ''
+        r['verdict_reason'] = f"숏후보 바이낸스 선물 없음 대기 · {r.get('verdict_reason', '')}"
 _short_stop_track = {}   # (거래소, 티커) -> (숏 판정 시작가, 시각)
 _short_stop_block = {}   # (거래소, 티커) -> 차단 해제 시각
 _short_stop_prev = {}    # (거래소, 티커) -> 직전 사이클 차단 전 숏 판정 여부
@@ -3775,12 +3785,15 @@ def apply_prob_filter(results, exchange='bithumb'):
         r.pop('_pmf', None)
         p = r.get('p_up')
         if p is None:
+            _short_futures_apply(r)  # [2026-11-21 수동] 확률 없어도 숏은 바이낸스 선물 있는 코인만
             continue
         v = r.get('verdict', '')
         why = r.get('verdict_reason', '')
         # [2026-10-13] 필터 적용 전 판정도 같이 내보낸다 — 클라이언트 '확률필터' 버튼으로 끄면 이걸 표시
         r['verdict_raw'] = v
         r['verdict_reason_raw'] = f"{why} · 확률 {p:.2f}" if v else ''
+        if SHORT_REQUIRE_FUTURES and v == 'SHORT' and 'NOFUT' in str(r.get('liq_risk') or '').split('|'):
+            r['verdict_raw'], r['verdict_reason_raw'] = '', ''  # [2026-11-21 수동] 확률필터 OFF 화면에서도 선물 없는 코인 숏 미표시
         e4 = r.get('exp4')
         if VERDICT_V2 and e4 is not None:
             reg = r.get('regime') or current_market_regime
@@ -3800,6 +3813,7 @@ def apply_prob_filter(results, exchange='bithumb'):
                 r['verdict_reason'] = f"모델 숏 · 4h예상 {e4:+.2f}% · 확률 {p:.2f}" + (f" ({why})" if v == 'SHORT' else "")
             elif v == 'SHORT':
                 r['verdict'], r['verdict_reason'] = '', f"숏후보({why}) 4h예상 {e4:+.2f}% 부족"
+            _short_futures_apply(r)  # [2026-11-21 수동] 숏은 바이낸스 선물 있는 코인만
             _short_stop_apply(r, exchange)
             continue
         if v == 'LONG':
@@ -3815,6 +3829,7 @@ def apply_prob_filter(results, exchange='bithumb'):
                 r['verdict'], r['verdict_reason'] = '', f"숏후보({why}) 확률 {p:.2f} 높음"
             else:
                 r['verdict_reason'] = f"{why} · 확률 {p:.2f}"
+            _short_futures_apply(r)  # [2026-11-21 수동]
     return results
 
 
