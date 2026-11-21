@@ -1,5 +1,12 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-11-22 (수동, 07시 KST, 사용자 요청) — 가격 없어 청산 안 되는 포지션은 돈·기록째 삭제
+
+- **trading_server.py** `srv_close`: 가격을 못 구하면(기존 재시도 후 +3초 더) `_drop_position_no_price()` — 포지션 삭제, 증거금 환불 없음, trade_history에서 그 포지션의 청산 안 된 진입/추가진입 기록 삭제, 청산 기록 안 남김. 성공으로 응답해서 클라 자동 정리 목록에서도 빠짐. 플래그 `DROP_NO_PRICE_ON_CLOSE = True`(False면 예전 동작). 부분청산은 그대로(가격 없으면 실패)
+- 스모크 테스트: 가격 없는 가짜 포지션 → 삭제·잔고 그대로·진입기록만 삭제(다른 기록 유지), 가격 있는 포지션은 정상 청산. py_compile 통과
+- 이미 trade_history_usd.csv에 쓰인 예전 부분청산 줄은 건드리지 않음
+- SETTINGS.md/PDF 갱신. **서버 재시작 필요**(서버 기기에서 git pull 후). 되돌리기: backups\20261122_drop_noprice\trading_server.py 또는 `DROP_NO_PRICE_ON_CLOSE = False`
+
 ## 2026-11-22 (수동, 06시 KST, 사용자 요청) — 클라 자동진입 복구: 바이낸스 코인만 + 기본값 $30·3배·48h + 하락장 롱 제외 + 강한 숏 2배
 
 - 배경: 11/21 21:16 덮어쓰기로 trading_client.py가 11/21 새벽 버전으로 돌아가 자동진입 기본값이 $200·10배·12h, 아래 규칙들이 빠져 있었음
