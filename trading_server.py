@@ -459,6 +459,7 @@ def get_fear_greed_index():
 # 재알림하도록 상태를 기억한다(_discord_alerted에 지금 넘어있는 티커+방향을 계속 담아둠).
 # ============================================================
 _discord_alerted = {'bithumb': set(), 'upbit': set()}  # {(ticker,'long'|'short'),...} — 지금 컷을 넘어있는 것들(거래소별)
+_discord_verdict_alerted = {'bithumb': set(), 'upbit': set()}  # [2026-11-21] 판정 기준 알림용 — 지금 판정이 떠 있는 (티커, 방향)
 _discord_last_alert_time = {}  # (exchange, ticker, direction) -> 마지막 알림 보낸 시각
 _DISCORD_ALERT_COOLDOWN = 300  # 같은 코인+방향은 이 시간(초) 안에는 재알림 안 함(경계 플래핑 스팸 방지)
 
@@ -542,10 +543,11 @@ def send_discord_alert_with_chart(ticker, message, exchange='bithumb'):
     threading.Thread(target=_fire, daemon=True).start()
 
 def check_discord_alerts(results, min_score, exchange='bithumb'):
-    """score_updater 한 사이클이 끝날 때마다 호출(빗썸/업비트 각각). 이번에 새로 컷을
-    넘은 코인은 (디스코드 웹후크 설정 여부와 무관하게) signal_outcomes.csv에 항상
-    거래소 태그와 함께 기록해서 나중에 자동 가중치 재학습에 쓴다. 디스코드 알림
-    자체는 웹후크가 설정된 경우에만, 거래소별로 독립된 쿨다운을 적용해서 보낸다."""
+    """score_updater 한 사이클이 끝날 때마다 호출(빗썸/업비트 각각).
+    - 학습용 기록: 점수 컷(min_score)을 새로 넘은 코인은 예전처럼 signal_outcomes.csv에 기록(웹후크와 무관).
+    - [2026-11-21 변경] 디스코드 알림은 점수 컷이 아니라 '판정'(카드의 ✅ 롱/숏, 확률필터·하락장·반등 대기
+      반영 후 최종값)이 새로 뜬 코인에만 보낸다. 거래소별 독립 쿨다운은 그대로."""
+    # --- 학습용 점수 컷 기록(기존 동작 유지) ---
     now_over = set()
     for r in results:
         t = r.get('ticker', '')
@@ -553,34 +555,53 @@ def check_discord_alerts(results, min_score, exchange='bithumb'):
             now_over.add((t, 'long'))
         if r.get('short_score', 0) >= min_score:
             now_over.add((t, 'short'))
-
     alerted_set = _discord_alerted.setdefault(exchange, set())
-    newly_over = now_over - alerted_set
-    now = time.time()
     regime = current_market_regime if exchange == 'bithumb' else current_market_regime_upbit
-    for t, direction in newly_over:
+    for t, direction in now_over - alerted_set:
         r = next((x for x in results if x['ticker'] == t), None)
-        if not r:
-            continue
-        log_signal_open(t, direction, r, regime, exchange=exchange)  # 학습용 로그 — 웹후크 유무와 무관
-        if not DISCORD_WEBHOOK_URL:
-            continue
-        key = (exchange, t, direction)
-        last = _discord_last_alert_time.get(key, 0)
-        if now - last < _DISCORD_ALERT_COOLDOWN:
-            continue  # 컷 경계에서 방금 왔다갔다한 것 — 스팸 방지로 건너뜀
-        score = r.get('long_score' if direction == 'long' else 'short_score', 0)
-        emoji = "🟢" if direction == 'long' else "🔴"
-        label = "롱" if direction == 'long' else "숏"
-        ex_label = "빗썸" if exchange == 'bithumb' else "업비트"
-        sent_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        msg = f"{emoji} **[{ex_label}] {t}** {label} 진입컷 돌파 ({score}점, 컷 {min_score}점)\n🕐 {sent_at}"
-        send_discord_alert_with_chart(t, msg, exchange=exchange)
-        _discord_last_alert_time[key] = now
-
+        if r:
+            log_signal_open(t, direction, r, regime, exchange=exchange)  # 학습용 로그 — 웹후크 유무와 무관
     alerted_set.clear()
     alerted_set.update(now_over)
     _discord_alerted[exchange] = alerted_set
+
+    # --- 디스코드 알림: 판정 기준 ---
+    now_verdict = set()
+    for r in results:
+        v = r.get('verdict', '')
+        if v in ('LONG', 'SHORT'):
+            now_verdict.add((r.get('ticker', ''), 'long' if v == 'LONG' else 'short'))
+    v_set = _discord_verdict_alerted.setdefault(exchange, set())
+    newly = now_verdict - v_set
+    v_set.clear()
+    v_set.update(now_verdict)
+    if not DISCORD_WEBHOOK_URL or not newly:
+        return
+    now = time.time()
+    ex_label = "빗썸" if exchange == 'bithumb' else "업비트"
+    for t, direction in newly:
+        r = next((x for x in results if x['ticker'] == t), None)
+        if not r:
+            continue
+        key = (exchange, t, direction)
+        if now - _discord_last_alert_time.get(key, 0) < _DISCORD_ALERT_COOLDOWN:
+            continue  # 판정이 경계에서 방금 꺼졌다 켜진 것 — 스팸 방지
+        emoji = "🟢" if direction == 'long' else "🔴"
+        label = "롱" if direction == 'long' else "숏"
+        p_up, e4 = r.get('p_up'), r.get('exp4')
+        extra = []
+        if isinstance(p_up, (int, float)):
+            extra.append(f"확률 {p_up:.2f}")
+        if isinstance(e4, (int, float)):
+            extra.append(f"4h예상 {e4:+.2f}%")
+        if r.get('max_lev'):
+            extra.append(f"권장≤{r.get('max_lev')}x")
+        sent_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        msg = (f"{emoji} **[{ex_label}] {t}** ✅ 판정 {label}"
+               + (f" ({' · '.join(extra)})" if extra else "")
+               + f"\n🕐 {sent_at}")
+        send_discord_alert_with_chart(t, msg, exchange=exchange)
+        _discord_last_alert_time[key] = now
 
 # ============================================================
 # 미체결약정(Open Interest) - 바이낸스 선물 OI 히스토리
@@ -3710,16 +3731,6 @@ USE_SHORT_STOP_BLOCK = True
 SHORT_STOP_PCT = 3.0
 SHORT_STOP_WATCH_H = 24
 SHORT_STOP_BLOCK_H = 24
-# [2026-11-21 수동(사용자 요청)] 숏 판정은 바이낸스 선물 있는 코인만(liq_risk에 NOFUT이면 숏 대기). 롱 판정은 그대로.
-# 근거(10/26~11/21 판정 v2 숏, signal_outcomes): 바이낸스X 숏 12h 86%(111)이지만 실제로 숏 칠 곳이 없음. 바이낸스O만 10배·12h 시뮬 4주 -$57 / 5배 +$33($20씩).
-# NOFUT = 바이낸스 롱숏비율이 안 잡힌 코인(바이낸스 API가 일시적으로 실패하면 그 사이클엔 전 종목 숏이 대기될 수 있음). 되돌리기: False 또는 backups\20261121_binance_short\trading_server.py
-SHORT_REQUIRE_FUTURES = True
-
-def _short_futures_apply(r):
-    """숏 판정인데 바이낸스 선물이 없는 코인(NOFUT)이면 판정을 대기로 내린다."""
-    if SHORT_REQUIRE_FUTURES and r.get('verdict') == 'SHORT' and 'NOFUT' in str(r.get('liq_risk') or '').split('|'):
-        r['verdict'] = ''
-        r['verdict_reason'] = f"숏후보 바이낸스 선물 없음 대기 · {r.get('verdict_reason', '')}"
 _short_stop_track = {}   # (거래소, 티커) -> (숏 판정 시작가, 시각)
 _short_stop_block = {}   # (거래소, 티커) -> 차단 해제 시각
 _short_stop_prev = {}    # (거래소, 티커) -> 직전 사이클 차단 전 숏 판정 여부
@@ -3785,15 +3796,12 @@ def apply_prob_filter(results, exchange='bithumb'):
         r.pop('_pmf', None)
         p = r.get('p_up')
         if p is None:
-            _short_futures_apply(r)  # [2026-11-21 수동] 확률 없어도 숏은 바이낸스 선물 있는 코인만
             continue
         v = r.get('verdict', '')
         why = r.get('verdict_reason', '')
         # [2026-10-13] 필터 적용 전 판정도 같이 내보낸다 — 클라이언트 '확률필터' 버튼으로 끄면 이걸 표시
         r['verdict_raw'] = v
         r['verdict_reason_raw'] = f"{why} · 확률 {p:.2f}" if v else ''
-        if SHORT_REQUIRE_FUTURES and v == 'SHORT' and 'NOFUT' in str(r.get('liq_risk') or '').split('|'):
-            r['verdict_raw'], r['verdict_reason_raw'] = '', ''  # [2026-11-21 수동] 확률필터 OFF 화면에서도 선물 없는 코인 숏 미표시
         e4 = r.get('exp4')
         if VERDICT_V2 and e4 is not None:
             reg = r.get('regime') or current_market_regime
@@ -3813,7 +3821,6 @@ def apply_prob_filter(results, exchange='bithumb'):
                 r['verdict_reason'] = f"모델 숏 · 4h예상 {e4:+.2f}% · 확률 {p:.2f}" + (f" ({why})" if v == 'SHORT' else "")
             elif v == 'SHORT':
                 r['verdict'], r['verdict_reason'] = '', f"숏후보({why}) 4h예상 {e4:+.2f}% 부족"
-            _short_futures_apply(r)  # [2026-11-21 수동] 숏은 바이낸스 선물 있는 코인만
             _short_stop_apply(r, exchange)
             continue
         if v == 'LONG':
@@ -3829,7 +3836,6 @@ def apply_prob_filter(results, exchange='bithumb'):
                 r['verdict'], r['verdict_reason'] = '', f"숏후보({why}) 확률 {p:.2f} 높음"
             else:
                 r['verdict_reason'] = f"{why} · 확률 {p:.2f}"
-            _short_futures_apply(r)  # [2026-11-21 수동]
     return results
 
 
