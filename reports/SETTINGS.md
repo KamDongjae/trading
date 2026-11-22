@@ -79,7 +79,7 @@
 | 버튼 | 저장 파일 | 뜻 |
 |---|---|---|
 | 확률필터 ON/OFF | `prob_filter.json` | OFF면 필터 적용 전 판정을 표시(서버 판정·로그는 그대로) |
-| 자동진입 (설정 창) | `auto_entry.json`, 기록 `auto_entry_log.csv` | 켜면 판정 롱/숏이 새로 뜰 때 증거금·레버리지(기본 $30×3, 하락장이면 롱 자동진입 안 함 체크 기본 켜짐 — `skip_bear_long`, 강한 숏(4h예상 -1% 이하)은 진입 금액 2배 기본 켜짐 — `strong_x2`, `AUTO_ENTRY_STRONG_SHORT_EXP4`=-1.0·`AUTO_ENTRY_STRONG_MULT`=2.0)로 바로 진입. 잔고 제한=충전 잔고 안에서만(부족하면 건너뜀), 잔고 무시=서버 `open_force`로 강제 진입(잔고 마이너스 가능). 클라이언트 켜져 있을 때만. 바이낸스 선물에 없는 코인(NOFUT)은 롱·숏 모두 자동진입 안 함(롱 판정 표시는 그대로). "진입 후 N시간 자동 정리"(기본 48, 0=안 함)는 자동진입 포지션만 정리(`auto_entry_positions.json`), 클라가 꺼져 있던 동안 시간이 지났으면 켜질 때 정리 |
+| 자동진입 (설정 창) | `auto_entry.json`, 기록 `auto_entry_log.csv` | 1회 진입은 **고정 $** 또는 **현금의 %**(`amt_mode`=usd/pct, `AUTO_ENTRY_PCT`=3, 진입할 때마다 그 시점 현금 기준 — 11/22). 켜면 판정 롱/숏이 새로 뜰 때 증거금·레버리지(기본 $30×3, 하락장이면 롱 자동진입 안 함 체크 기본 켜짐 — `skip_bear_long`, 강한 숏(4h예상 -1% 이하)은 진입 금액 2배 기본 켜짐 — `strong_x2`, `AUTO_ENTRY_STRONG_SHORT_EXP4`=-1.0·`AUTO_ENTRY_STRONG_MULT`=2.0)로 바로 진입. 잔고 제한=충전 잔고 안에서만(부족하면 건너뜀), 잔고 무시=서버 `open_force`로 강제 진입(잔고 마이너스 가능). 클라이언트 켜져 있을 때만. 바이낸스 선물에 없는 코인(NOFUT)은 롱·숏 모두 자동진입 안 함(롱 판정 표시는 그대로). "진입 후 N시간 자동 정리"(기본 48, 0=안 함)는 자동진입 포지션만 정리(`auto_entry_positions.json`), 클라가 꺼져 있던 동안 시간이 지났으면 켜질 때 정리 |
 | 순위 탭 | – | 4h 예상수익(exp4) 순 롱/숏 상위 10. 서버가 구버전이면 p_up 순 |
 
 ## 7. 변경 이력(설정 관련)
@@ -107,3 +107,4 @@
 | 11/21 | 자동진입 기본값 레버리지 10→5배, 자동 정리 12→24h (trading_client.py AUTO_ENTRY_LEVERAGE/AUTO_ENTRY_HOLD_H, 이미 저장된 auto_entry.json 설정은 그대로) | backups\20261121_autoentry_24h5x |
 | 11/22 | 클라 자동진입 복구(11/21 21시 덮어쓰기로 빠졌던 것): 바이낸스 선물 없는 코인 롱·숏 건너뜀, `AUTO_ENTRY_USD/LEVERAGE/HOLD_H` 200·10·12 → 30·3·48, `AUTO_ENTRY_SKIP_BEAR_LONG`=True, `AUTO_ENTRY_STRONG_SHORT_EXP4`=-1.0·`AUTO_ENTRY_STRONG_MULT`=2.0 (사용자 요청). 서버 SHORT_REQUIRE_FUTURES는 아직 미복구 | backups\20261122_binance_auto (바이낸스만 넣기 전), backups\20261122_autoentry_restore (기본값·2개 규칙 넣기 전) |
 | 11/22 | DROP_NO_PRICE_ON_CLOSE=True (가격 없어 청산 안 되는 포지션은 기록째 삭제·증거금은 잔고로 환불, 사용자 요청, trading_server.py srv_close) | backups\20261122_drop_noprice |
+| 11/22 | Claude 보고용 사본 `claude_view/`(서버·클라·live_trader, 1분마다, `CLAUDE_VIEW`), 1회 진입 '현금의 %' 모드(클라 자동진입 `amt_mode/pct`, live_trader `margin_pct`·모의 가상현금 `DRY_SEED_USDT`=1000) (사용자 요청) | backups\20261122_claude_view_pct |

@@ -1,5 +1,15 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-11-22 (수동, 12시 KST, 사용자 요청) — Claude 보고용 사본(claude_view) + 1회 진입 금액 '현금의 %' (모의·실전)
+
+- 배경: 윈도우에서도 서버·클라 SCRIPT_DIR 이 `/storage/emulated/0/Documents`(= `C:\storage\emulated\0\Documents`)로 잡혀서 모의 잔고·포지션·자동진입 기록이 trading 폴더 밖에 있었음 → Claude 점검에서 못 읽음
+- **trading_server.py**: `write_claude_view()` — 1분마다 `trading\claude_view\`에 server_account.csv·trade_history_usd.csv·simulation_data_usd.csv 사본 + `server_status.json`(잔고·포지션). 원본 위치는 그대로. `CLAUDE_VIEW = False`면 끔
+- **trading_client.py**: 1분마다 auto_entry_log.csv·auto_entry_positions.json·auto_entry.json 사본 + `client_status.json`. 자동진입 설정 창에 **1회 진입: 고정 $ / 현금의 %** 선택(`amt_mode`, `pct`, 기본 `AUTO_ENTRY_AMT_MODE="usd"`, `AUTO_ENTRY_PCT=3`). % 모드는 진입할 때마다 그 시점 현금(서버 balance) 기준 — 정리로 현금이 늘면 금액도 늘어남. 같은 주기 여러 건이면 앞 건 증거금만큼 빼고 계산. 강한 숏 2배는 그 위에 곱함
+- **live_trader.py / live_trader_gui.py**: 같은 방식. `Trader(margin_pct=…)` — 실거래는 바이낸스 사용 가능 USDT, 모의(--dry)는 가상 현금(`DRY_SEED_USDT=1000`, live_state.json `dry_cash`, 진입 때 빼고 정리 때 증거금+손익 더함)의 %. 콘솔은 시작 때 `p` 입력하면 % 모드, GUI는 '고정 / 현금의 %' 라디오. 1분마다 `claude_view\live_status.json`(설정·잔고·보유·증거금 손익%)·live_trades.csv 사본·live_log_tail.txt(마지막 300줄). API 키는 안 씀
+- `.gitignore`에 `claude_view/` 추가(잔고 정보 깃허브에 안 올라감)
+- 스모크 테스트: live_trader 모의 10% → 현금 1000에서 100 진입, +29.7 정리 후 1029.7의 10% = 102.97(강한 숏 ×2 = 205.94). py_compile 통과
+- **서버·클라이언트·live_trader 재시작 필요**. 되돌리기: backups\20261122_claude_view_pct
+
 ## 2026-11-22 (수동, 09:5x KST, 사용자 요청) — 자동진입: 보고 있는 탭과 상관없이 빗썸·업비트 둘 다
 
 - 배경: `_auto_entry_check`가 화면에 띄운 거래소 스냅샷만 봐서, 노트북이 빗썸 탭에 있는 동안 업비트 판정(KERNEL·BREV 롱, VVV·ENSO 숏 등)은 한 번도 체크 안 됨

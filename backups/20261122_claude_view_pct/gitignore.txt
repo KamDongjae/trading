@@ -1,0 +1,58 @@
+# ============================================================
+# Pyramide .gitignore — 깃허브에 올리면 안 되는 것
+# auto_git_push.bat 가 *.py *.txt *.md *.bat *.json 를 통째로 add 하므로,
+# 비밀·기기별 상태 파일은 반드시 여기 있어야 안 올라간다.
+# [2026-11-21] 정리
+# ============================================================
+
+# ---------- 1. 비밀 (절대 올리면 안 됨) ----------
+binance_api_key.txt
+*api_key*.txt
+*secret*.txt
+.env
+.env.*
+DISCORD_WEBHOOK.txt
+*.pem
+*.key
+
+# ---------- 2. 실전 매매 상태·기록 (계좌 정보) ----------
+live_state.json
+live_trader.lock
+live_log.txt
+executor_*.json
+executor.lock
+executor_log.txt
+*.lock
+
+# ---------- 3. 기기별 설정·상태 (기기마다 달라야 함) ----------
+auto_entry.json
+auto_entry_positions.json
+prob_filter.json
+signal_since.json
+
+# ---------- 4. 데이터·로그 (크고 매일 바뀜) ----------
+*.csv
+*.bak
+*.tmp
+*.zip
+collector_log.txt
+git_push_log.txt
+history/
+data_archive/
+server_cmds/
+
+# ---------- 5. 모델 (lite.json 은 다른 기기용이라 올림) ----------
+models/*.pkl
+
+# ---------- 6. PDF (설정 문서만 올림) ----------
+*.pdf
+!reports/SETTINGS.pdf
+
+# ---------- 7. 파이썬/OS 찌꺼기 ----------
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -59,16 +59,26 @@ class App:
         self.v_lev = tk.StringVar(value=str(L.DEFAULT_LEVERAGE))
         self.v_hold = tk.StringVar(value=f"{L.DEFAULT_HOLD_HOURS:g}")
         self.v_amt = tk.StringVar(value=f"{L.DEFAULT_MARGIN_USDT:g}")
+        self.v_amt_mode = tk.StringVar(value="usd")   # [2026-11-22] "usd" 고정 / "pct" 현금의 %
+        self.v_pct = tk.StringVar(value=f"{L.DEFAULT_MARGIN_PCT:g}")
         self.v_strong = tk.BooleanVar(value=True)
         self.v_dry = tk.BooleanVar(value=True)
         r = ttk.Frame(top)
         r.pack(fill="x")
-        for lbl, var, unit, w in (("레버리지", self.v_lev, "배", 5), ("보유 시간", self.v_hold, "시간", 6),
-                                  ("1회 진입 금액", self.v_amt, "USDT", 8)):
+        for lbl, var, unit, w in (("레버리지", self.v_lev, "배", 5), ("보유 시간", self.v_hold, "시간", 6)):
             ttk.Label(r, text=lbl).pack(side="left")
             e = ttk.Entry(r, textvariable=var, width=w, justify="right")
             e.pack(side="left", padx=(4, 2))
             ttk.Label(r, text=unit).pack(side="left", padx=(0, 16))
+        ttk.Label(r, text="1회 진입").pack(side="left")
+        self.rb_usd = ttk.Radiobutton(r, text="고정", variable=self.v_amt_mode, value="usd")
+        self.rb_usd.pack(side="left", padx=(4, 0))
+        ttk.Entry(r, textvariable=self.v_amt, width=7, justify="right").pack(side="left", padx=(2, 2))
+        ttk.Label(r, text="USDT").pack(side="left", padx=(0, 6))
+        self.rb_pct = ttk.Radiobutton(r, text="현금의", variable=self.v_amt_mode, value="pct")
+        self.rb_pct.pack(side="left")
+        ttk.Entry(r, textvariable=self.v_pct, width=5, justify="right").pack(side="left", padx=(2, 2))
+        ttk.Label(r, text="%").pack(side="left", padx=(0, 16))
         self.cb_strong = ttk.Checkbutton(r, text=f"강한 숏(4h예상 {L.STRONG_SHORT_EXP4}% 이하) 진입 금액 {L.STRONG_MULT:g}배",
                                          variable=self.v_strong)
         self.cb_strong.pack(side="left", padx=(0, 16))
@@ -198,6 +208,9 @@ class App:
             lev = self._num(self.v_lev, L.DEFAULT_LEVERAGE, int, lambda v: 1 <= v <= 20, "레버리지(1~20)")
             hold = self._num(self.v_hold, L.DEFAULT_HOLD_HOURS, float, lambda v: 0.1 <= v <= 240, "보유 시간(0.1~240)")
             amt = self._num(self.v_amt, L.DEFAULT_MARGIN_USDT, float, lambda v: v > 0, "진입 금액(0보다 큼)")
+            pct = None
+            if self.v_amt_mode.get() == "pct":
+                pct = self._num(self.v_pct, L.DEFAULT_MARGIN_PCT, float, lambda v: 0 < v <= 100, "현금의 %(0~100)")
         except ValueError as e:
             messagebox.showwarning("입력 오류", f"{e} 값을 확인해 줘.")
             return
@@ -207,8 +220,9 @@ class App:
             return
         if not dry:
             msg = (f"실거래입니다. 실제 돈으로 주문이 나갑니다.\n\n"
-                   f"레버리지 {lev}배 · {hold:g}시간 뒤 정리 · 1회 {amt:g} USDT"
-                   f"{f' (강한 숏 {amt * L.STRONG_MULT:g})' if strong else ''}\n\n시작할까?")
+                   f"레버리지 {lev}배 · {hold:g}시간 뒤 정리 · 1회 "
+                   f"{f'현금(사용 가능 USDT)의 {pct:g}%' if pct else f'{amt:g} USDT'}"
+                   f"{f' (강한 숏 ×{L.STRONG_MULT:g})' if strong else ''}\n\n시작할까?")
             if not messagebox.askyesno("실거래 시작", msg, icon="warning"):
                 return
         try:
@@ -224,11 +238,11 @@ class App:
             return
         self.set_inputs("disabled")
         self.lbl_state.configure(text="연결 중…", foreground="#c9a800")
-        self._bg(self._start_worker, lev, hold, amt, dry, strong)
+        self._bg(self._start_worker, lev, hold, amt, dry, strong, pct)
 
-    def _start_worker(self, lev, hold, amt, dry, strong):
+    def _start_worker(self, lev, hold, amt, dry, strong, pct=None):
         try:
-            tr = L.Trader(lev, hold, amt, dry=dry, strong_x2=strong)
+            tr = L.Trader(lev, hold, amt, dry=dry, strong_x2=strong, margin_pct=pct)
             tr.startup()
         except SystemExit:
             L.release_lock()
@@ -239,7 +253,7 @@ class App:
             self.root.after(0, lambda: self._start_failed(f"바이낸스 연결 실패: {e}"))
             return
         self.tr = tr
-        L.log(f"▶️  시작 — {lev}배 · {hold:g}h · {amt:g} USDT{' (강한 숏 ×2)' if strong else ''} · {'모의' if dry else '실거래'}")
+        L.log(f"▶️  시작 — {lev}배 · {hold:g}h · {tr.amount_text()}{' (강한 숏 ×2)' if strong else ''} · {'모의' if dry else '실거래'}")
         self.th = threading.Thread(target=tr.run, daemon=True)
         self.th.start()
         self.root.after(0, self._started)
@@ -261,7 +275,7 @@ class App:
 
     def set_inputs(self, state):
         self.btn_start.configure(state=state)
-        for cb in (self.cb_strong, self.cb_dry):
+        for cb in (self.cb_strong, self.cb_dry, self.rb_usd, self.rb_pct):
             cb.configure(state=state)
 
     # ---------- 동작 ----------

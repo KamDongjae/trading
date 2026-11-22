@@ -69,6 +69,11 @@ STATE_FILE = os.path.join(SCRIPT_DIR, "live_state.json")
 TRADES_CSV = os.path.join(SCRIPT_DIR, "live_trades.csv")
 LOG_FILE = os.path.join(SCRIPT_DIR, "live_log.txt")
 LOCK_FILE = os.path.join(SCRIPT_DIR, "live_trader.lock")
+# [2026-11-22 수동, 사용자 요청] Claude 보고용 사본 — 1분마다 claude_view\\live_status.json(설정·잔고·보유·손익)
+#   + live_trades.csv 사본 + live_log.txt 마지막 300줄. 키·시크릿은 절대 안 씀. claude_view/ 는 .gitignore
+CLAUDE_VIEW = True
+CLAUDE_VIEW_SEC = 60
+CLAUDE_VIEW_DIR = os.path.join(SCRIPT_DIR, "claude_view")
 
 BASE_URL = "https://fapi.binance.com"
 RECV_WINDOW = 10000
@@ -79,6 +84,8 @@ DEFAULT_LEVERAGE = 3
 DEFAULT_HOLD_HOURS = 48.0
 DEFAULT_MARGIN_USDT = 30.0
 
+DEFAULT_MARGIN_PCT = 3.0     # [2026-11-22 수동, 사용자 요청] '현금의 %' 모드 기본값
+DRY_SEED_USDT = 1000.0       # --dry(모의)에서 '현금의 %' 쓸 때 가상 현금 시작값(정리하면 손익 반영)
 MARGIN_TYPE = "ISOLATED"
 SKIP_BEAR_LONG = True        # 레짐 하락장이면 롱 건너뜀
 MAX_SIGNAL_AGE_MIN = 10.0    # 신호 뜬 지 이 시간(분) 넘으면 진입 안 함
@@ -376,8 +383,10 @@ def fmt_qty(d):
 # 실전 자동매매
 # ------------------------------------------------------------------
 class Trader:
-    def __init__(self, lev, hold_h, margin, dry=False, strong_x2=True):
+    def __init__(self, lev, hold_h, margin, dry=False, strong_x2=True, margin_pct=None):
         self.lev, self.hold_h, self.margin = int(lev), float(hold_h), float(margin)
+        # [2026-11-22] margin_pct 를 주면 1회 진입 = 그 시점 현금(실거래: 사용 가능 USDT, 모의: 가상 현금)의 %
+        self.margin_pct = float(margin_pct) if margin_pct else None
         self.strong_x2 = bool(strong_x2)
         self.dry = dry
         self.paused = False
@@ -398,6 +407,17 @@ class Trader:
                 log(f"⚠️ 상태 파일 읽기 실패: {e}")
         self.seen = set(self.state.get("seen", []))
         self._last_symbols_load = 0
+        if dry and "dry_cash" not in self.state:
+            self.state["dry_cash"] = DRY_SEED_USDT
+
+    def cash(self):
+        """현금: 실거래 = 바이낸스 사용 가능 USDT(포지션 증거금 제외), 모의 = 가상 현금."""
+        if self.dry:
+            return float(self.state.get("dry_cash", DRY_SEED_USDT))
+        return self.bn.usdt_balance()[0]
+
+    def amount_text(self):
+        return f"현금의 {self.margin_pct:g}%" if self.margin_pct else f"{self.margin:g} USDT"
 
     # --- 저장 ---
     def save_state(self):
@@ -584,6 +604,10 @@ class Trader:
         info = self.bn.symbols[symbol]
         mark = self.bn.mark_price(symbol)
         lev = int(lev or self.lev)
+        if margin is None and self.margin_pct:
+            cash = self.cash()
+            margin = round(cash * self.margin_pct / 100.0, 2)
+            log(f"💵 {symbol} 현금 {cash:,.2f} USDT 의 {self.margin_pct:g}% = {margin:g} USDT")
         margin = float(margin if margin is not None else self.margin) * mult
         hold = float(hold if hold is not None else self.hold_h)
         if mult != 1.0:
@@ -629,6 +653,8 @@ class Trader:
              "hold_hours": hold, "status": "open"}
         with self.lock:
             self.state["trades"][eid] = t
+            if self.dry:
+                self.state["dry_cash"] = round(float(self.state.get("dry_cash", DRY_SEED_USDT)) - margin, 4)
         self.save_state()
         log(f"✅ {'[모의] ' if self.dry else ''}진입 {symbol} {direction} {lev}배 ${margin:.2f} 수량 {fmt_qty(qty)} "
             f"@ {entry:g} (대략 청산가 {liq:g}, {hold:g}h 뒤 정리) — {reason}")
@@ -721,6 +747,9 @@ class Trader:
         self.write_trade(t)
         with self.lock:
             self.state["trades"].pop(eid, None)
+            if self.dry and t.get("mode") == "dry":
+                back = float(t.get("margin", 0)) + (pnl if pnl != "" else 0)
+                self.state["dry_cash"] = round(float(self.state.get("dry_cash", DRY_SEED_USDT)) + max(back, 0), 4)
         log(f"🔚 {'[모의] ' if self.dry else ''}정리 {t['symbol']} {t['direction']} — {why}"
             + (f" 추정손익 {pnl:+.2f} USDT" if pnl != "" else ""))
 
@@ -730,7 +759,7 @@ class Trader:
                  f" 모드       : {'모의(주문 안 냄)' if self.dry else '실거래'}{'  [일시정지]' if self.paused else ''}",
                  f" 레버리지   : {self.lev}배 ({MARGIN_TYPE})",
                  f" 보유 시간  : {self.hold_h:g}h 뒤 정리",
-                 f" 1회 진입   : {self.margin:g} USDT" + (f" (강한 숏은 ×{STRONG_MULT:g} = {self.margin * STRONG_MULT:g})" if self.strong_x2 else ""),
+                 f" 1회 진입   : {self.amount_text()}" + (f" (강한 숏은 ×{STRONG_MULT:g})" if self.strong_x2 else ""),
                  f" 조건       : 바이낸스 선물 코인만 · 같은 코인 보유 중 건너뜀 · 하락장 롱 제외"]
         if not self.dry:
             try:
@@ -738,6 +767,8 @@ class Trader:
                 lines.append(f" 잔고       : 사용 가능 {avail:,.2f} / 총 {total:,.2f} USDT")
             except Exception:
                 pass
+        else:
+            lines.append(f" 가상 현금  : {self.cash():,.2f} USDT")
         opens = self.open_trades()
         lines.append(f"──────── 보유 {len(opens)}개 ────────")
         for t in opens.values():
@@ -754,6 +785,50 @@ class Trader:
         with _print_lock:
             print("\n".join(lines), flush=True)
 
+    def write_claude_view(self):
+        if not CLAUDE_VIEW:
+            return
+        try:
+            os.makedirs(CLAUDE_VIEW_DIR, exist_ok=True)
+            st = {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "pid": os.getpid(),
+                  "mode": "dry" if self.dry else "real", "paused": self.paused,
+                  "leverage": self.lev, "hold_h": self.hold_h, "margin": self.margin, "margin_pct": self.margin_pct,
+                  "strong_x2": self.strong_x2, "dry_cash": self.state.get("dry_cash") if self.dry else None,
+                  "balance_avail": None, "balance_total": None, "open": []}
+            if not self.dry:
+                try:
+                    st["balance_avail"], st["balance_total"] = self.bn.usdt_balance()
+                except Exception as e:
+                    st["balance_error"] = str(e)[:200]
+            for eid, t in self.open_trades().items():
+                row = {k: t.get(k) for k in ("symbol", "direction", "leverage", "margin", "entry_time",
+                                             "entry_price", "hold_hours", "reason", "mode")}
+                row["event_id"] = eid
+                try:
+                    mark = self.bn.mark_price(t["symbol"])
+                    sign = 1 if t["direction"] == "LONG" else -1
+                    row["mark"] = mark
+                    row["margin_pnl_pct"] = round((mark / float(t["entry_price"]) - 1) * 100 * sign * float(t["leverage"]), 2)
+                except Exception:
+                    pass
+                st["open"].append(row)
+            out = os.path.join(CLAUDE_VIEW_DIR, "live_status.json")
+            atomic_write_json(out, st)
+            if os.path.exists(TRADES_CSV):
+                import shutil
+                dst = os.path.join(CLAUDE_VIEW_DIR, "live_trades.csv")
+                shutil.copyfile(TRADES_CSV, dst + ".tmp")
+                os.replace(dst + ".tmp", dst)
+            if os.path.exists(LOG_FILE):
+                with open(LOG_FILE, encoding="utf-8", errors="replace") as f:
+                    tail = f.readlines()[-300:]
+                dst = os.path.join(CLAUDE_VIEW_DIR, "live_log_tail.txt")
+                with open(dst + ".tmp", "w", encoding="utf-8") as f:
+                    f.writelines(tail)
+                os.replace(dst + ".tmp", dst)
+        except Exception as e:
+            log(f"⚠️ claude_view 저장 실패: {e}")
+
     def run(self):
         last_sync = time.time()
         while not self.stop:
@@ -763,6 +838,9 @@ class Trader:
                     last_sync = time.time()
                 self.manage()
                 self.check_signals()
+                if time.time() - getattr(self, "_claude_view_t", 0) >= CLAUDE_VIEW_SEC:  # [2026-11-22]
+                    self._claude_view_t = time.time()
+                    self.write_claude_view()
             except Exception as e:
                 log(f"⚠️ 루프 오류: {e}")
             for _ in range(POLL_SEC):
@@ -896,14 +974,20 @@ def main():
     print("=" * 60)
     lev = ask("레버리지(배)", DEFAULT_LEVERAGE, int, lambda v: 1 <= v <= 20)
     hold = ask("보유 시간(시간, 지나면 시장가 정리)", DEFAULT_HOLD_HOURS, float, lambda v: 0.1 <= v <= 240)
-    amt = ask("1회 진입 금액(USDT, 증거금)", DEFAULT_MARGIN_USDT, float, lambda v: v > 0)
+    m = input("1회 진입 금액 방식 [Enter = 고정 USDT / p = 현금의 %]: ").strip().lower()
+    pct = None
+    amt = DEFAULT_MARGIN_USDT
+    if m in ("p", "%", "pct", "퍼센트"):
+        pct = ask("현금의 몇 %(진입할 때마다 그때 현금 기준)", DEFAULT_MARGIN_PCT, float, lambda v: 0 < v <= 100)
+    else:
+        amt = ask("1회 진입 금액(USDT, 증거금)", DEFAULT_MARGIN_USDT, float, lambda v: v > 0)
     s = input(f"강한 숏(4h예상 {STRONG_SHORT_EXP4}% 이하)은 진입 금액 {STRONG_MULT:g}배로? [Enter = 예 / n = 아니오]: ").strip().lower()
     strong = s not in ("n", "no", "아니오", "ㄴ")
     if lev >= 5:
         print(f"  ⚠️ {lev}배: 1년 백테스트에서 5배는 청산 44건·한 달 -$91도 있었음(3배는 16건)")
     acquire_lock()
     try:
-        tr = Trader(lev, hold, amt, dry=a.dry, strong_x2=strong)
+        tr = Trader(lev, hold, amt, dry=a.dry, strong_x2=strong, margin_pct=pct)
         tr.startup()
         tr.print_status()
         if not a.dry:
@@ -911,7 +995,7 @@ def main():
             if ok != "yes":
                 print("취소")
                 return
-        log(f"▶️  시작 — {lev}배 · {hold:g}h · {amt:g} USDT{' (강한 숏 ×2)' if strong else ''} · {'모의' if a.dry else '실거래'} (help = 명령어)")
+        log(f"▶️  시작 — {lev}배 · {hold:g}h · {tr.amount_text()}{' (강한 숏 ×2)' if strong else ''} · {'모의' if a.dry else '실거래'} (help = 명령어)")
         th = threading.Thread(target=tr.run, daemon=True)
         th.start()
         command_loop(tr)

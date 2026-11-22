@@ -52,10 +52,16 @@ AUTO_ENTRY_LOG = os.path.join(SCRIPT_DIR, "auto_entry_log.csv")  # 자동진입 
 AUTO_ENTRY_USD = 30         # 자동진입 증거금($) 기본값 — 설정 창에서 바꿀 수 있음  [2026-11-22 수동] 200→30 (1년 백테스트 3배·48h·$30 추천값)
 AUTO_ENTRY_LEVERAGE = 3     # 자동진입 레버리지 기본값  [2026-11-22 수동] 10→3
 AUTO_ENTRY_HOLD_H = 48      # 자동진입 포지션 자동 정리(시간) 기본값, 0이면 안 함  [2026-11-22 수동] 12→48
+AUTO_ENTRY_AMT_MODE = "usd"   # [2026-11-22 수동, 사용자 요청] 1회 진입 금액 방식: "usd"=고정 $ / "pct"=현금(잔고)의 %
+AUTO_ENTRY_PCT = 3.0          # "pct"일 때 현금의 몇 %. 진입할 때마다 그 시점 현금 기준으로 다시 계산(정리로 현금 110%가 되면 110을 100으로 봄)
 AUTO_ENTRY_SKIP_BEAR_LONG = True     # [2026-11-22 수동] 레짐 하락장이면 롱 자동진입 안 함(1년 백테스트 하락장 롱 35건 승률 37%·-$40)
 AUTO_ENTRY_STRONG_SHORT_EXP4 = -1.0  # [2026-11-22 수동] 숏이고 4h예상(exp4) ≤ 이 값이면 '강한 숏'
 AUTO_ENTRY_STRONG_MULT = 2.0         # 강한 숏 진입 금액 배수(1년 백테스트 +$887→+$1,324)
 AUTO_POS_FILE = os.path.join(SCRIPT_DIR, "auto_entry_positions.json")  # 자동진입으로 산 포지션(정리 예정 시각)
+# [2026-11-22 수동, 사용자 요청] Claude 보고용 사본 — 1분마다 trading\\claude_view\\ 에 자동진입 기록 복사 + client_status.json
+CLAUDE_VIEW = True
+CLAUDE_VIEW_SEC = 60
+CLAUDE_VIEW_DIR = os.path.join(_fallback_dir, "claude_view")
 PROB_FILTER_FILE = os.path.join(SCRIPT_DIR, "prob_filter.json")  # [2026-10-13 추가] 확률필터 표시 ON/OFF (기기별 설정)
 SIGNAL_SINCE_FILE = os.path.join(SCRIPT_DIR, "signal_since.json")  # [2026-10-12 추가] 카드 롱/숏 신호 시작시각 저장
 CUSTOM_CONDITIONS_FILE = os.path.join(SCRIPT_DIR, "custom_conditions.json")  # [2026-07-21 추가] 사용자 정의 조건식 저장
@@ -1568,6 +1574,10 @@ class TradingClient:
                 self._auto_close_check()
             except Exception as e:
                 print(f"자동정리 확인 실패: {e}")
+        try:
+            self._write_claude_view()
+        except Exception as e:
+            print(f"claude_view 저장 실패: {e}")
             if current_margin_mode != self._last_margin_mode_shown:
                 self._highlight_margin_mode(current_margin_mode)
         self.root.after(1000, self.poll_files)
@@ -2762,6 +2772,7 @@ class TradingClient:
     # ---------- [2026-11-21 추가] 자동진입 ----------
     def _load_auto_entry(self):
         cfg = {'on': False, 'force': False, 'usd': AUTO_ENTRY_USD, 'lev': AUTO_ENTRY_LEVERAGE,
+               'amt_mode': AUTO_ENTRY_AMT_MODE, 'pct': AUTO_ENTRY_PCT,
                'hold_h': AUTO_ENTRY_HOLD_H, 'skip_bear_long': AUTO_ENTRY_SKIP_BEAR_LONG, 'strong_x2': True}
         try:
             with open(AUTO_ENTRY_FILE, 'r', encoding='utf-8') as f:
@@ -2783,7 +2794,8 @@ class TradingClient:
             mode = "잔고무시" if c.get('force') else "잔고내"
             hold = f" {c.get('hold_h', 0):g}h정리" if c.get('hold_h') else ""
             extra = (" 숏강2배" if c.get('strong_x2', True) else "") + (" 하락롱X" if c.get('skip_bear_long', True) else "")
-            self._cfg(self.btn_auto_entry, text=f"자동진입 ON ${c['usd']:g}×{c['lev']} {mode}{hold}{extra}",
+            amt_txt = f"현금{c.get('pct', AUTO_ENTRY_PCT):g}%" if c.get('amt_mode') == 'pct' else f"${c['usd']:g}"
+            self._cfg(self.btn_auto_entry, text=f"자동진입 ON {amt_txt}×{c['lev']} {mode}{hold}{extra}",
                       bg="#c0392b" if c.get('force') else "#2fa84f", fg="white")
         else:
             self._cfg(self.btn_auto_entry, text="자동진입 OFF", bg="#555555", fg="white")
@@ -2800,6 +2812,8 @@ class TradingClient:
         on_var = tk.BooleanVar(value=bool(c.get('on')))
         force_var = tk.StringVar(value="force" if c.get('force') else "limit")
         usd_var = tk.StringVar(value=f"{c.get('usd', AUTO_ENTRY_USD):g}")
+        amt_mode_var = tk.StringVar(value=c.get('amt_mode', AUTO_ENTRY_AMT_MODE))
+        pct_var = tk.StringVar(value=f"{c.get('pct', AUTO_ENTRY_PCT):g}")
         lev_var = tk.StringVar(value=str(c.get('lev', AUTO_ENTRY_LEVERAGE)))
         hold_var = tk.StringVar(value=f"{c.get('hold_h', AUTO_ENTRY_HOLD_H):g}")
         bear_var = tk.BooleanVar(value=bool(c.get('skip_bear_long', AUTO_ENTRY_SKIP_BEAR_LONG)))
@@ -2819,8 +2833,11 @@ class TradingClient:
 
         row = tk.Frame(body)
         row.pack(fill="x", pady=(6, 4))
-        tk.Label(row, text="증거금 $", font=("Arial", fs)).pack(side="left")
-        tk.Entry(row, textvariable=usd_var, width=7, font=("Arial", fs)).pack(side="left", padx=(2, 12))
+        tk.Radiobutton(row, text="고정 $", variable=amt_mode_var, value="usd", font=("Arial", fs)).pack(side="left")
+        tk.Entry(row, textvariable=usd_var, width=7, font=("Arial", fs)).pack(side="left", padx=(2, 8))
+        tk.Radiobutton(row, text="현금의", variable=amt_mode_var, value="pct", font=("Arial", fs)).pack(side="left")
+        tk.Entry(row, textvariable=pct_var, width=5, font=("Arial", fs)).pack(side="left", padx=2)
+        tk.Label(row, text="%", font=("Arial", fs)).pack(side="left", padx=(0, 12))
         tk.Label(row, text="레버리지", font=("Arial", fs)).pack(side="left")
         tk.Entry(row, textvariable=lev_var, width=4, font=("Arial", fs)).pack(side="left", padx=2)
         tk.Label(row, text="배", font=("Arial", fs)).pack(side="left")
@@ -2834,21 +2851,25 @@ class TradingClient:
                        font=("Arial", fs)).pack(anchor="w", pady=(6, 0))
         tk.Checkbutton(body, text=f"강한 숏(4h예상 {AUTO_ENTRY_STRONG_SHORT_EXP4:g}% 이하)은 진입 금액 {AUTO_ENTRY_STRONG_MULT:g}배",
                        variable=strong_var, font=("Arial", fs)).pack(anchor="w")
+        tk.Label(body, text="현금의 %: 진입할 때마다 그때 현금(잔고) 기준으로 계산 — 정리 후 현금이 늘면 금액도 같이 늘어남",
+                 font=("Arial", fs - 1), fg="gray").pack(anchor="w", pady=(4, 0))
         tk.Label(body, text=f"추천: ${AUTO_ENTRY_USD:g} × {AUTO_ENTRY_LEVERAGE}배 · {AUTO_ENTRY_HOLD_H:g}시간 정리 · 위 두 칸 켬 (1년 백테스트 기준)",
                  font=("Arial", fs - 1), fg="gray").pack(anchor="w", pady=(4, 0))
 
         def save():
             try:
                 usd = float(usd_var.get())
+                pct = float(pct_var.get() or AUTO_ENTRY_PCT)
                 lev = int(float(lev_var.get()))
                 hold_h = float(hold_var.get() or 0)
-                if usd <= 0 or lev <= 0 or hold_h < 0:
+                if usd <= 0 or lev <= 0 or hold_h < 0 or not (0 < pct <= 100):
                     raise ValueError
             except Exception:
-                messagebox.showwarning("입력 오류", "증거금·레버리지는 0보다 큰 숫자, 정리 시간은 0 이상으로 넣어줘.", parent=dlg)
+                messagebox.showwarning("입력 오류", "증거금·레버리지는 0보다 큰 숫자, %는 0~100, 정리 시간은 0 이상으로 넣어줘.", parent=dlg)
                 return
             was_on = bool(self.auto_cfg.get('on'))
             self.auto_cfg = {'on': bool(on_var.get()), 'force': force_var.get() == "force", 'usd': usd, 'lev': lev,
+                             'amt_mode': amt_mode_var.get(), 'pct': pct,
                              'hold_h': hold_h, 'skip_bear_long': bool(bear_var.get()), 'strong_x2': bool(strong_var.get())}
             self._save_auto_entry()
             if self.auto_cfg['on'] and not was_on:
@@ -2867,6 +2888,32 @@ class TradingClient:
                   command=dlg.destroy).pack(side="right", padx=6)
         tk.Label(body, text=f"기록: {os.path.basename(AUTO_ENTRY_LOG)}", font=("Arial", fs - 1),
                  fg="gray").pack(anchor="w", pady=(8, 0))
+
+    def _write_claude_view(self):
+        """[2026-11-22] Claude 보고용: 자동진입 설정·기록·보유 사본을 trading\\claude_view\\ 에 (1분마다)."""
+        if not CLAUDE_VIEW:
+            return
+        now = time.time()
+        if now - getattr(self, '_claude_view_t', 0) < CLAUDE_VIEW_SEC:
+            return
+        self._claude_view_t = now
+        import shutil
+        os.makedirs(CLAUDE_VIEW_DIR, exist_ok=True)
+        if os.path.normcase(os.path.abspath(SCRIPT_DIR)) != os.path.normcase(os.path.abspath(CLAUDE_VIEW_DIR)):
+            for src in (AUTO_ENTRY_LOG, AUTO_POS_FILE, AUTO_ENTRY_FILE):
+                if os.path.exists(src):
+                    dst = os.path.join(CLAUDE_VIEW_DIR, os.path.basename(src))
+                    shutil.copyfile(src, dst + ".tmp")
+                    os.replace(dst + ".tmp", dst)
+        acc = getattr(self, '_account', None)
+        st = {'ts': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'pid': os.getpid(), 'data_dir': SCRIPT_DIR,
+              'auto_entry': dict(getattr(self, 'auto_cfg', {}) or {}),
+              'auto_status_text': (self.auto_entry_status.cget('text') if hasattr(self, 'auto_entry_status') else ''),
+              'balance': acc[0] if acc else None, 'n_positions': len(acc[2]) if acc else None}
+        out = os.path.join(CLAUDE_VIEW_DIR, "client_status.json")
+        with open(out + ".tmp", 'w', encoding='utf-8') as f:
+            json.dump(st, f, ensure_ascii=False, indent=1, default=str)
+        os.replace(out + ".tmp", out)
 
     def _auto_entry_bg_check(self):
         """[2026-11-22] 화면에 안 보이는 거래소의 스냅샷도 읽어서 자동진입 판정.
@@ -2923,6 +2970,10 @@ class TradingClient:
         action = 'open_force' if c.get('force') else 'open'
 
         held = {p['ticker']: p.get('position_type', '') for p in (self._account[2] if self._account else [])}
+        # [2026-11-22] 현금의 % 모드: 지금 현금(잔고) 기준. 같은 주기에 여러 개 들어가면 앞에서 쓴 증거금만큼 줄여가며 계산
+        pct_mode = c.get('amt_mode') == 'pct'
+        pct = float(c.get('pct', AUTO_ENTRY_PCT))
+        cash = float(self._account[0]) if self._account else 0.0
         for t, v in new_signals:
             ptype = 'long' if v == "LONG" else 'short'
             # [2026-11-22 수동, 사용자 요청] 바이낸스 선물 없는 코인(NOFUT)은 롱·숏 모두 자동진입 안 함
@@ -2943,15 +2994,21 @@ class TradingClient:
                 continue
             # [2026-11-22 수동, 사용자 요청] 강한 숏(4h예상 ≤ -1.0%)은 진입 금액 2배
             amt = usd
+            if pct_mode:
+                amt = round(cash * pct / 100.0, 2)
+                if amt < 1:
+                    self._auto_log(ex, t, ptype, "skip", f"현금 ${cash:,.2f}의 {pct:g}% = ${amt:g} (1달러 미만)")
+                    continue
             e4 = row_t.get('exp4')
             try:
                 e4 = float(e4) if e4 not in (None, '') else None
             except Exception:
                 e4 = None
             if ptype == 'short' and c.get('strong_x2', True) and e4 is not None and e4 <= AUTO_ENTRY_STRONG_SHORT_EXP4:
-                amt = usd * AUTO_ENTRY_STRONG_MULT
+                amt = amt * AUTO_ENTRY_STRONG_MULT
             try:
                 cmd_id = send_command(action, t, amt, lev, ptype, exchange=ex)
+                cash -= amt
             except Exception as e:
                 self._auto_log(ex, t, ptype, "fail", f"명령 전송 실패: {e}")
                 continue

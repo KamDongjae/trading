@@ -4210,6 +4210,50 @@ def write_account_snapshot():
     except Exception as e:
         print(f"계좌 스냅샷 저장 실패: {e}")
 
+# [2026-11-22 수동, 사용자 요청] Claude 보고용 미러(claude_view/)
+#   윈도우에서도 SCRIPT_DIR 이 '/storage/emulated/0/Documents'(= C:\\storage\\emulated\\0\\Documents)로 잡혀서
+#   모의 잔고·포지션·거래기록이 trading 폴더 밖에 있었음 → Claude 점검이 못 읽음.
+#   원본 위치는 그대로 두고, 1분마다 trading\\claude_view\\ 에 사본 + 상태 요약(server_status.json)을 쓴다(읽기 전용 사본).
+#   claude_view/ 는 .gitignore 에 있어 깃허브에 안 올라감. 끄려면 False.
+CLAUDE_VIEW = True
+CLAUDE_VIEW_SEC = 60
+CLAUDE_VIEW_DIR = os.path.join(_fallback_dir, "claude_view")
+_CLAUDE_VIEW_FILES = ("server_account.csv", "trade_history_usd.csv", "simulation_data_usd.csv")
+
+def _claude_view_copy(src, dst):
+    import shutil
+    tmp = dst + ".tmp"
+    shutil.copyfile(src, tmp)
+    os.replace(tmp, dst)
+
+def write_claude_view():
+    if not CLAUDE_VIEW:
+        return
+    try:
+        os.makedirs(CLAUDE_VIEW_DIR, exist_ok=True)
+        if os.path.normcase(os.path.abspath(SCRIPT_DIR)) != os.path.normcase(os.path.abspath(CLAUDE_VIEW_DIR)):
+            for name in _CLAUDE_VIEW_FILES:
+                src = os.path.join(SCRIPT_DIR, name)
+                if os.path.exists(src):
+                    _claude_view_copy(src, os.path.join(CLAUDE_VIEW_DIR, name))
+        with data_lock:
+            pos_list = [{'ticker': t, 'type': p.get('position_type', 'long'), 'amount': p.get('amount', 0),
+                         'leverage': p.get('leverage', 1), 'entry_price': p.get('entry_price', 0),
+                         'entry_time': (p['entry_time'].strftime('%Y-%m-%d %H:%M:%S')
+                                        if isinstance(p.get('entry_time'), datetime) else str(p.get('entry_time', '')))}
+                        for t, p in positions.items()]
+            bal = balance
+        st = {'ts': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'pid': os.getpid(),
+              'data_dir': SCRIPT_DIR, 'balance': round(bal, 2), 'n_positions': len(pos_list),
+              'positions': pos_list,
+              'note': '모의 서버 상태 사본. 실시간 손익은 server_account.csv, 청산 기록은 trade_history_usd.csv'}
+        out = os.path.join(CLAUDE_VIEW_DIR, "server_status.json")
+        with open(out + ".tmp", 'w', encoding='utf-8') as f:
+            json.dump(st, f, ensure_ascii=False, indent=1)
+        os.replace(out + ".tmp", out)
+    except Exception as e:
+        print(f"claude_view 저장 실패: {e}")
+
 def append_result(cmd_id, status, message):
     try:
         exists = os.path.exists(RESULTS_FILE)
@@ -5253,6 +5297,7 @@ def process_commands():
 def account_loop():
     """1초 주기: 명령 처리 → 강제청산 감시 → 계좌 스냅샷 갱신"""
     last_save = time.time()
+    last_view = 0
     while running:
         try:
             process_commands()
@@ -5261,6 +5306,9 @@ def account_loop():
             if time.time() - last_save >= 60:
                 save_to_csv()
                 last_save = time.time()
+            if time.time() - last_view >= CLAUDE_VIEW_SEC:  # [2026-11-22] Claude 보고용 사본
+                last_view = time.time()
+                write_claude_view()
         except Exception as e:
             print(f"account_loop 오류: {e}")
         time.sleep(1)
