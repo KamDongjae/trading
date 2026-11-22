@@ -393,6 +393,7 @@ def collect_once(tickers):
             csv.writer(f).writerows(rows)
     print(f"[{ts}] {len(rows)}개 티커 로그 저장 (레짐 {srv.current_market_regime}) → {out_path}")
     _track_signals(ts, results)
+    return len(rows)
 
 
 # [2026-10-11 추가] 코드 자동 재적용. 매일 리포트 작업이 trading_server.py/data_collector.py를
@@ -615,8 +616,12 @@ def main():
             if not tickers:
                 time.sleep(2)
                 continue
-            collect_once(tickers)
-            _last_ok[0] = time.time()
+            # [2026-11-23] 0개 저장(빗썸 캔들 조회 전부 실패 등)은 성공으로 치지 않는다 —
+            # 11/23 01:01부터 5시간 넘게 0개 저장인데 워치독이 안 걸렸던 문제. 이제 0개가
+            # WATCHDOG_MIN(20분) 넘게 이어지면 워치독이 종료 → run_collector.bat가 30초 뒤 재실행.
+            n_saved = collect_once(tickers)
+            if n_saved:
+                _last_ok[0] = time.time()
         except Exception as e:
             print(f"⚠️ 수집 실패: {e}")
         next_run += COLLECT_INTERVAL_SEC
