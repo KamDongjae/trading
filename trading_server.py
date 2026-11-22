@@ -3801,7 +3801,7 @@ def _pm_ticker_features(df, ticker=None, exchange='bithumb'):
             d1 = fetch_candlestick_upbit(ticker, chart_intervals="1h")
         else:
             d1 = fetch_candlestick(ticker, chart_intervals="1h")
-        if d1 is None or len(d1) < 30:
+        if d1 is None or len(d1) < MODEL_MIN_1H_BARS:  # [2026-11-22] 30→120, 아래 가드 참고
             return hit[1] if hit else None
         f = prob_model.ticker_features(d1.astype(float))
         _pm_feat_cache[key] = (time.time(), f)
@@ -3875,6 +3875,73 @@ def apply_prob_filter(results, exchange='bithumb'):
                 r['verdict_reason'] = f"{why} · 확률 {p:.2f}"
             _short_futures_apply(r)  # [2026-11-22 복구]
     return results
+
+
+# [2026-11-22 수동(사용자 요청)] 모델 적용 범위 가드 — PIEVERSE 숏 8.5h 강제청산(-90%) 대응.
+# 확률모델은 history/*_1h.csv에 있는 코인(약 45개)으로만 학습했는데, 서버는 매분 거래대금 상위 40개를
+# 새로 골라 처음 보는 신규·급등 코인에도 판정(→ 클라 자동진입)을 내고 있었다.
+#  - MODEL_KNOWN_ONLY: history에 1h봉 파일이 없는 코인은 롱·숏 판정을 대기로 내린다.
+#  - MODEL_MIN_1H_BARS: 1h봉이 이보다 적으면(recent_pct 72봉·ema120 120봉이 안 채워짐) 피처가 비어
+#    엉뚱한 확률이 나오므로 prob_model.ticker_features가 None을 돌려주고, 여기서 판정을 대기로 내린다.
+# 되돌리기: 두 값을 False/30으로, 또는 backups\20261122_model_guard\ 의 원본으로 교체.
+MODEL_KNOWN_ONLY = True
+MODEL_MIN_1H_BARS = 120
+_model_known_cache = {'ts': 0.0, 'set': set()}
+
+
+def _model_known_tickers():
+    """history 폴더의 '<거래소>_<티커>_1h.csv'에서 학습 대상 티커 집합을 만든다(10분 캐시)."""
+    now = time.time()
+    if _model_known_cache['set'] and now - _model_known_cache['ts'] < 600:
+        return _model_known_cache['set']
+    try:
+        hdir = getattr(prob_model, 'HISTORY_DIR', None) if prob_model is not None else None
+        if not hdir:
+            hdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'history')
+        known = set()
+        for fn in os.listdir(hdir):
+            if fn.endswith('_1h.csv') and '_' in fn:
+                known.add(fn[:-len('_1h.csv')].split('_', 1)[1].upper())
+        if known:
+            _model_known_cache['set'], _model_known_cache['ts'] = known, now
+    except Exception as e:
+        print(f"학습 코인 목록 읽기 실패(가드 건너뜀): {e}")
+    return _model_known_cache['set']
+
+
+def _model_guard_apply(results):
+    if not MODEL_KNOWN_ONLY:
+        return
+    known = _model_known_tickers()
+    model_on = any(r.get('p_up') is not None for r in results)
+    for r in results:
+        v = r.get('verdict', '')
+        vr = r.get('verdict_raw', '')
+        if v not in ('LONG', 'SHORT') and vr not in ('LONG', 'SHORT'):
+            continue
+        t = str(r.get('ticker', '')).upper()
+        why = None
+        if known and t not in known:
+            why = "학습 안 한 코인"
+        elif model_on and r.get('p_up') is None:
+            why = f"1h봉 {MODEL_MIN_1H_BARS}개 미만(신규 상장)"
+        if why:
+            tag = v or vr
+            r['verdict'], r['verdict_raw'] = '', ''
+            r['verdict_reason'] = f"{why} 대기({tag}) · {r.get('verdict_reason', '')}"
+            r['verdict_reason_raw'] = ''
+
+
+_apply_prob_filter_unguarded = apply_prob_filter
+
+
+def apply_prob_filter(results, exchange='bithumb'):  # noqa: F811 — 모델 범위 가드를 덧붙이는 래퍼
+    out = _apply_prob_filter_unguarded(results, exchange)
+    try:
+        _model_guard_apply(results)
+    except Exception as e:
+        print(f"모델 범위 가드 실패: {e}")
+    return out
 
 
 def price_updater(tickers_ref):

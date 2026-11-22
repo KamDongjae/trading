@@ -371,7 +371,8 @@ def model_info():
 def ticker_features(df):
     """서버 process_ticker의 캔들 df(마지막 행 = 현재)로 종목 피처 dict를 만든다. 실패하면 None."""
     try:
-        if df is None or len(df) < 30:
+        # [2026-11-22] 30→120: recent_pct(72봉)·ema120(120봉)이 다 채워지기 전엔 피처가 비어 엉뚱한 확률이 나옴(신규 상장 코인)
+        if df is None or len(df) < 120:
             return None
         f = build_features(df[['open', 'high', 'low', 'close', 'volume']].astype(float))
         row = f.iloc[-1]
