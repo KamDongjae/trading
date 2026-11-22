@@ -1,5 +1,12 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-11-22 (수동, 09시 KST, 사용자 요청) — 서버 숏 판정 바이낸스 선물 코인만 복구(SHORT_REQUIRE_FUTURES)
+
+- 배경: 11/21 21시 덮어쓰기로 사라져서 11/21 20:37부터 NOFUT 숏 판정(SNT·AMO 등)이 다시 나오고 있었음(클라 자동진입은 NOFUT 건너뛰기가 복구돼서 진입은 안 됨)
+- **trading_server.py**: `SHORT_REQUIRE_FUTURES = True` + `_short_futures_apply()` 다시 넣음 — v2 경로·구 경로·p_up 없음 경로·verdict_raw 모두. 06~07시 수동 변경(가격 없음 삭제·환불, 1h 피처)은 그대로 유지
+- 스모크 테스트: NOFUT 숏 → '숏후보 바이낸스 선물 없음 대기', 바이낸스 숏·롱은 그대로, 플래그 끄면 숏 복귀. py_compile 통과
+- **서버 재시작 필요**(수집기는 자동 재시작). 되돌리기: backups\20261122_restore_binance_short\trading_server.py
+
 ## 2026-11-22 (수동, 07시 KST, 사용자 요청) — 가격 없음 삭제 때 증거금 환불
 
 - **trading_server.py** `_drop_position_no_price`: 포지션 삭제 시 증거금(amount)을 잔고(balance)로 그대로 돌려줌(손익·수수료 0). 진입 기록 삭제·청산 기록 없음은 그대로
