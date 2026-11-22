@@ -1,0 +1,42 @@
+[2026-11-22 15:05:58.53] server start 
+✅ DNS 우회 설정 완료
+✅ 데이터 저장 위치: /storage/emulated/0/Documents (공용 저장소)
+⚠️ DISCORD_WEBHOOK.txt를 못 찾음 — 디스코드 알림 기능 꺼짐
+⚠️ bithumb/short 로지스틱 모델이 사실상 상수 출력(극단값 차이 7.0점) — 로드 거부, 가산식 사용
+⚠️ upbit/long 로지스틱 모델이 사실상 상수 출력(극단값 차이 6.0점) — 로드 거부, 가산식 사용
+==================================================
+트레이딩 서버 시작 (계산/계좌 엔진 — 마켓 로깅 없음, 수집은 별도 기기)
+데이터 폴더: /storage/emulated/0/Documents
+마켓 스냅샷(빗썸): /storage/emulated/0/Documents\server_market.csv
+마켓 스냅샷(업비트): /storage/emulated/0/Documents\server_market_upbit.csv
+명령 폴더: /storage/emulated/0/Documents\server_cmds
+중지: Ctrl+C  (포지션은 서버가 계속 감시하므로 GUI는 꺼도 됨)
+==================================================
+✅ 로드 완료 | 포지션 8개
+✅ 거래기록 0건 로드
+빗썸 티커 40개 로드
+업비트 티커 40개 로드
+✅ 펀딩레이트/가격 905개 갱신
+✅ 공포탐욕지수 갱신: 11 (Extreme Fear)
+[15:06:09] 서버 가동 | 빗썸 0개(컷50/normal) | 업비트 0개(컷50/normal) | 잔고 $729.68 | 포지션 8개
+✅ 펀딩레이트/가격 905개 갱신
+[신호해소] 대상쌍 45개(캔들실패 7) | 대상행 210개 | 해결 2 / 보류 178 (가격오류 0 / 시간대안겹침 178 / 아직결과없음 0 / 예외 0)
+[신호해소] 캔들실패 목록(최대20개): ['upbit/ICX', 'upbit/BLAST', 'upbit/TIA', 'upbit/AXL', 'upbit/SOPH', 'upbit/PONS', 'upbit/MMT']
+[자동학습] 전체신호 34082건 (해결 33733 / 대기 349, 이번 주기 신규해결 2) — 재학습 최소기준 300건
+C:\Users\K\AppData\Local\Programs\Python\Python313\Lib\site-packages\numpy\lib\_function_base_impl.py:3023: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[:, None]
+C:\Users\K\AppData\Local\Programs\Python\Python313\Lib\site-packages\numpy\lib\_function_base_impl.py:3024: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[None, :]
+[자동 재학습] 로지스틱 점수모델 갱신 완료
+[자동 재학습] 해결신호 33733건 기준 배수 갱신 완료: {'bithumb': {'long': {'ema': 0.5, 'pp': 0.5, 'cvd': 0.5, 'volz': 0.5, 'm30': 1.6, 'liq': 1.6}, 'short': {'ema': 1.6, 'pp': 0.5, 'cvd': 0.5, 'oi': 0.5, 'volz': 1.6, 'm30': 0.5, 'liq': np.float64(1.127)}}, 'upbit': {'long': {'ema': 0.5, 'pp': 1.6, 'cvd': 0.5, 'volz': 0.5, 'm30': 0.5, 'liq': 0.5}, 'short': {'ema': 1.6, 'pp': 0.5, 'cvd': 0.5, 'oi': 0.5, 'volz': 0.5, 'm30': 0.5, 'liq': 0.5}}}
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 905개 갱신
+[15:07:10] 서버 가동 | 빗썸 40개(컷50/하락장) | 업비트 35개(컷45/하락장) | 잔고 $729.68 | 포지션 8개
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
