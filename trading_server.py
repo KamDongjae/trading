@@ -3801,7 +3801,7 @@ def _pm_ticker_features(df, ticker=None, exchange='bithumb'):
             d1 = fetch_candlestick_upbit(ticker, chart_intervals="1h")
         else:
             d1 = fetch_candlestick(ticker, chart_intervals="1h")
-        if d1 is None or len(d1) < MODEL_MIN_1H_BARS:  # [2026-11-22] 30→120, 아래 가드 참고
+        if d1 is None or len(d1) < MODEL_MIN_1H_BARS:  # [2026-11-22] 30→168, 아래 가드 참고
             return hit[1] if hit else None
         f = prob_model.ticker_features(d1.astype(float))
         _pm_feat_cache[key] = (time.time(), f)
@@ -3881,11 +3881,11 @@ def apply_prob_filter(results, exchange='bithumb'):
 # 확률모델은 history/*_1h.csv에 있는 코인(약 45개)으로만 학습했는데, 서버는 매분 거래대금 상위 40개를
 # 새로 골라 처음 보는 신규·급등 코인에도 판정(→ 클라 자동진입)을 내고 있었다.
 #  - MODEL_KNOWN_ONLY: history에 1h봉 파일이 없는 코인은 롱·숏 판정을 대기로 내린다.
-#  - MODEL_MIN_1H_BARS: 1h봉이 이보다 적으면(recent_pct 72봉·ema120 120봉이 안 채워짐) 피처가 비어
+#  - MODEL_MIN_1H_BARS: 1h봉이 이보다 적으면(상장 7일 미만, recent_pct 72봉·ema120 120봉도 이 안에 채워짐) 피처가 비어
 #    엉뚱한 확률이 나오므로 prob_model.ticker_features가 None을 돌려주고, 여기서 판정을 대기로 내린다.
 # 되돌리기: 두 값을 False/30으로, 또는 backups\20261122_model_guard\ 의 원본으로 교체.
 MODEL_KNOWN_ONLY = True
-MODEL_MIN_1H_BARS = 120
+MODEL_MIN_1H_BARS = 169  # [2026-11-22 사용자 요청] 120→169: 상장 7일 미만 코인 판정 대기(r168 피처가 169봉부터 나옴)
 _model_known_cache = {'ts': 0.0, 'set': set()}
 
 
@@ -3924,7 +3924,7 @@ def _model_guard_apply(results):
         if known and t not in known:
             why = "학습 안 한 코인"
         elif model_on and r.get('p_up') is None:
-            why = f"1h봉 {MODEL_MIN_1H_BARS}개 미만(신규 상장)"
+            why = f"상장 7일 미만(1h봉 {MODEL_MIN_1H_BARS}개 미만)"
         if why:
             tag = v or vr
             r['verdict'], r['verdict_raw'] = '', ''
