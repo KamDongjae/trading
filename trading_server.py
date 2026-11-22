@@ -3877,16 +3877,22 @@ def apply_prob_filter(results, exchange='bithumb'):
     return results
 
 
-# [2026-11-22 수동(사용자 요청)] 모델 적용 범위 가드 — PIEVERSE 숏 8.5h 강제청산(-90%) 대응.
-# 확률모델은 history/*_1h.csv에 있는 코인(약 45개)으로만 학습했는데, 서버는 매분 거래대금 상위 40개를
-# 새로 골라 처음 보는 신규·급등 코인에도 판정(→ 클라 자동진입)을 내고 있었다.
-#  - MODEL_KNOWN_ONLY: history에 1h봉 파일이 없는 코인은 롱·숏 판정을 대기로 내린다.
-#  - MODEL_MIN_1H_BARS: 1h봉이 이보다 적으면(상장 7일 미만, recent_pct 72봉·ema120 120봉도 이 안에 채워짐) 피처가 비어
-#    엉뚱한 확률이 나오므로 prob_model.ticker_features가 None을 돌려주고, 여기서 판정을 대기로 내린다.
-# 되돌리기: 두 값을 False/30으로, 또는 backups\20261122_model_guard\ 의 원본으로 교체.
-MODEL_KNOWN_ONLY = True
-MODEL_MIN_1H_BARS = 169  # [2026-11-22 사용자 요청] 120→169: 상장 7일 미만 코인 판정 대기(r168 피처가 169봉부터 나옴)
+# [2026-11-22 수동(사용자 요청)] 판정 범위 가드 — PIEVERSE 숏 8.5h 강제청산(-90%) 대응.
+# 서버는 매분 거래대금 상위 40개를 새로 골라 막 상장한 급등 코인에도 판정(→ 클라 자동진입)을 내고 있었다.
+# 사용자 기준(11/22): 판정(수동 진입용)은 상장 7일 이상, 클라 자동진입은 상장 6개월 이상.
+#  - LISTING_MIN_DAYS_VERDICT: 거래소 일봉 개수(=상장 후 일수)가 이보다 적으면 롱·숏 판정을 대기로 내린다.
+#  - MODEL_MIN_1H_BARS: 1h봉이 이보다 적으면 prob_model이 확률을 안 내고(None), 여기서 판정을 대기로 내린다.
+#  - 자동진입 6개월 컷은 클라(trading_client.py AUTO_ENTRY_MIN_LISTING_DAYS)가 snapshot의 listing_days로 판단.
+#  - MODEL_KNOWN_ONLY: True면 history/*_1h.csv에 없는(모델 학습 안 한) 코인도 판정 대기. 사용자 기준에 따라 False.
+# 되돌리기: LISTING_MIN_DAYS_VERDICT=0·MODEL_MIN_1H_BARS=30, 또는 backups\20261122_model_guard\ 의 원본으로 교체.
+MODEL_KNOWN_ONLY = False
+MODEL_MIN_1H_BARS = 169  # 상장 7일 미만은 1h봉이 169개가 안 됨(r168 피처가 169봉부터 나옴)
+LISTING_MIN_DAYS_VERDICT = 7
+LISTING_CACHE_TTL = 12 * 3600     # 상장일수는 12시간마다 다시 조회
+LISTING_RETRY_TTL = 600           # 조회 실패 시 10분 뒤 재시도
 _model_known_cache = {'ts': 0.0, 'set': set()}
+_listing_cache = {}               # (거래소, 티커) -> (조회시각, 일수 또는 None)
+UPBIT_CANDLE_DAY_URL = "https://api.upbit.com/v1/candles/days"
 
 
 def _model_known_tickers():
@@ -3909,22 +3915,52 @@ def _model_known_tickers():
     return _model_known_cache['set']
 
 
-def _model_guard_apply(results):
-    if not MODEL_KNOWN_ONLY:
-        return
-    known = _model_known_tickers()
+def _fetch_listing_days(exchange, ticker):
+    """거래소 일봉 개수로 상장 후 일수를 센다. 업비트는 최대 200개만 주므로 200이면 '200일 이상'. 실패하면 None."""
+    try:
+        if exchange == 'upbit':
+            resp = requests.get(UPBIT_CANDLE_DAY_URL, params={"market": f"KRW-{ticker}", "count": 200}, timeout=5)
+            data = resp.json()
+            return len(data) if isinstance(data, list) else None
+        df = _fetch_candlestick_raw(ticker, "KRW", "24h", timeout=5, retries=1)
+        return len(df) if df is not None else None
+    except Exception:
+        return None
+
+
+def listing_days(exchange, ticker):
+    key, now = (exchange, ticker), time.time()
+    hit = _listing_cache.get(key)
+    if hit and now - hit[0] < (LISTING_CACHE_TTL if hit[1] is not None else LISTING_RETRY_TTL):
+        return hit[1]
+    d = _fetch_listing_days(exchange, ticker)
+    if d is None and hit and hit[1] is not None:
+        d = hit[1]  # 조회 실패면 예전 값 유지
+    _listing_cache[key] = (now, d)
+    return d
+
+
+def _model_guard_apply(results, exchange='bithumb'):
+    known = _model_known_tickers() if MODEL_KNOWN_ONLY else set()
     model_on = any(r.get('p_up') is not None for r in results)
     for r in results:
+        t = str(r.get('ticker', '')).upper()
+        try:
+            r['listing_days'] = listing_days(exchange, t) if t else None
+        except Exception:
+            r['listing_days'] = None
         v = r.get('verdict', '')
         vr = r.get('verdict_raw', '')
         if v not in ('LONG', 'SHORT') and vr not in ('LONG', 'SHORT'):
             continue
-        t = str(r.get('ticker', '')).upper()
+        ld = r.get('listing_days')
         why = None
-        if known and t not in known:
-            why = "학습 안 한 코인"
+        if LISTING_MIN_DAYS_VERDICT and ld is not None and ld < LISTING_MIN_DAYS_VERDICT:
+            why = f"상장 {ld}일({LISTING_MIN_DAYS_VERDICT}일 미만)"
         elif model_on and r.get('p_up') is None:
             why = f"상장 7일 미만(1h봉 {MODEL_MIN_1H_BARS}개 미만)"
+        elif MODEL_KNOWN_ONLY and known and t not in known:
+            why = "학습 안 한 코인"
         if why:
             tag = v or vr
             r['verdict'], r['verdict_raw'] = '', ''
@@ -3935,12 +3971,12 @@ def _model_guard_apply(results):
 _apply_prob_filter_unguarded = apply_prob_filter
 
 
-def apply_prob_filter(results, exchange='bithumb'):  # noqa: F811 — 모델 범위 가드를 덧붙이는 래퍼
+def apply_prob_filter(results, exchange='bithumb'):  # noqa: F811 — 판정 범위 가드를 덧붙이는 래퍼
     out = _apply_prob_filter_unguarded(results, exchange)
     try:
-        _model_guard_apply(results)
+        _model_guard_apply(results, exchange)
     except Exception as e:
-        print(f"모델 범위 가드 실패: {e}")
+        print(f"판정 범위 가드 실패: {e}")
     return out
 
 
@@ -4157,7 +4193,8 @@ MARKET_COLS = ['ticker', 'price', 'price_usd', 'chg_24h', 'long_score', 'short_s
                'verdict', 'verdict_reason',  # [2026-10-11 추가] 단일 판정(calc_verdict 참고)
                'p_up',  # [2026-10-13 추가] 24h 상승확률(apply_prob_filter 참고, 없으면 빈칸)
                'verdict_raw', 'verdict_reason_raw',  # [2026-10-13 추가] 확률필터 적용 전 판정(클라 토글용)
-               'exp4']  # [2026-10-15 추가] 4h 시장대비 기대수익%(prob_model 회귀, 순위 탭 정렬 기준)
+               'exp4',  # [2026-10-15 추가] 4h 시장대비 기대수익%(prob_model 회귀, 순위 탭 정렬 기준)
+               'listing_days']  # [2026-11-22 추가] 상장 후 일수(거래소 일봉 개수, 업비트는 최대 200). 클라 자동진입 6개월 컷용
 
 _last_score_time = [""]
 _last_score_time_upbit = [""]
@@ -4213,6 +4250,7 @@ def write_market_snapshot(exchange='bithumb'):
             r.get('p_up', '') if r.get('p_up') is not None else '',
             r.get('verdict_raw', r.get('verdict', '')), r.get('verdict_reason_raw', r.get('verdict_reason', '')),
             r.get('exp4', '') if r.get('exp4') is not None else '',
+            r.get('listing_days', '') if r.get('listing_days') is not None else '',  # [2026-11-22 추가]
         ])
         # [2026-07-21 추가] 커스텀 조건식 — CSV에 쓰는 것과 동일한 값으로 평가
         try:

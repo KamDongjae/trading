@@ -62,6 +62,7 @@ AUTO_ENTRY_PCT = 3.0          # "pct"일 때 현금의 몇 %. 진입할 때마�
 AUTO_ENTRY_SKIP_BEAR_LONG = True     # [2026-11-22 수동] 레짐 하락장이면 롱 자동진입 안 함(1년 백테스트 하락장 롱 35건 승률 37%·-$40)
 AUTO_ENTRY_STRONG_SHORT_EXP4 = -1.0  # [2026-11-22 수동] 숏이고 4h예상(exp4) ≤ 이 값이면 '강한 숏'
 AUTO_ENTRY_STRONG_MULT = 2.0         # 강한 숏 진입 금액 배수(1년 백테스트 +$887→+$1,324)
+AUTO_ENTRY_MIN_LISTING_DAYS = 180    # [2026-11-22 수동, 사용자 요청] 상장 6개월(180일) 미만 코인은 자동진입 안 함(서버 snapshot listing_days 기준, 판정 표시는 서버가 7일 이상만). 0이면 끔
 AUTO_POS_FILE = os.path.join(SCRIPT_DIR, "auto_entry_positions.json")  # 자동진입으로 산 포지션(정리 예정 시각)
 # [2026-11-22 수동, 사용자 요청] Claude 보고용 사본 — 1분마다 trading\\claude_view\\ 에 자동진입 기록 복사 + client_status.json
 CLAUDE_VIEW = True
@@ -292,6 +293,8 @@ def read_market_snapshot(path=None):
                     'p_up': _f(r.get('p_up')) if r.get('p_up') not in (None, '',) else None,
                     # [2026-10-15 추가] 4h 시장대비 기대수익%(순위 탭 정렬 기준, 구버전 서버면 None)
                     'exp4': _f(r.get('exp4')) if r.get('exp4') not in (None, '',) else None,
+                    # [2026-11-22 추가] 상장 후 일수(서버 거래소 일봉 개수). 컬럼 없음(구버전 서버)=None, 빈칸(조회 실패)=-1
+                    'listing_days': (None if 'listing_days' not in r else (int(_f(r.get('listing_days'))) if r.get('listing_days') not in (None, '') else -1)),
                     # [2026-10-13 추가] 확률필터 적용 전 판정(구버전 서버면 None → 필터 판정 그대로 표시)
                     'verdict_raw': (r.get('verdict_raw') or '') if 'verdict_raw' in r else None,
                     'verdict_reason_raw': r.get('verdict_reason_raw', '') or '',
@@ -3038,6 +3041,11 @@ class TradingClient:
             # [2026-11-22 수동, 사용자 요청] 바이낸스 선물 없는 코인(NOFUT)은 롱·숏 모두 자동진입 안 함
             if "NOFUT" in str(rows_by_t.get(t, {}).get('liq_risk', '') or ''):
                 self._auto_log(ex, t, ptype, "skip", "바이낸스 선물 없음")
+                continue
+            # [2026-11-22 수동, 사용자 요청] 상장 6개월 미만 코인은 자동진입 안 함(수동 진입용 판정은 7일 이상이면 표시)
+            ld = rows_by_t.get(t, {}).get('listing_days')
+            if AUTO_ENTRY_MIN_LISTING_DAYS and ld is not None and ld < AUTO_ENTRY_MIN_LISTING_DAYS:
+                self._auto_log(ex, t, ptype, "skip", f"상장 {ld}일(6개월 미만)" if ld >= 0 else "상장일 확인 안 됨")
                 continue
             # [2026-11-22 수동, 사용자 요청] 하락장 롱 제외
             row_t = rows_by_t.get(t, {})
