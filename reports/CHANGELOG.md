@@ -1,5 +1,13 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-11-22 (수동, 09:5x KST, 사용자 요청) — 자동진입: 보고 있는 탭과 상관없이 빗썸·업비트 둘 다
+
+- 배경: `_auto_entry_check`가 화면에 띄운 거래소 스냅샷만 봐서, 노트북이 빗썸 탭에 있는 동안 업비트 판정(KERNEL·BREV 롱, VVV·ENSO 숏 등)은 한 번도 체크 안 됨
+- **trading_client.py**: `_auto_entry_bg_check()` 추가 — poll_files마다 안 보이는 거래소 CSV가 바뀌었으면 읽어서 `_auto_entry_check(rows, ex=다른거래소)`. read_market_snapshot이 바꾸는 화면용 전역값(컷·기준봉·레짐)은 읽은 뒤 되돌림. `_auto_entry_check`에 `ex` 인자 추가(없으면 기존처럼 현재 탭)
+- 포지션 화면을 보고 있어도 poll_files는 계속 돌아서 자동진입 동작함(기존과 같음)
+- 처음 읽을 때 떠 있던 판정은 기준값으로만 기록(새로 뜬 것부터 진입). py_compile 통과
+- **클라이언트 재시작 필요**. 되돌리기: backups\20261122_auto_bothex\trading_client.py
+
 ## 2026-11-22 (수동, 09시 KST, 사용자 요청) — 서버 숏 판정 바이낸스 선물 코인만 복구(SHORT_REQUIRE_FUTURES)
 
 - 배경: 11/21 21시 덮어쓰기로 사라져서 11/21 20:37부터 NOFUT 숏 판정(SNT·AMO 등)이 다시 나오고 있었음(클라 자동진입은 NOFUT 건너뛰기가 복구돼서 진입은 안 됨)

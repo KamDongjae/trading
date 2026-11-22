@@ -1555,6 +1555,11 @@ class TradingClient:
         else:
             regime_str = f" / 레짐 {current_regime}" if current_regime else ""
             self.server_label.config(text=f"서버[{ex_label}]: 정상 (기준봉 {current_interval}{regime_str} / 관심 {watch_current_min_score}·컷 {current_min_score}점 / 매집·분산 컷 {pp_current_min_score}점, {age:.0f}초 전 갱신)", fg="gray")
+        # [2026-11-22] 자동진입은 보고 있는 탭과 상관없이 빗썸·업비트 둘 다 체크
+        try:
+            self._auto_entry_bg_check()
+        except Exception as e:
+            print(f"자동진입(다른 거래소) 확인 실패: {e}")
         acc = read_account_snapshot()
         if acc:
             self._account = acc
@@ -2863,10 +2868,37 @@ class TradingClient:
         tk.Label(body, text=f"기록: {os.path.basename(AUTO_ENTRY_LOG)}", font=("Arial", fs - 1),
                  fg="gray").pack(anchor="w", pady=(8, 0))
 
-    def _auto_entry_check(self, data_list):
+    def _auto_entry_bg_check(self):
+        """[2026-11-22] 화면에 안 보이는 거래소의 스냅샷도 읽어서 자동진입 판정.
+        read_market_snapshot이 화면용 전역값(컷·기준봉·레짐)을 바꾸므로 읽은 뒤 원래대로 되돌린다."""
+        global current_min_score, pp_current_min_score, watch_current_min_score, current_interval, current_regime
+        if not self.auto_cfg.get('on'):
+            return
+        other = 'upbit' if self.current_exchange == 'bithumb' else 'bithumb'
+        path = MARKET_SNAPSHOT_UPBIT if other == 'upbit' else MARKET_SNAPSHOT
+        try:
+            mt = os.path.getmtime(path)
+        except Exception:
+            return
+        if not hasattr(self, '_auto_bg_mtime'):
+            self._auto_bg_mtime = {}
+        if self._auto_bg_mtime.get(other) == mt:
+            return
+        saved = (current_min_score, pp_current_min_score, watch_current_min_score, current_interval, current_regime)
+        try:
+            res = read_market_snapshot(path)
+        finally:
+            (current_min_score, pp_current_min_score, watch_current_min_score, current_interval, current_regime) = saved
+        if not res:
+            return
+        self._auto_bg_mtime[other] = mt
+        self._auto_entry_check(res[0], ex=other)
+
+    def _auto_entry_check(self, data_list, ex=None):
         """판정 롱/숏이 새로 뜬 코인을 $AUTO_ENTRY_USD×AUTO_ENTRY_LEVERAGE로 바로 진입(잔고 무시).
-        카드에 보이는 판정(확률필터 ON/OFF 설정 반영)을 기준으로 한다."""
-        ex = self.current_exchange
+        카드에 보이는 판정(확률필터 ON/OFF 설정 반영)을 기준으로 한다.
+        [2026-11-22] ex를 주면 그 거래소 기준(보고 있지 않은 거래소 백그라운드 체크용)."""
+        ex = ex or self.current_exchange
         cur = {}
         rows_by_t = {}  # [2026-11-22 수동] 바이낸스 선물 여부(liq_risk NOFUT) 확인용
         for row in data_list:
