@@ -233,7 +233,7 @@ class App:
         txt.pack(fill="both", expand=True, pady=6)
         txt.insert("1.0", self._read_rule())
         ttk.Label(f, foreground="gray", justify="left", text=(
-            "변수: start_seed(처음 시드) current_seed(지금 사용 가능 USDT, 모의는 가상 현금) open_positions is_short strong_short leverage\n"
+            "변수: start_seed(처음 시드) current_seed(총자산=지갑 잔고+미실현 손익) cash(사용 가능 USDT) open_positions is_short strong_short leverage\n"
             "결과: position_size = 금액;  (0 이하면 진입 안 함)   함수: int round min max abs   연산: + - * / % == != < <= > >= && || !\n"
             "강한 숏 2배 체크가 켜져 있으면 규칙 결과에도 2배가 곱해짐")).pack(anchor="w")
         res = ttk.Label(f, text="", justify="left")

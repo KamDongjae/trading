@@ -2875,7 +2875,7 @@ class TradingClient:
         rule_txt = tk.Text(rule_box, width=60, height=8, font=("Consolas", fs), undo=True)
         rule_txt.pack(fill="x", pady=(4, 2))
         rule_txt.insert("1.0", c.get('rule') or (sizing_rule.EXAMPLE if sizing_rule else ""))
-        tk.Label(rule_box, text="변수: start_seed(처음 시드) current_seed(지금 현금) open_positions is_short strong_short leverage\n"
+        tk.Label(rule_box, text="변수: start_seed(처음 시드) current_seed(총자산=현금+증거금+평가손익) cash(현금) open_positions is_short strong_short leverage\n"
                                 "결과: position_size = 금액;  (0 이하면 진입 안 함)  함수: int round min max abs  연산: + - * / % == != < <= > >= && || !\n"
                                 "강한 숏 2배 체크가 켜져 있으면 규칙 결과에도 2배가 곱해짐(규칙에서 strong_short로 직접 정하려면 체크 해제)",
                  font=("Arial", fs - 1), fg="gray", justify="left").pack(anchor="w")
@@ -3030,6 +3030,9 @@ class TradingClient:
         cash = float(self._account[0]) if self._account else 0.0
         rule_mode = c.get('amt_mode') == 'rule'
         n_open = len(held)
+        # [2026-11-22 사용자 요청] 사용자 정의의 current_seed = 총자산(현금 + 포지션 증거금 + 평가손익)
+        equity = cash + sum(float(p.get('amount') or 0) + float(p.get('pnl') or 0)
+                            for p in (self._account[2] if self._account else []))
         for t, v in new_signals:
             ptype = 'long' if v == "LONG" else 'short'
             # [2026-11-22 수동, 사용자 요청] 바이낸스 선물 없는 코인(NOFUT)은 롱·숏 모두 자동진입 안 함
@@ -3068,13 +3071,13 @@ class TradingClient:
                     continue
                 sd = float(c.get('start_seed') or 0) or float(bank_total_deposit or 0) or cash
                 try:
-                    amt = sizing_rule.run(c.get('rule', ''), sd, cash, n_open, 1 if ptype == 'short' else 0,
-                                          1 if strong else 0, lev)
+                    amt = sizing_rule.run(c.get('rule', ''), sd, equity, n_open, 1 if ptype == 'short' else 0,
+                                          1 if strong else 0, lev, cash=cash)
                 except Exception as e:
                     self._auto_log(ex, t, ptype, "fail", f"사용자 정의 규칙 오류: {e}")
                     continue
                 if amt < 1:
-                    self._auto_log(ex, t, ptype, "skip", f"사용자 정의 결과 ${amt:g} (start ${sd:,.0f} / current ${cash:,.2f})")
+                    self._auto_log(ex, t, ptype, "skip", f"사용자 정의 결과 ${amt:g} (start ${sd:,.0f} / current ${equity:,.2f})")
                     continue
             if strong and c.get('strong_x2', True):
                 amt = amt * AUTO_ENTRY_STRONG_MULT

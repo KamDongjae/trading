@@ -439,6 +439,24 @@ class Trader:
             return float(self.state.get("dry_cash", DRY_SEED_USDT))
         return self.bn.usdt_balance()[0]
 
+    def equity(self):
+        """[2026-11-22] 총자산 = 현금 + 보유 포지션 증거금 + 평가손익.
+        실거래: 바이낸스 지갑 잔고(증거금 포함) + 모든 포지션 미실현 손익 / 모의: 가상 현금 + 봇 포지션 증거금 + 추정 손익."""
+        if not self.dry:
+            _, wallet = self.bn.usdt_balance()
+            upnl = sum(p["upnl"] for lst in self.bn.positions().values() for p in lst)
+            return wallet + upnl
+        eq = self.cash()
+        for t in self.open_trades().values():
+            eq += float(t.get("margin", 0))
+            try:
+                mark = self.bn.mark_price(t["symbol"])
+                sign = 1 if t["direction"] == "LONG" else -1
+                eq += (mark / float(t["entry_price"]) - 1) * sign * float(t["qty"]) * float(t["entry_price"])
+            except Exception:
+                pass
+        return eq
+
     def amount_text(self):
         if self.margin_rule:
             return "사용자 정의 규칙"
@@ -630,16 +648,16 @@ class Trader:
         mark = self.bn.mark_price(symbol)
         lev = int(lev or self.lev)
         if margin is None and self.margin_rule:
-            cash, seed = self.cash(), self.start_seed()
+            cash, seed, eq = self.cash(), self.start_seed(), self.equity()
             e4 = parse_exp4(reason) if direction == "SHORT" else None
             strong = 1 if (e4 is not None and e4 <= STRONG_SHORT_EXP4) else 0
             try:
-                margin = sizing_rule.run(self.margin_rule, seed, cash, len(self.open_trades()),
-                                         1 if direction == "SHORT" else 0, strong, lev)
+                margin = sizing_rule.run(self.margin_rule, seed, eq, len(self.open_trades()),
+                                         1 if direction == "SHORT" else 0, strong, lev, cash=cash)
             except Exception as e:
                 log(f"❌ {symbol} 사용자 정의 규칙 오류: {e} — 진입 안 함")
                 return False
-            log(f"💵 {symbol} 사용자 정의: start_seed {seed:,.2f} / current_seed {cash:,.2f} → position_size {margin:g} USDT")
+            log(f"💵 {symbol} 사용자 정의: start_seed {seed:,.2f} / current_seed(총자산) {eq:,.2f} / cash {cash:,.2f} → position_size {margin:g} USDT")
             if margin < 1:
                 log(f"⏭  {symbol} 건너뜀: 사용자 정의 결과 {margin:g} USDT")
                 return False

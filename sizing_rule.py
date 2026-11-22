@@ -7,7 +7,9 @@ eval 을 쓰지 않는 자체 해석기라 규칙 안에서 파일·네트워크
 
 쓸 수 있는 변수 (읽기)
   start_seed      처음 시드 (설정 창에 넣은 값)
-  current_seed    지금 현금 (모의: 서버 잔고 / 실전: 바이낸스 사용 가능 USDT / 실전 모의: 가상 현금)
+  current_seed    지금 총자산 = 현금 + 보유 포지션 증거금 + 평가손익  [11/22 사용자 요청: 현금 → 총자산]
+                  (모의: 서버 잔고+포지션 / 실전: 바이낸스 지갑 잔고+미실현 손익 / 실전 모의: 가상 현금+포지션)
+  cash            지금 현금(포지션에 안 묶인 돈. 모의: 서버 잔고 / 실전: 바이낸스 사용 가능 USDT)
   open_positions  지금 보유 중인 포지션 수 (자동진입·봇 기준)
   is_short        이번 신호가 숏이면 1, 롱이면 0
   strong_short    강한 숏(4h예상 ≤ -1.0%)이면 1, 아니면 0
@@ -34,7 +36,7 @@ eval 을 쓰지 않는 자체 해석기라 규칙 안에서 파일·네트워크
 import math
 import re
 
-INPUT_VARS = ("start_seed", "current_seed", "open_positions", "is_short", "strong_short", "leverage")
+INPUT_VARS = ("start_seed", "current_seed", "cash", "open_positions", "is_short", "strong_short", "leverage")
 OUTPUT_VAR = "position_size"
 FUNCS = {
     "int": (1, 1, lambda a: float(math.trunc(a[0]))),
@@ -342,10 +344,11 @@ def _uses_output(body):
     return False
 
 
-def run(src_or_ast, start_seed, current_seed, open_positions=0, is_short=0, strong_short=0, leverage=1):
+def run(src_or_ast, start_seed, current_seed, open_positions=0, is_short=0, strong_short=0, leverage=1, cash=None):
     """규칙을 실행해서 position_size($)를 돌려줌(음수/미지정은 0 = 진입 안 함). 문법·실행 오류는 RuleError."""
     ast = parse(src_or_ast) if isinstance(src_or_ast, str) else src_or_ast
     env = {"start_seed": float(start_seed), "current_seed": float(current_seed),
+           "cash": float(current_seed if cash is None else cash),
            "open_positions": float(open_positions), "is_short": float(is_short),
            "strong_short": float(strong_short), "leverage": float(leverage), OUTPUT_VAR: 0.0}
     _Run(env).stmts(ast)
@@ -379,7 +382,7 @@ def check(src, start_seed=1000.0, leverage=3):
     for desc, st, cur, op, sh, strong in SAMPLES:
         cur_v = s0 * cur / st
         try:
-            ps = run(ast, s0, cur_v, op, sh, strong, leverage)
+            ps = run(ast, s0, cur_v, op, sh, strong, leverage, cash=cur_v * 0.7)
         except RuleError as e:
             return False, f"실행 오류({desc}: 처음 {s0:g} / 현재 {cur_v:g}) — {e}", rows
         rows.append((desc, cur_v, ps))
