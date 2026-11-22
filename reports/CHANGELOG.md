@@ -1,5 +1,15 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-11-22 (수동, 12:3x KST, 사용자 요청) — 1회 진입 금액 '사용자 정의'(C언어 형식 if/else) 모의·실전
+
+- 진입 금액 방식 3개: **고정 $ / 현금의 % / 사용자 정의**
+- 새 파일 **sizing_rule.py**: eval 안 쓰는 자체 해석기. 변수 start_seed(처음 시드)·current_seed(지금 현금)·open_positions·is_short·strong_short·leverage, 결과 position_size. if / else if / else, `= ;`, + - * / %, == != < <= > >=, && || !, int round min max abs, // /* */ 주석. 등록 전 `check()` — 문법·철자(모르는 변수)·읽기 전용 변수 대입·position_size 누락·예시 4개(시드 그대로/+20%/-20%/-60%) 실제 계산(0으로 나눔, 현재 시드보다 큰 금액, 전부 0) 검사
+- **trading_client.py**: 자동진입 설정 창에 '사용자 정의' 칸(처음 시드 $ + 규칙 입력 + 문법 검사 버튼). 검사 통과 못 하면 저장 안 됨. auto_entry.json `amt_mode="rule"`, `rule`, `start_seed`(기본 = 서버 bank_total_deposit). 실행 중 규칙 오류면 auto_entry_log에 fail 기록하고 그 신호는 건너뜀, 결과 $1 미만이면 skip
+- **live_trader.py / live_trader_gui.py**: GUI '사용자 정의' + '규칙 편집·검사' 창(통과해야 live_sizing_rule.txt 저장), 콘솔은 시작 때 `r`. start_seed는 입력값 → 없으면 처음 실행 때 현금을 live_state.json에 기록해 계속 씀
+- 강한 숏 2배 체크가 켜져 있으면 규칙 결과에도 2배(규칙에서 strong_short로 직접 정하려면 체크 해제)
+- 테스트: 예시 규칙 start 1000 → current 1100 = $33, 900 = $30. 클라 로직 스텁 테스트 숏 2건 $33 / 강한 숏 $32×2=$64(앞 건만큼 현금 차감). live 모의 1000→$30, 1044.91→$31(강한 숏 ×2 $62). 오류 검사 11종 확인. py_compile 통과
+- **클라이언트·live_trader 재시작 필요**(서버는 안 바뀜). 되돌리기: backups\20261122_sizing_rule
+
 ## 2026-11-22 (수동, 12시 KST, 사용자 요청) — Claude 보고용 사본(claude_view) + 1회 진입 금액 '현금의 %' (모의·실전)
 
 - 배경: 윈도우에서도 서버·클라 SCRIPT_DIR 이 `/storage/emulated/0/Documents`(= `C:\storage\emulated\0\Documents`)로 잡혀서 모의 잔고·포지션·자동진입 기록이 trading 폴더 밖에 있었음 → Claude 점검에서 못 읽음

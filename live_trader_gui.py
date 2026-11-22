@@ -61,6 +61,7 @@ class App:
         self.v_amt = tk.StringVar(value=f"{L.DEFAULT_MARGIN_USDT:g}")
         self.v_amt_mode = tk.StringVar(value="usd")   # [2026-11-22] "usd" 고정 / "pct" 현금의 %
         self.v_pct = tk.StringVar(value=f"{L.DEFAULT_MARGIN_PCT:g}")
+        self.v_seed = tk.StringVar(value="")   # [2026-11-22] 사용자 정의: 처음 시드(비우면 지난번 값/처음엔 지금 현금)
         self.v_strong = tk.BooleanVar(value=True)
         self.v_dry = tk.BooleanVar(value=True)
         r = ttk.Frame(top)
@@ -78,7 +79,11 @@ class App:
         self.rb_pct = ttk.Radiobutton(r, text="현금의", variable=self.v_amt_mode, value="pct")
         self.rb_pct.pack(side="left")
         ttk.Entry(r, textvariable=self.v_pct, width=5, justify="right").pack(side="left", padx=(2, 2))
-        ttk.Label(r, text="%").pack(side="left", padx=(0, 16))
+        ttk.Label(r, text="%").pack(side="left", padx=(0, 8))
+        self.rb_rule = ttk.Radiobutton(r, text="사용자 정의", variable=self.v_amt_mode, value="rule")
+        self.rb_rule.pack(side="left")
+        self.btn_rule = ttk.Button(r, text="규칙 편집·검사", command=self.edit_rule)
+        self.btn_rule.pack(side="left", padx=(2, 16))
         self.cb_strong = ttk.Checkbutton(r, text=f"강한 숏(4h예상 {L.STRONG_SHORT_EXP4}% 이하) 진입 금액 {L.STRONG_MULT:g}배",
                                          variable=self.v_strong)
         self.cb_strong.pack(side="left", padx=(0, 16))
@@ -202,6 +207,70 @@ class App:
     def _bg(self, fn, *a):
         threading.Thread(target=fn, args=a, daemon=True).start()
 
+    # ---------- [2026-11-22] 사용자 정의 진입 금액 ----------
+    def _read_rule(self):
+        try:
+            with open(L.RULE_FILE, encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            return L.sizing_rule.EXAMPLE if L.sizing_rule else ""
+
+    def edit_rule(self):
+        if not L.sizing_rule:
+            messagebox.showerror("사용자 정의", "sizing_rule.py 가 trading 폴더에 없어서 못 씀")
+            return
+        dlg = tk.Toplevel(self.root)
+        dlg.title("사용자 정의 진입 금액 (C언어 형식)")
+        dlg.transient(self.root)
+        f = ttk.Frame(dlg, padding=10)
+        f.pack(fill="both", expand=True)
+        r = ttk.Frame(f)
+        r.pack(fill="x")
+        ttk.Label(r, text="처음 시드 start_seed").pack(side="left")
+        ttk.Entry(r, textvariable=self.v_seed, width=10, justify="right").pack(side="left", padx=4)
+        ttk.Label(r, text="USDT (비우면 지난번 값, 처음이면 시작할 때 현금)").pack(side="left")
+        txt = tk.Text(f, width=70, height=12, font=("Consolas", 10), undo=True)
+        txt.pack(fill="both", expand=True, pady=6)
+        txt.insert("1.0", self._read_rule())
+        ttk.Label(f, foreground="gray", justify="left", text=(
+            "변수: start_seed(처음 시드) current_seed(지금 사용 가능 USDT, 모의는 가상 현금) open_positions is_short strong_short leverage\n"
+            "결과: position_size = 금액;  (0 이하면 진입 안 함)   함수: int round min max abs   연산: + - * / % == != < <= > >= && || !\n"
+            "강한 숏 2배 체크가 켜져 있으면 규칙 결과에도 2배가 곱해짐")).pack(anchor="w")
+        res = ttk.Label(f, text="", justify="left")
+        res.pack(anchor="w", pady=(6, 0))
+
+        def do_check():
+            sv = self.v_seed.get().strip()
+            try:
+                sd = float(sv) if sv else 1000.0
+            except ValueError:
+                res.configure(text="❌ 처음 시드는 숫자로", foreground="#e04040")
+                return False
+            try:
+                lv = int(float(self.v_lev.get() or L.DEFAULT_LEVERAGE))
+            except ValueError:
+                lv = L.DEFAULT_LEVERAGE
+            ok, msg, rows = L.sizing_rule.check(txt.get("1.0", "end"), sd, lv)
+            detail = "\n".join(f"  {d}: current_seed {cur:,.0f} → position_size {ps:g}" for d, cur, ps in rows)
+            res.configure(text=("✅ " if ok else "❌ ") + msg + ("\n" + detail if detail else ""),
+                          foreground="#1a8f3c" if ok else "#e04040")
+            return ok
+
+        def do_save():
+            if not do_check():
+                return
+            with open(L.RULE_FILE, "w", encoding="utf-8") as fh:
+                fh.write(txt.get("1.0", "end").strip() + "\n")
+            self.v_amt_mode.set("rule")
+            dlg.destroy()
+
+        b = ttk.Frame(f)
+        b.pack(fill="x", pady=(8, 0))
+        ttk.Button(b, text="저장(검사 통과해야 저장)", command=do_save).pack(side="right")
+        ttk.Button(b, text="문법 검사", command=do_check).pack(side="right", padx=6)
+        ttk.Button(b, text="예시로 되돌리기",
+                   command=lambda: (txt.delete("1.0", "end"), txt.insert("1.0", L.sizing_rule.EXAMPLE))).pack(side="left")
+
     # ---------- 시작 ----------
     def start(self):
         try:
@@ -209,8 +278,22 @@ class App:
             hold = self._num(self.v_hold, L.DEFAULT_HOLD_HOURS, float, lambda v: 0.1 <= v <= 240, "보유 시간(0.1~240)")
             amt = self._num(self.v_amt, L.DEFAULT_MARGIN_USDT, float, lambda v: v > 0, "진입 금액(0보다 큼)")
             pct = None
+            rule = None
+            seed = None
             if self.v_amt_mode.get() == "pct":
                 pct = self._num(self.v_pct, L.DEFAULT_MARGIN_PCT, float, lambda v: 0 < v <= 100, "현금의 %(0~100)")
+            elif self.v_amt_mode.get() == "rule":
+                if not L.sizing_rule:
+                    raise ValueError("sizing_rule.py 가 없어서 사용자 정의")
+                rule = self._read_rule()
+                sv = self.v_seed.get().strip()
+                seed = float(sv) if sv else None
+                if seed is not None and seed <= 0:
+                    raise ValueError("처음 시드(0보다 큼)")
+                ok, msg, _ = L.sizing_rule.check(rule, seed or 1000, lev)
+                if not ok:
+                    messagebox.showwarning("사용자 정의 오류", f"규칙이 문법 검사를 통과 못 했어:\n{msg}\n\n'규칙 편집·검사'에서 고쳐줘.")
+                    return
         except ValueError as e:
             messagebox.showwarning("입력 오류", f"{e} 값을 확인해 줘.")
             return
@@ -221,7 +304,7 @@ class App:
         if not dry:
             msg = (f"실거래입니다. 실제 돈으로 주문이 나갑니다.\n\n"
                    f"레버리지 {lev}배 · {hold:g}시간 뒤 정리 · 1회 "
-                   f"{f'현금(사용 가능 USDT)의 {pct:g}%' if pct else f'{amt:g} USDT'}"
+                   f"{'사용자 정의 규칙' if rule else f'현금(사용 가능 USDT)의 {pct:g}%' if pct else f'{amt:g} USDT'}"
                    f"{f' (강한 숏 ×{L.STRONG_MULT:g})' if strong else ''}\n\n시작할까?")
             if not messagebox.askyesno("실거래 시작", msg, icon="warning"):
                 return
@@ -238,11 +321,11 @@ class App:
             return
         self.set_inputs("disabled")
         self.lbl_state.configure(text="연결 중…", foreground="#c9a800")
-        self._bg(self._start_worker, lev, hold, amt, dry, strong, pct)
+        self._bg(self._start_worker, lev, hold, amt, dry, strong, pct, rule, seed)
 
-    def _start_worker(self, lev, hold, amt, dry, strong, pct=None):
+    def _start_worker(self, lev, hold, amt, dry, strong, pct=None, rule=None, seed=None):
         try:
-            tr = L.Trader(lev, hold, amt, dry=dry, strong_x2=strong, margin_pct=pct)
+            tr = L.Trader(lev, hold, amt, dry=dry, strong_x2=strong, margin_pct=pct, margin_rule=rule, start_seed=seed)
             tr.startup()
         except SystemExit:
             L.release_lock()
@@ -275,7 +358,7 @@ class App:
 
     def set_inputs(self, state):
         self.btn_start.configure(state=state)
-        for cb in (self.cb_strong, self.cb_dry, self.rb_usd, self.rb_pct):
+        for cb in (self.cb_strong, self.cb_dry, self.rb_usd, self.rb_pct, self.rb_rule, self.btn_rule):
             cb.configure(state=state)
 
     # ---------- 동작 ----------

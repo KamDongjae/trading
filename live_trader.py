@@ -56,6 +56,10 @@ from datetime import datetime
 from urllib.parse import urlencode
 
 import requests
+try:
+    import sizing_rule  # [2026-11-22] 진입 금액 사용자 정의 규칙(C언어 형식 if/else)
+except Exception:
+    sizing_rule = None
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 KEY_NAME = "binance_api_key.txt"
@@ -85,6 +89,7 @@ DEFAULT_HOLD_HOURS = 48.0
 DEFAULT_MARGIN_USDT = 30.0
 
 DEFAULT_MARGIN_PCT = 3.0     # [2026-11-22 수동, 사용자 요청] '현금의 %' 모드 기본값
+RULE_FILE = os.path.join(SCRIPT_DIR, "live_sizing_rule.txt")  # [2026-11-22] 사용자 정의 진입 금액 규칙(GUI '규칙 편집'에서 저장)
 DRY_SEED_USDT = 1000.0       # --dry(모의)에서 '현금의 %' 쓸 때 가상 현금 시작값(정리하면 손익 반영)
 MARGIN_TYPE = "ISOLATED"
 SKIP_BEAR_LONG = True        # 레짐 하락장이면 롱 건너뜀
@@ -383,10 +388,18 @@ def fmt_qty(d):
 # 실전 자동매매
 # ------------------------------------------------------------------
 class Trader:
-    def __init__(self, lev, hold_h, margin, dry=False, strong_x2=True, margin_pct=None):
+    def __init__(self, lev, hold_h, margin, dry=False, strong_x2=True, margin_pct=None, margin_rule=None, start_seed=None):
         self.lev, self.hold_h, self.margin = int(lev), float(hold_h), float(margin)
         # [2026-11-22] margin_pct 를 주면 1회 진입 = 그 시점 현금(실거래: 사용 가능 USDT, 모의: 가상 현금)의 %
         self.margin_pct = float(margin_pct) if margin_pct else None
+        # [2026-11-22] margin_rule(규칙 글) 을 주면 sizing_rule 로 1회 진입 금액 계산(start_seed/current_seed 등)
+        self.margin_rule = None
+        if margin_rule:
+            if not sizing_rule:
+                raise RuntimeError("sizing_rule.py 가 없어서 사용자 정의 진입 금액을 쓸 수 없음")
+            self.margin_rule = sizing_rule.parse(margin_rule)
+            self.margin_rule_src = margin_rule
+        self._start_seed_arg = float(start_seed) if start_seed else None
         self.strong_x2 = bool(strong_x2)
         self.dry = dry
         self.paused = False
@@ -409,6 +422,16 @@ class Trader:
         self._last_symbols_load = 0
         if dry and "dry_cash" not in self.state:
             self.state["dry_cash"] = DRY_SEED_USDT
+        if self._start_seed_arg:
+            self.state["start_seed"] = self._start_seed_arg
+
+    def start_seed(self):
+        """처음 시드: 시작할 때 넣은 값 → 없으면 처음 실행 때 현금을 기록해 두고 계속 씀(live_state.json start_seed)."""
+        v = self.state.get("start_seed")
+        if not v:
+            v = self.cash()
+            self.state["start_seed"] = v
+        return float(v)
 
     def cash(self):
         """현금: 실거래 = 바이낸스 사용 가능 USDT(포지션 증거금 제외), 모의 = 가상 현금."""
@@ -417,6 +440,8 @@ class Trader:
         return self.bn.usdt_balance()[0]
 
     def amount_text(self):
+        if self.margin_rule:
+            return "사용자 정의 규칙"
         return f"현금의 {self.margin_pct:g}%" if self.margin_pct else f"{self.margin:g} USDT"
 
     # --- 저장 ---
@@ -604,7 +629,21 @@ class Trader:
         info = self.bn.symbols[symbol]
         mark = self.bn.mark_price(symbol)
         lev = int(lev or self.lev)
-        if margin is None and self.margin_pct:
+        if margin is None and self.margin_rule:
+            cash, seed = self.cash(), self.start_seed()
+            e4 = parse_exp4(reason) if direction == "SHORT" else None
+            strong = 1 if (e4 is not None and e4 <= STRONG_SHORT_EXP4) else 0
+            try:
+                margin = sizing_rule.run(self.margin_rule, seed, cash, len(self.open_trades()),
+                                         1 if direction == "SHORT" else 0, strong, lev)
+            except Exception as e:
+                log(f"❌ {symbol} 사용자 정의 규칙 오류: {e} — 진입 안 함")
+                return False
+            log(f"💵 {symbol} 사용자 정의: start_seed {seed:,.2f} / current_seed {cash:,.2f} → position_size {margin:g} USDT")
+            if margin < 1:
+                log(f"⏭  {symbol} 건너뜀: 사용자 정의 결과 {margin:g} USDT")
+                return False
+        elif margin is None and self.margin_pct:
             cash = self.cash()
             margin = round(cash * self.margin_pct / 100.0, 2)
             log(f"💵 {symbol} 현금 {cash:,.2f} USDT 의 {self.margin_pct:g}% = {margin:g} USDT")
@@ -793,6 +832,7 @@ class Trader:
             st = {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "pid": os.getpid(),
                   "mode": "dry" if self.dry else "real", "paused": self.paused,
                   "leverage": self.lev, "hold_h": self.hold_h, "margin": self.margin, "margin_pct": self.margin_pct,
+                  "margin_rule": getattr(self, "margin_rule_src", None), "start_seed": self.state.get("start_seed"),
                   "strong_x2": self.strong_x2, "dry_cash": self.state.get("dry_cash") if self.dry else None,
                   "balance_avail": None, "balance_total": None, "open": []}
             if not self.dry:
@@ -974,11 +1014,32 @@ def main():
     print("=" * 60)
     lev = ask("레버리지(배)", DEFAULT_LEVERAGE, int, lambda v: 1 <= v <= 20)
     hold = ask("보유 시간(시간, 지나면 시장가 정리)", DEFAULT_HOLD_HOURS, float, lambda v: 0.1 <= v <= 240)
-    m = input("1회 진입 금액 방식 [Enter = 고정 USDT / p = 현금의 %]: ").strip().lower()
+    m = input("1회 진입 금액 방식 [Enter = 고정 USDT / p = 현금의 % / r = 사용자 정의(live_sizing_rule.txt)]: ").strip().lower()
     pct = None
+    rule = None
+    seed = None
     amt = DEFAULT_MARGIN_USDT
     if m in ("p", "%", "pct", "퍼센트"):
         pct = ask("현금의 몇 %(진입할 때마다 그때 현금 기준)", DEFAULT_MARGIN_PCT, float, lambda v: 0 < v <= 100)
+    elif m in ("r", "rule", "규칙"):
+        if not sizing_rule:
+            print("❌ sizing_rule.py 가 없음")
+            return
+        if not os.path.exists(RULE_FILE):
+            with open(RULE_FILE, "w", encoding="utf-8") as f:
+                f.write(sizing_rule.EXAMPLE + "\n")
+            print(f"  {RULE_FILE} 에 예시 규칙을 만들어 뒀음 — 고친 뒤 다시 실행해도 되고, 그대로 써도 됨")
+        rule = open(RULE_FILE, encoding="utf-8").read()
+        print("----- 규칙 -----\n" + rule.strip() + "\n----------------")
+        s0 = input("처음 시드 start_seed (USDT) [Enter = 지난번 값, 처음이면 지금 현금]: ").strip()
+        seed = float(s0) if s0 else None
+        ok, msg, rows = sizing_rule.check(rule, seed or 1000, DEFAULT_LEVERAGE)
+        print(("  ✅ " if ok else "  ❌ ") + msg)
+        for d, cur, ps in rows:
+            print(f"     {d}: current_seed {cur:,.2f} → position_size {ps:g}")
+        if not ok:
+            print("  규칙을 고친 뒤 다시 실행해줘")
+            return
     else:
         amt = ask("1회 진입 금액(USDT, 증거금)", DEFAULT_MARGIN_USDT, float, lambda v: v > 0)
     s = input(f"강한 숏(4h예상 {STRONG_SHORT_EXP4}% 이하)은 진입 금액 {STRONG_MULT:g}배로? [Enter = 예 / n = 아니오]: ").strip().lower()
@@ -987,7 +1048,7 @@ def main():
         print(f"  ⚠️ {lev}배: 1년 백테스트에서 5배는 청산 44건·한 달 -$91도 있었음(3배는 16건)")
     acquire_lock()
     try:
-        tr = Trader(lev, hold, amt, dry=a.dry, strong_x2=strong, margin_pct=pct)
+        tr = Trader(lev, hold, amt, dry=a.dry, strong_x2=strong, margin_pct=pct, margin_rule=rule, start_seed=seed)
         tr.startup()
         tr.print_status()
         if not a.dry:

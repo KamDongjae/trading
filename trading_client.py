@@ -15,6 +15,11 @@ import random
 import requests
 import threading
 from collections import deque
+try:
+    import sizing_rule  # [2026-11-22] 진입 금액 사용자 정의 규칙(C언어 형식 if/else)
+except Exception as _e:
+    sizing_rule = None
+    print(f"⚠️ sizing_rule.py 를 못 불러옴 — 사용자 정의 진입 금액 사용 불가: {_e}")
 
 # ============================================================
 # 저장 경로
@@ -52,7 +57,7 @@ AUTO_ENTRY_LOG = os.path.join(SCRIPT_DIR, "auto_entry_log.csv")  # 자동진입 
 AUTO_ENTRY_USD = 30         # 자동진입 증거금($) 기본값 — 설정 창에서 바꿀 수 있음  [2026-11-22 수동] 200→30 (1년 백테스트 3배·48h·$30 추천값)
 AUTO_ENTRY_LEVERAGE = 3     # 자동진입 레버리지 기본값  [2026-11-22 수동] 10→3
 AUTO_ENTRY_HOLD_H = 48      # 자동진입 포지션 자동 정리(시간) 기본값, 0이면 안 함  [2026-11-22 수동] 12→48
-AUTO_ENTRY_AMT_MODE = "usd"   # [2026-11-22 수동, 사용자 요청] 1회 진입 금액 방식: "usd"=고정 $ / "pct"=현금(잔고)의 %
+AUTO_ENTRY_AMT_MODE = "usd"   # [2026-11-22 수동, 사용자 요청] 1회 진입 금액 방식: "usd"=고정 $ / "pct"=현금(잔고)의 % / "rule"=사용자 정의(sizing_rule.py)
 AUTO_ENTRY_PCT = 3.0          # "pct"일 때 현금의 몇 %. 진입할 때마다 그 시점 현금 기준으로 다시 계산(정리로 현금 110%가 되면 110을 100으로 봄)
 AUTO_ENTRY_SKIP_BEAR_LONG = True     # [2026-11-22 수동] 레짐 하락장이면 롱 자동진입 안 함(1년 백테스트 하락장 롱 35건 승률 37%·-$40)
 AUTO_ENTRY_STRONG_SHORT_EXP4 = -1.0  # [2026-11-22 수동] 숏이고 4h예상(exp4) ≤ 이 값이면 '강한 숏'
@@ -2773,6 +2778,7 @@ class TradingClient:
     def _load_auto_entry(self):
         cfg = {'on': False, 'force': False, 'usd': AUTO_ENTRY_USD, 'lev': AUTO_ENTRY_LEVERAGE,
                'amt_mode': AUTO_ENTRY_AMT_MODE, 'pct': AUTO_ENTRY_PCT,
+               'rule': (sizing_rule.EXAMPLE if sizing_rule else ''), 'start_seed': 0,
                'hold_h': AUTO_ENTRY_HOLD_H, 'skip_bear_long': AUTO_ENTRY_SKIP_BEAR_LONG, 'strong_x2': True}
         try:
             with open(AUTO_ENTRY_FILE, 'r', encoding='utf-8') as f:
@@ -2794,7 +2800,8 @@ class TradingClient:
             mode = "잔고무시" if c.get('force') else "잔고내"
             hold = f" {c.get('hold_h', 0):g}h정리" if c.get('hold_h') else ""
             extra = (" 숏강2배" if c.get('strong_x2', True) else "") + (" 하락롱X" if c.get('skip_bear_long', True) else "")
-            amt_txt = f"현금{c.get('pct', AUTO_ENTRY_PCT):g}%" if c.get('amt_mode') == 'pct' else f"${c['usd']:g}"
+            amt_txt = (f"현금{c.get('pct', AUTO_ENTRY_PCT):g}%" if c.get('amt_mode') == 'pct'
+                       else "사용자규칙" if c.get('amt_mode') == 'rule' else f"${c['usd']:g}")
             self._cfg(self.btn_auto_entry, text=f"자동진입 ON {amt_txt}×{c['lev']} {mode}{hold}{extra}",
                       bg="#c0392b" if c.get('force') else "#2fa84f", fg="white")
         else:
@@ -2814,6 +2821,9 @@ class TradingClient:
         usd_var = tk.StringVar(value=f"{c.get('usd', AUTO_ENTRY_USD):g}")
         amt_mode_var = tk.StringVar(value=c.get('amt_mode', AUTO_ENTRY_AMT_MODE))
         pct_var = tk.StringVar(value=f"{c.get('pct', AUTO_ENTRY_PCT):g}")
+        _seed0 = float(c.get('start_seed') or 0) or float(bank_total_deposit or 0) or \
+            float(self._account[0] if getattr(self, '_account', None) else 0) or 1000.0
+        seed_var = tk.StringVar(value=f"{_seed0:g}")
         lev_var = tk.StringVar(value=str(c.get('lev', AUTO_ENTRY_LEVERAGE)))
         hold_var = tk.StringVar(value=f"{c.get('hold_h', AUTO_ENTRY_HOLD_H):g}")
         bear_var = tk.BooleanVar(value=bool(c.get('skip_bear_long', AUTO_ENTRY_SKIP_BEAR_LONG)))
@@ -2853,6 +2863,44 @@ class TradingClient:
                        variable=strong_var, font=("Arial", fs)).pack(anchor="w")
         tk.Label(body, text="현금의 %: 진입할 때마다 그때 현금(잔고) 기준으로 계산 — 정리 후 현금이 늘면 금액도 같이 늘어남",
                  font=("Arial", fs - 1), fg="gray").pack(anchor="w", pady=(4, 0))
+        # [2026-11-22] 사용자 정의(C언어 형식 if/else) — sizing_rule.py
+        rule_box = tk.LabelFrame(body, text=" 사용자 정의 진입 금액 (C언어 형식) ", font=("Arial", fs, "bold"), padx=8, pady=6)
+        rule_box.pack(fill="x", pady=(8, 4))
+        rrow = tk.Frame(rule_box)
+        rrow.pack(fill="x")
+        tk.Radiobutton(rrow, text="사용자 정의 사용", variable=amt_mode_var, value="rule",
+                       font=("Arial", fs, "bold")).pack(side="left")
+        tk.Label(rrow, text="   처음 시드(start_seed) $", font=("Arial", fs)).pack(side="left")
+        tk.Entry(rrow, textvariable=seed_var, width=8, font=("Arial", fs)).pack(side="left", padx=2)
+        rule_txt = tk.Text(rule_box, width=60, height=8, font=("Consolas", fs), undo=True)
+        rule_txt.pack(fill="x", pady=(4, 2))
+        rule_txt.insert("1.0", c.get('rule') or (sizing_rule.EXAMPLE if sizing_rule else ""))
+        tk.Label(rule_box, text="변수: start_seed(처음 시드) current_seed(지금 현금) open_positions is_short strong_short leverage\n"
+                                "결과: position_size = 금액;  (0 이하면 진입 안 함)  함수: int round min max abs  연산: + - * / % == != < <= > >= && || !\n"
+                                "강한 숏 2배 체크가 켜져 있으면 규칙 결과에도 2배가 곱해짐(규칙에서 strong_short로 직접 정하려면 체크 해제)",
+                 font=("Arial", fs - 1), fg="gray", justify="left").pack(anchor="w")
+        chk_lbl = tk.Label(rule_box, text="", font=("Arial", fs - 1), justify="left", anchor="w")
+
+        def check_rule():
+            if not sizing_rule:
+                self._cfg(chk_lbl, text="sizing_rule.py 가 없어서 검사 불가", fg="#e04040")
+                return False
+            try:
+                sd = float(seed_var.get())
+            except Exception:
+                sd = 0
+            try:
+                lv = int(float(lev_var.get()))
+            except Exception:
+                lv = AUTO_ENTRY_LEVERAGE
+            ok, msg, rows = sizing_rule.check(rule_txt.get("1.0", "end"), sd, lv)
+            detail = "  ".join(f"{d}: 현재 ${cur:,.0f} → ${ps:g}" for d, cur, ps in rows)
+            self._cfg(chk_lbl, text=("✅ " if ok else "❌ ") + msg + (f"\n{detail}" if detail else ""),
+                      fg="#1a8f3c" if ok else "#e04040")
+            return ok
+
+        tk.Button(rule_box, text="문법 검사", font=("Arial", fs), command=check_rule).pack(anchor="w", pady=(4, 0))
+        chk_lbl.pack(fill="x", pady=(2, 0))
         tk.Label(body, text=f"추천: ${AUTO_ENTRY_USD:g} × {AUTO_ENTRY_LEVERAGE}배 · {AUTO_ENTRY_HOLD_H:g}시간 정리 · 위 두 칸 켬 (1년 백테스트 기준)",
                  font=("Arial", fs - 1), fg="gray").pack(anchor="w", pady=(4, 0))
 
@@ -2862,14 +2910,20 @@ class TradingClient:
                 pct = float(pct_var.get() or AUTO_ENTRY_PCT)
                 lev = int(float(lev_var.get()))
                 hold_h = float(hold_var.get() or 0)
-                if usd <= 0 or lev <= 0 or hold_h < 0 or not (0 < pct <= 100):
+                start_seed = float(seed_var.get() or 0)
+                if usd <= 0 or lev <= 0 or hold_h < 0 or not (0 < pct <= 100) or start_seed < 0:
                     raise ValueError
             except Exception:
                 messagebox.showwarning("입력 오류", "증거금·레버리지는 0보다 큰 숫자, %는 0~100, 정리 시간은 0 이상으로 넣어줘.", parent=dlg)
                 return
+            rule_src = rule_txt.get("1.0", "end").strip()
+            if amt_mode_var.get() == "rule" and not check_rule():
+                messagebox.showwarning("사용자 정의 오류", "사용자 정의 규칙이 문법 검사를 통과 못 해서 저장 안 했어.\n"
+                                       "아래 빨간 글씨를 보고 고친 뒤 다시 저장해줘.", parent=dlg)
+                return
             was_on = bool(self.auto_cfg.get('on'))
             self.auto_cfg = {'on': bool(on_var.get()), 'force': force_var.get() == "force", 'usd': usd, 'lev': lev,
-                             'amt_mode': amt_mode_var.get(), 'pct': pct,
+                             'amt_mode': amt_mode_var.get(), 'pct': pct, 'rule': rule_src, 'start_seed': start_seed,
                              'hold_h': hold_h, 'skip_bear_long': bool(bear_var.get()), 'strong_x2': bool(strong_var.get())}
             self._save_auto_entry()
             if self.auto_cfg['on'] and not was_on:
@@ -2974,6 +3028,8 @@ class TradingClient:
         pct_mode = c.get('amt_mode') == 'pct'
         pct = float(c.get('pct', AUTO_ENTRY_PCT))
         cash = float(self._account[0]) if self._account else 0.0
+        rule_mode = c.get('amt_mode') == 'rule'
+        n_open = len(held)
         for t, v in new_signals:
             ptype = 'long' if v == "LONG" else 'short'
             # [2026-11-22 수동, 사용자 요청] 바이낸스 선물 없는 코인(NOFUT)은 롱·숏 모두 자동진입 안 함
@@ -2994,21 +3050,38 @@ class TradingClient:
                 continue
             # [2026-11-22 수동, 사용자 요청] 강한 숏(4h예상 ≤ -1.0%)은 진입 금액 2배
             amt = usd
-            if pct_mode:
-                amt = round(cash * pct / 100.0, 2)
-                if amt < 1:
-                    self._auto_log(ex, t, ptype, "skip", f"현금 ${cash:,.2f}의 {pct:g}% = ${amt:g} (1달러 미만)")
-                    continue
             e4 = row_t.get('exp4')
             try:
                 e4 = float(e4) if e4 not in (None, '') else None
             except Exception:
                 e4 = None
-            if ptype == 'short' and c.get('strong_x2', True) and e4 is not None and e4 <= AUTO_ENTRY_STRONG_SHORT_EXP4:
+            strong = ptype == 'short' and e4 is not None and e4 <= AUTO_ENTRY_STRONG_SHORT_EXP4
+            if pct_mode:
+                amt = round(cash * pct / 100.0, 2)
+                if amt < 1:
+                    self._auto_log(ex, t, ptype, "skip", f"현금 ${cash:,.2f}의 {pct:g}% = ${amt:g} (1달러 미만)")
+                    continue
+            elif rule_mode:
+                # [2026-11-22] 사용자 정의 규칙: start_seed=설정값, current_seed=지금 현금
+                if not sizing_rule:
+                    self._auto_log(ex, t, ptype, "fail", "sizing_rule.py 없음 — 사용자 정의 계산 불가")
+                    continue
+                sd = float(c.get('start_seed') or 0) or float(bank_total_deposit or 0) or cash
+                try:
+                    amt = sizing_rule.run(c.get('rule', ''), sd, cash, n_open, 1 if ptype == 'short' else 0,
+                                          1 if strong else 0, lev)
+                except Exception as e:
+                    self._auto_log(ex, t, ptype, "fail", f"사용자 정의 규칙 오류: {e}")
+                    continue
+                if amt < 1:
+                    self._auto_log(ex, t, ptype, "skip", f"사용자 정의 결과 ${amt:g} (start ${sd:,.0f} / current ${cash:,.2f})")
+                    continue
+            if strong and c.get('strong_x2', True):
                 amt = amt * AUTO_ENTRY_STRONG_MULT
             try:
                 cmd_id = send_command(action, t, amt, lev, ptype, exchange=ex)
                 cash -= amt
+                n_open += 1
             except Exception as e:
                 self._auto_log(ex, t, ptype, "fail", f"명령 전송 실패: {e}")
                 continue
