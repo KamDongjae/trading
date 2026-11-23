@@ -1,6 +1,6 @@
 # Pyramide 설정값 정리
 
-마지막 갱신: 2026-11-22 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
+마지막 갱신: 2026-11-23 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
 
 ## 바꾸는 법
 
@@ -56,6 +56,19 @@
 | `SHORT_RISK_ATR` | 2.0 | ATR% 이 이상이면 숏 청산위험 플래그(🔥 뱃지) |
 | `SHORT_RISK_EMA_DIST` | 4.0 | 가격이 EMA20보다 이 % 이상 위면 숏 청산위험 플래그 |
 
+## 1-1. 바이낸스 탭 (trading_server.py, 11/23)
+
+빗썸·업비트와 같은 점수·판정 규칙을 바이낸스 USDT 무기한 선물 캔들로 계산하는 세 번째 탭. 결과는 `server_market_binance.csv`. 모의 체결·손익은 원래대로 바이낸스 USD가.
+
+| 설정 | 현재값 | 뜻 | 끄기/되돌리기 |
+|---|---|---|---|
+| `BINANCE_ENABLED` | True | 바이낸스 탭 수집·채점 | False면 끔(서버·수집기) |
+| `BINANCE_UNIVERSE` | 'krw' | 대상 코인. 'krw' = 원화 거래소 코인(history/ 폴더 = 빗썸·업비트 감시 코인) 중 바이낸스 선물 있는 것. '30d' = 상장 `BINANCE_MIN_AGE_D`일↑ 중 30일 거래대금 상위 `BINANCE_TOP_N`, '24h' = 24h 거래대금 상위 | 'krw'가 2차 백테스트 통과(아래) |
+| `BINANCE_TOP_N` / `BINANCE_MIN_AGE_D` | 40 / 0 | '30d'·'24h'일 때만 씀 | |
+| `BINANCE_PROB_PROFILE` | 'krw' | 판정에 쓸 확률모델. 'krw' = 원화 학습 모델(빗썸·업비트와 같음), 'binance' = `models\prob_model_binance.pkl`(`python prob_model.py binance`로 학습) | 바이낸스 모델은 2차 백테스트에서 청산 22~28%로 탈락 |
+
+**2차 백테스트(reports/binance_backtest2_20261123.md, 25/11~26/11, 바이낸스 1h봉, 숏, $30·3배·48h)**: 원화 거래소 코인·원화 모델 239건 승률 72% 건당 +5.4% 청산 5.9% **+$564**(앞/뒤 6개월 +$294/+$269) ← 채택. 24h 거래대금 상위 40은 원화 모델 -$609(청산 21.2%)·바이낸스 모델 +$1,571(청산 28.4%, 최악월 -$692). 상장 1년↑ 30일 거래대금 상위 40·바이낸스 모델 +$953(청산 23.1%).
+
 ## 4. 확률모델 (prob_model.py)
 
 | 설정 | 현재값 | 뜻 |
@@ -65,6 +78,8 @@
 
 모델 파일: `models\prob_model.pkl`(PC 전용) + `models\prob_model_lite.json`(GitHub로 배포, scikit-learn 없는 기기용). 학습 로그는 `models\train_log.txt`.
 
+바이낸스 전용 모델(11/23, 지금은 안 씀): `BINANCE_HISTORY_DIR`=history_binance, `BINANCE_TRAIN_TOP`=100(매시 24h 거래대금 상위 100만 학습), `BINANCE_TRAIN_DAYS`=1100 → `models\prob_model_binance.pkl`/`_lite.json`. `python prob_model.py binance`로 학습.
+
 ## 5. 수집기 (data_collector.py)
 
 | 설정 | 현재값 | 뜻 |
@@ -72,6 +87,7 @@
 | `COLLECT_INTERVAL_SEC` | 300 | 수집 주기(초) |
 | `AUTO_PUSH_INTERVAL_MIN` | 30 | GitHub 자동 push 주기(분) |
 | `MODEL_CHECK_INTERVAL_MIN` | 60 | 과거 캔들 다운로드·모델 재학습 필요 여부 확인 주기(분) |
+| `BINANCE_MODEL_JOBS` | False | (11/23) True면 20시간마다 바이낸스 1시간봉 이어받기 + 바이낸스 전용 모델 재학습. 바이낸스 탭 판정은 매 주기 `market_data_log_binance_YYYYMM.csv`·`signal_outcomes_verdict_binance.csv`에 기록(항상) |
 | `WATCHDOG_MIN` | 20 | 이 시간(분) 넘게 로그 저장이 없으면 수집기가 스스로 재시작(멈춤 자동 복구). run_collector.bat로 켜면 bat가 다시 띄우고, 직접 켜면 새 창으로 다시 뜸 |
 
 ## 6. 클라이언트 버튼 설정 (기기별)
@@ -80,6 +96,7 @@
 |---|---|---|
 | 확률필터 ON/OFF | `prob_filter.json` | OFF면 필터 적용 전 판정을 표시(서버 판정·로그는 그대로) |
 | 자동진입 (설정 창) | `auto_entry.json`, 기록 `auto_entry_log.csv` | 1회 진입은 **고정 $** / **현금의 %**(`amt_mode`=usd/pct, `AUTO_ENTRY_PCT`=3, 진입할 때마다 그 시점 현금 기준) / **사용자 정의**(`amt_mode`=rule, C언어 형식 if/else — start_seed(처음 시드)·current_seed(총자산=현금+증거금+평가손익)·cash(현금) → position_size, sizing_rule.py, 등록 전 문법 검사. 실전은 live_sizing_rule.txt) — 11/22. 켜면 판정 롱/숏이 새로 뜰 때 증거금·레버리지(기본 $30×3, 하락장이면 롱 자동진입 안 함 체크 기본 켜짐 — `skip_bear_long`, 강한 숏(4h예상 -1% 이하)은 진입 금액 2배 기본 켜짐 — `strong_x2`, `AUTO_ENTRY_STRONG_SHORT_EXP4`=-1.0·`AUTO_ENTRY_STRONG_MULT`=2.0)로 바로 진입. 잔고 제한=충전 잔고 안에서만(부족하면 건너뜀), 잔고 무시=서버 `open_force`로 강제 진입(잔고 마이너스 가능). 클라이언트 켜져 있을 때만. 바이낸스 선물에 없는 코인(NOFUT)은 롱·숏 모두 자동진입 안 함(롱 판정 표시는 그대로). "진입 후 N시간 자동 정리"(기본 48, 0=안 함)는 자동진입 포지션만 정리(`auto_entry_positions.json`), 클라가 꺼져 있던 동안 시간이 지났으면 켜질 때 정리 |
+| 거래소 토글 | – | 빗썸 / 업비트 / 바이낸스(11/23). 자동진입은 켜져 있으면 세 거래소 판정을 모두 봄(같은 코인 보유 중이면 건너뜀) |
 | 순위 탭 | – | 4h 예상수익(exp4) 순 롱/숏 상위 10. 서버가 구버전이면 p_up 순 |
 
 ## 7. 변경 이력(설정 관련)
@@ -111,3 +128,4 @@
 | 11/22 | 1회 진입 금액 '사용자 정의'(C언어 형식 if/else, sizing_rule.py) — 클라 자동진입 `amt_mode=rule`·live_trader `margin_rule`/live_sizing_rule.txt (사용자 요청) | backups\20261122_sizing_rule |
 | 11/22 | 사용자 정의 current_seed 현금 → 총자산(현금+증거금+평가손익), `cash` 변수 추가 (사용자 요청) | backups\20261122_equity_seed |
 | 11/23 | 재진입 가드(사용자 요청): ① 클라 자동진입 판정 기억을 파일(auto_entry_seen.json, 기기별)로 유지·빈 스냅샷 무시·같은 코인·방향 판정을 6h 안에 봤으면 새 신호 아님(`AUTO_RESIGNAL_GAP_H`) — 11/23 10:05 재시작 직후 ELSA·PIEVERSE 동시 재진입 대응 ② 강제청산된 코인은 같은 방향 48h 자동진입 차단(클라 `AUTO_LIQ_BLOCK_H`, live_trader `LIQ_BLOCK_H`). 강제청산 기록은 trading 폴더 liquidations_mock_<기기>.json / liquidations_live.json 에 누적(git으로 올라감, 안 지움). 위험 플래그 숏 2배안은 백테스트상 수익만 줄어 미적용 | backups\20261123_reentry_guard |
+| 11/23 | 바이낸스 탭: `BINANCE_ENABLED`·`BINANCE_UNIVERSE`='krw'·`BINANCE_PROB_PROFILE`='krw'(서버), 수집기 바이낸스 기록·`BINANCE_MODEL_JOBS`=False, 클라 거래소 토글 3개, prob_model 바이낸스 모델 경로, live_trader `SIGNAL_SOURCES`=("binance",) (사용자 요청) | backups\20261123_binance_tab |

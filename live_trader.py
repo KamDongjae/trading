@@ -69,6 +69,10 @@ KEY_CANDIDATES = [os.path.join("D:\\", KEY_NAME),
                   os.path.join(SCRIPT_DIR, KEY_NAME)]
 KEY_FILE = next((p for p in KEY_CANDIDATES if os.path.exists(p)), KEY_CANDIDATES[0])
 SIGNAL_CSV = os.path.join(SCRIPT_DIR, "signal_outcomes_verdict.csv")
+# [2026-11-23 사용자 요청] 바이낸스 탭 판정(수집기가 바이낸스 캔들·바이낸스 학습 모델로 낸 신호) 파일
+SIGNAL_CSV_BINANCE = os.path.join(SCRIPT_DIR, "signal_outcomes_verdict_binance.csv")
+# 어느 판정을 따라 주문할지: "binance" = 바이낸스 탭 판정만, "krw" = 빗썸 판정만(예전), 둘 다 = ("krw", "binance")
+SIGNAL_SOURCES = ("binance",)
 STATE_FILE = os.path.join(SCRIPT_DIR, "live_state.json")
 TRADES_CSV = os.path.join(SCRIPT_DIR, "live_trades.csv")
 LOG_FILE = os.path.join(SCRIPT_DIR, "live_log.txt")
@@ -530,18 +534,28 @@ class Trader:
 
     # --- 신호 ---
     def read_signals(self):
-        for _ in range(5):
-            try:
-                if not os.path.exists(SIGNAL_CSV):
-                    return []
-                with open(SIGNAL_CSV, newline="", encoding="utf-8") as f:
-                    return list(csv.DictReader(f))
-            except (PermissionError, OSError):
-                time.sleep(0.5)
-            except Exception as e:
-                log(f"⚠️ 신호 CSV 읽기 실패: {e}")
-                return []
-        return []
+        """[2026-11-23] SIGNAL_SOURCES 에 있는 파일을 다 읽는다. 바이낸스 탭 신호는 event_id 앞에 'bn_'(빗썸 것과 안 겹치게)."""
+        out = []
+        for src, path in (("krw", SIGNAL_CSV), ("binance", SIGNAL_CSV_BINANCE)):
+            if src not in SIGNAL_SOURCES:
+                continue
+            for _ in range(5):
+                try:
+                    if not os.path.exists(path):
+                        break
+                    with open(path, newline="", encoding="utf-8") as f:
+                        rows = list(csv.DictReader(f))
+                    if src == "binance":
+                        for r in rows:
+                            r["event_id"] = "bn_" + (r.get("event_id") or "")
+                    out += rows
+                    break
+                except (PermissionError, OSError):
+                    time.sleep(0.5)
+                except Exception as e:
+                    log(f"⚠️ 신호 CSV 읽기 실패({os.path.basename(path)}): {e}")
+                    break
+        return out
 
     def to_symbol(self, ticker):
         t = ticker.upper().strip()
@@ -1160,6 +1174,7 @@ def main():
             if ok != "yes":
                 print("취소")
                 return
+        log(f"ℹ️ 따라갈 판정: {', '.join({'krw': '빗썸', 'binance': '바이낸스 탭'}.get(x, x) for x in SIGNAL_SOURCES)}")
         log(f"▶️  시작 — {lev}배 · {hold:g}h · {tr.amount_text()}{' (강한 숏 ×2)' if strong else ''} · {'모의' if a.dry else '실거래'} (help = 명령어)")
         th = threading.Thread(target=tr.run, daemon=True)
         th.start()

@@ -291,7 +291,7 @@ def check_custom_condition_alerts(row, exchange):
         if now - _custom_condition_alert_cooldown.get(key, 0) < 300:
             continue
         _custom_condition_alert_cooldown[key] = now
-        ex_label = "빗썸" if exchange == 'bithumb' else "업비트"
+        ex_label = _ex_label(exchange)  # [2026-11-23] 바이낸스 탭
         sent_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         msg = (f"🔔 **커스텀 조건식** [{ex_label}] **{ticker}**\n`{expr}`\n"
                f"RSI {row.get('rsi')} BB% {row.get('bb_percent')} 롱{row.get('long_score')} 숏{row.get('short_score')}\n"
@@ -524,6 +524,8 @@ def send_discord_alert_with_chart(ticker, message, exchange='bithumb'):
         try:
             if exchange == 'upbit':
                 df = fetch_candlestick_upbit(ticker, chart_intervals="1h", timeout=8, retries=1)
+            elif exchange == 'binance':  # [2026-11-23] 바이낸스 탭
+                df = fetch_candlestick_binance(ticker, chart_intervals="1h", timeout=8, retries=1)
             else:
                 df = fetch_candlestick(ticker, chart_intervals="1h", timeout=8, retries=1)
             image_bytes = None
@@ -559,7 +561,7 @@ def check_discord_alerts(results, min_score, exchange='bithumb'):
     regime = current_market_regime if exchange == 'bithumb' else current_market_regime_upbit
     for t, direction in now_over - alerted_set:
         r = next((x for x in results if x['ticker'] == t), None)
-        if r:
+        if r and exchange != 'binance':  # [2026-11-23] 바이낸스 탭 — 점수 가중치 학습 로그(signal_outcomes.csv)는 빗썸/업비트만
             log_signal_open(t, direction, r, regime, exchange=exchange)  # 학습용 로그 — 웹후크 유무와 무관
     alerted_set.clear()
     alerted_set.update(now_over)
@@ -578,7 +580,7 @@ def check_discord_alerts(results, min_score, exchange='bithumb'):
     if not DISCORD_WEBHOOK_URL or not newly:
         return
     now = time.time()
-    ex_label = "빗썸" if exchange == 'bithumb' else "업비트"
+    ex_label = _ex_label(exchange)  # [2026-11-23] 바이낸스 탭
     for t, direction in newly:
         r = next((x for x in results if x['ticker'] == t), None)
         if not r:
@@ -705,7 +707,7 @@ def record_price_history(updates, ts=None, exchange='bithumb'):
     """price_updater가 매 폴링마다 호출해서 (시각, 가격)을 ticker별로 누적한다.
     exchange='upbit'이면 별도 저장소(price_history_upbit)를 써서 같은 심볼("BTC")이
     두 거래소에서 겹쳐도 서로 섞이지 않는다."""
-    store = price_history_upbit if exchange == 'upbit' else price_history
+    store = price_history_binance if exchange == 'binance' else (price_history_upbit if exchange == 'upbit' else price_history)  # [2026-11-23] 바이낸스 탭
     ts = ts or time.time()
     with price_history_lock:
         for ticker, price in updates.items():
@@ -718,7 +720,7 @@ def get_recent_pct_change(ticker, minutes=30, exchange='bithumb'):
     캔들 fetch 없이 price_updater가 이미 모아둔 데이터를 재사용하므로 API 호출이 추가로 들지 않는다.
     앱을 막 시작해서 히스토리가 부족하면 0.0을 반환한다.
     """
-    store = price_history_upbit if exchange == 'upbit' else price_history
+    store = price_history_binance if exchange == 'binance' else (price_history_upbit if exchange == 'upbit' else price_history)  # [2026-11-23] 바이낸스 탭
     with price_history_lock:
         hist = store.get(ticker)
         if not hist or len(hist) < 2:
@@ -2217,8 +2219,9 @@ def debounce_regime_value(state, confirmed, candidate, now=None):
 
 def _debounce_regime(exchange, candidate):
     """candidate가 REGIME_CONFIRM_SECONDS 동안 계속 나와야 확정 레짐을 바꾼다."""
-    confirmed = current_market_regime if exchange == 'bithumb' else current_market_regime_upbit
-    return debounce_regime_value(_regime_streak[exchange], confirmed, candidate)
+    confirmed = {'bithumb': current_market_regime, 'upbit': current_market_regime_upbit,
+                 'binance': current_market_regime_binance}.get(exchange, current_market_regime)  # [2026-11-23] 바이낸스 탭
+    return debounce_regime_value(_regime_streak.setdefault(exchange, {'candidate': None, 'since': 0.0}), confirmed, candidate)
 
 def detect_market_regime(results):
     """
@@ -3799,6 +3802,8 @@ def _pm_ticker_features(df, ticker=None, exchange='bithumb'):
             return hit[1]
         if exchange == 'upbit':
             d1 = fetch_candlestick_upbit(ticker, chart_intervals="1h")
+        elif exchange == 'binance':  # [2026-11-23] 바이낸스 탭
+            d1 = fetch_candlestick_binance(ticker, chart_intervals="1h")
         else:
             d1 = fetch_candlestick(ticker, chart_intervals="1h")
         if d1 is None or len(d1) < MODEL_MIN_1H_BARS:  # [2026-11-22] 30→168, 아래 가드 참고
@@ -3813,7 +3818,11 @@ def apply_prob_filter(results, exchange='bithumb'):
     """results 전체에 p_up을 채우고, 확률이 판정 방향과 안 맞으면 판정을 대기로 내린다."""
     try:
         if prob_model is not None:
-            prob_model.predict(results)
+            prof = _pm_profile(exchange)  # [2026-11-23] 바이낸스 탭 — 바이낸스 전용 모델
+            if prof == 'krw':
+                prob_model.predict(results)
+            else:
+                prob_model.predict(results, profile=prof)
     except Exception as e:
         print(f"상승확률 계산 실패: {e}")
     # 시장 평균(전 종목 단순평균) 4h/24h 등락 — prob_model 학습 피처(mkt_r24)와 같은 정의
@@ -3918,6 +3927,9 @@ def _model_known_tickers():
 def _fetch_listing_days(exchange, ticker):
     """거래소 일봉 개수로 상장 후 일수를 센다. 업비트는 최대 200개만 주므로 200이면 '200일 이상'. 실패하면 None."""
     try:
+        if exchange == 'binance':  # [2026-11-23] 바이낸스 탭 — exchangeInfo 상장시각 기준
+            _binance_refresh_meta()
+            return _binance_listing_days(ticker)
         if exchange == 'upbit':
             resp = requests.get(UPBIT_CANDLE_DAY_URL, params={"market": f"KRW-{ticker}", "count": 200}, timeout=5)
             data = resp.json()
@@ -4058,7 +4070,8 @@ def score_updater(tickers_ref, exchange='bithumb'):
     같은 로직을 process_ticker_upbit/score_cache_upbit/current_min_score_upbit 등
     업비트 전용 상태로 돌린다 — 로직 자체(정렬/캐시 갱신/디스코드 체크 순서)는 100% 동일."""
     global score_cache, score_cache_upbit
-    proc_fn = process_ticker if exchange == 'bithumb' else process_ticker_upbit
+    proc_fn = {'bithumb': process_ticker, 'upbit': process_ticker_upbit,
+               'binance': process_ticker_binance}.get(exchange, process_ticker)  # [2026-11-23] 바이낸스 탭
     # 첫 실행 전 펀딩레이트 미리 로드 (거래소 무관 공유 캐시라 한쪽만 해도 됨, 중복 호출은 내부에서 캐시로 처리)
     try:
         get_all_funding_rates()
@@ -4093,6 +4106,19 @@ def score_updater(tickers_ref, exchange='bithumb'):
                     check_discord_alerts(results, current_min_score, exchange='bithumb')
                 except Exception as e:
                     print(f"디스코드 알림 체크 실패: {e}")
+            elif exchange == 'binance':  # [2026-11-23] 바이낸스 탭
+                global current_min_score_binance, current_market_regime_binance
+                current_min_score_binance = compute_dynamic_min_score(results)
+                current_market_regime_binance = _debounce_regime('binance', detect_market_regime(results))
+                with score_lock:
+                    score_cache_binance.clear()
+                    for r in results:
+                        score_cache_binance[r['ticker']] = r
+                data_queue_binance.put(results)
+                try:
+                    check_discord_alerts(results, current_min_score_binance, exchange='binance')
+                except Exception as e:
+                    print(f"디스코드 알림 체크(바이낸스) 실패: {e}")
             else:
                 global current_min_score_upbit, current_market_regime_upbit
                 current_min_score_upbit = compute_dynamic_min_score(results)
@@ -4142,6 +4168,404 @@ def ticker_updater_upbit(tickers_ref):
 # ============================================================
 MARKET_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_market.csv")
 MARKET_SNAPSHOT_UPBIT = os.path.join(SCRIPT_DIR, "server_market_upbit.csv")
+MARKET_SNAPSHOT_BINANCE = os.path.join(SCRIPT_DIR, "server_market_binance.csv")  # [2026-11-23] 바이낸스 탭
+
+# ============================================================
+# [2026-11-23 사용자 요청] 바이낸스 USDT 무기한 선물 탭 (세 번째 거래소)
+#  - 대상 코인(BINANCE_UNIVERSE='krw'): 원화 거래소 코인(history/ 폴더 = 빗썸·업비트 감시 코인) 중 바이낸스 선물 있는 것
+#    2차 백테스트(reports/binance_backtest2_20261123.md, 25/11~26/11, 바이낸스 1h봉, $30·3배·48h·숏):
+#      원화 거래소 코인 · 원화 학습 모델: 239건 승률 72% 건당 +5.4% 청산 5.9% +$564, 앞/뒤 6개월 +$294/+$269 ← 채택
+#      24h 거래대금 상위 40 · 원화 모델: 청산 21.2% -$609 / 바이낸스 학습 모델: 청산 28.4% +$1,571(최악월 -$692)
+#      상장 1년↑ 30일 거래대금 상위 40 · 바이낸스 모델: 청산 23.1% +$953 → 청산 6% 기준 못 넘어서 안 씀
+#  - 캔들·현재가·24h 거래대금: 바이낸스 선물 공개 API(키 필요 없음). 점수·판정 함수는 빗썸/업비트와 같은 것을 그대로 씀
+#  - 확률모델: BINANCE_PROB_PROFILE='krw'(원화 학습 모델 — 위 검증에서 바이낸스 학습 모델은 청산이 많아 탈락).
+#    'binance'로 바꾸면 models/prob_model_binance.pkl(python prob_model.py binance 로 학습) 사용
+#  - 결과: server_market_binance.csv (빗썸/업비트와 같은 컬럼). 모의 포지션은 원래도 바이낸스 USD가로 체결·정산
+#  - 끄려면 BINANCE_ENABLED = False
+# ============================================================
+BINANCE_ENABLED = True
+BINANCE_FAPI = "https://fapi.binance.com"
+BINANCE_UNIVERSE = "krw"         # 'krw' = 원화 거래소 코인 중 바이낸스 선물 있는 것 / '30d'·'24h' = 거래대금 상위
+BINANCE_TOP_N = 40                # '30d'·'24h' 일 때 개수
+BINANCE_MIN_AGE_D = 0           # 상장 후 최소 일수(판정 7일 컷은 따로 있음)
+BINANCE_UNIVERSE_SEC = 600          # 대상 코인 목록 갱신 주기
+BINANCE_PROB_PROFILE = "krw"
+
+data_queue_binance = _NullQueue()
+price_queue_binance = _NullQueue()
+latest_prices_binance = {}
+_latest_binance_ticker_info = {}    # 코인 -> {'quoteVolume','priceChangePercent','lastPrice'}
+score_cache_binance = {}
+price_history_binance = defaultdict(lambda: deque(maxlen=PRICE_HISTORY_MAXLEN))
+current_min_score_binance = MIN_SCORE
+current_market_regime_binance = 'normal'
+_last_score_time_binance = [""]
+_binance_meta = {'ts': 0.0, 'onboard': {}, 'symbol': {}}   # 코인 -> 상장시각(ms) / 심볼
+_binance_vol30 = {'ts': 0.0, 'val': {}}
+_regime_streak.setdefault('binance', {'candidate': None, 'since': 0.0})
+_discord_alerted.setdefault('binance', set())
+_discord_verdict_alerted.setdefault('binance', set())
+
+
+def _ex_label(exchange):
+    return {"bithumb": "빗썸", "upbit": "업비트", "binance": "바이낸스"}.get(exchange, exchange)
+
+
+def _binance_get(path, params=None, timeout=10, retries=2):
+    for attempt in range(retries + 1):
+        try:
+            r = requests.get(BINANCE_FAPI + path, params=params, timeout=timeout)
+            if r.status_code in (418, 429):
+                time.sleep(int(r.headers.get("Retry-After", "5") or 5))
+                continue
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            if attempt == retries:
+                print(f"[바이낸스] {path} 조회 실패: {e}")
+                return None
+            time.sleep(0.5)
+    return None
+
+
+def _binance_symbol(ticker):
+    t = str(ticker).upper()
+    return _binance_meta['symbol'].get(t) or f"{t}USDT"
+
+
+def _binance_refresh_meta(force=False):
+    if not force and _binance_meta['onboard'] and time.time() - _binance_meta['ts'] < 3600:
+        return
+    info = _binance_get("/fapi/v1/exchangeInfo")
+    if not info:
+        return
+    onboard, symbol = {}, {}
+    for s in info.get("symbols", []):
+        if s.get("contractType") == "PERPETUAL" and s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING":
+            coin = str(s.get("baseAsset", "")).upper()
+            if coin:
+                onboard[coin] = int(s.get("onboardDate") or 0)
+                symbol[coin] = s.get("symbol")
+    if onboard:
+        _binance_meta.update({'ts': time.time(), 'onboard': onboard, 'symbol': symbol})
+
+
+def _binance_listing_days(ticker):
+    ob = _binance_meta['onboard'].get(str(ticker).upper())
+    if not ob:
+        return None
+    return int((time.time() * 1000 - ob) / 86400000)
+
+
+def _fetch_binance_klines(ticker, interval, limit=210, timeout=10, retries=2):
+    data = _binance_get("/fapi/v1/klines", {"symbol": _binance_symbol(ticker), "interval": interval, "limit": limit},
+                        timeout=timeout, retries=retries)
+    if not isinstance(data, list) or not data:
+        return None
+    try:
+        df = pd.DataFrame([k[:6] for k in data], columns=["t", "open", "high", "low", "close", "volume"])
+        df["t"] = pd.to_datetime(df["t"].astype('int64'), unit="ms") + pd.Timedelta(hours=9)   # KST naive (빗썸/업비트와 같은 형식)
+        return df.set_index("t")[["open", "high", "low", "close", "volume"]].astype(float)
+    except Exception as e:
+        print(f"[바이낸스:{ticker}] 캔들 변환 실패: {e}")
+        return None
+
+
+def fetch_candlestick_binance(ticker, chart_intervals=None, timeout=10, retries=2):
+    """빗썸 fetch_candlestick / 업비트 fetch_candlestick_upbit 와 같은 형식(open/high/low/close/volume, KST index)."""
+    interval = chart_intervals or CANDLE_INTERVAL
+    if interval == "10m":
+        df = _fetch_binance_klines(ticker, "5m", limit=420, timeout=timeout, retries=retries)
+        if df is None or len(df) < 2:
+            return df
+        return df.resample("10min").agg({"open": "first", "high": "max", "low": "min", "close": "last",
+                                         "volume": "sum"}).dropna(how="any")
+    native = {"30m": "30m", "1h": "1h", "2h": "2h", "6h": "6h", "12h": "12h", "4h": "4h", "1d": "1d", "24h": "1d"}
+    return _fetch_binance_klines(ticker, native.get(interval, "1h"), timeout=timeout, retries=retries)
+
+
+def _binance_update_vol30(cands):
+    """30일 거래대금(USDT) — 일봉 30개 합. 후보 코인만, 1시간마다."""
+    if time.time() - _binance_vol30['ts'] < 3600 and _binance_vol30['val']:
+        return
+    val = {}
+    for c in cands:
+        d = _binance_get("/fapi/v1/klines", {"symbol": _binance_symbol(c), "interval": "1d", "limit": 30}, retries=1)
+        if isinstance(d, list) and d:
+            try:
+                val[c] = sum(float(k[7]) for k in d)
+            except Exception:
+                pass
+        time.sleep(0.05)
+    if val:
+        _binance_vol30.update({'ts': time.time(), 'val': val})
+
+
+def _krw_universe():
+    """원화 거래소 코인: history/ 폴더(빗썸·업비트 감시 코인 1시간봉) → 없으면(태블릿 등) 지금 빗썸·업비트 목록."""
+    try:
+        known = set(_model_known_tickers())
+    except Exception:
+        known = set()
+    if not known:
+        with score_lock:
+            known = set(score_cache) | set(score_cache_upbit)
+    return {str(t).upper() for t in known}
+
+
+def get_binance_tickers():
+    """대상 코인 목록(BINANCE_UNIVERSE 참고)."""
+    _binance_refresh_meta()
+    data = _binance_get("/fapi/v1/ticker/24hr")
+    if not isinstance(data, list):
+        return []
+    info = {}
+    inv = {s: c for c, s in _binance_meta['symbol'].items()}
+    for it in data:
+        coin = inv.get(it.get("symbol", ""))
+        if coin is None:
+            continue
+        try:
+            info[coin] = {'quoteVolume': float(it.get("quoteVolume") or 0),
+                          'priceChangePercent': float(it.get("priceChangePercent") or 0),
+                          'lastPrice': float(it.get("lastPrice") or 0)}
+        except Exception:
+            continue
+    with data_lock:
+        _latest_binance_ticker_info.update(info)
+    now_ms = time.time() * 1000
+    old = [c for c in info if (now_ms - _binance_meta['onboard'].get(c, now_ms)) / 86400000 >= BINANCE_MIN_AGE_D]
+    old.sort(key=lambda c: info[c]['quoteVolume'], reverse=True)
+    if BINANCE_UNIVERSE == 'krw':
+        krw = _krw_universe()
+        return [c for c in old if c in krw]
+    if BINANCE_UNIVERSE == '30d':
+        cands = old[:max(BINANCE_TOP_N * 3, 100)]
+        _binance_update_vol30(cands)
+        v30 = _binance_vol30['val']
+        old = sorted(cands, key=lambda c: v30.get(c, 0), reverse=True)
+    return old[:BINANCE_TOP_N]
+
+
+def ticker_updater_binance(tickers_ref):
+    while running:
+        try:
+            tickers = get_binance_tickers()
+            if tickers:
+                tickers_ref[0] = tickers
+        except Exception as e:
+            print(f"바이낸스 티커 목록 갱신 실패: {e}")
+        time.sleep(BINANCE_UNIVERSE_SEC)
+
+
+def price_updater_binance(tickers_ref):
+    """현재가(ticker/price, 전 종목 한 번에). 대상 코인 + 바이낸스 탭에서 연 포지션 코인은 latest_prices_usd(모의 체결·손익 기준)도 갱신."""
+    while running:
+        try:
+            data = _binance_get("/fapi/v1/ticker/price", retries=1)
+            if isinstance(data, list):
+                inv = {s: c for c, s in _binance_meta['symbol'].items()}
+                updates = {}
+                for it in data:
+                    c = inv.get(it.get("symbol"))
+                    if c:
+                        try:
+                            updates[c] = float(it.get("price") or 0)
+                        except Exception:
+                            pass
+                want = set(tickers_ref[0] or [])
+                with data_lock:
+                    want |= {t for t, p in positions.items() if p.get('exchange') == 'binance'}
+                    latest_prices_binance.update(updates)
+                    latest_prices_usd.update({t: updates[t] for t in want if updates.get(t)})
+                record_price_history({t: updates[t] for t in want if t in updates}, exchange='binance')
+        except Exception as e:
+            print(f"바이낸스 가격 업데이트 실패: {e}")
+        time.sleep(PRICE_INTERVAL)
+
+
+def _process_ticker_binance_raw(ticker):
+    """process_ticker_upbit의 바이낸스 버전 — 캔들·현재가·거래대금만 바이낸스 선물에서, 점수 함수는 그대로."""
+    try:
+        df = fetch_candlestick_binance(ticker, chart_intervals=CANDLE_INTERVAL)
+        if df is None or len(df) < 30:
+            return None
+        df = df.astype(float)
+        df['RSI'] = calculate_rsi(df)
+        df['BB_MIDDLE'] = df['close'].rolling(20).mean()
+        df['BB_STD'] = df['close'].rolling(20).std()
+        df['BB_UPPER'] = df['BB_MIDDLE'] + df['BB_STD'] * 2
+        df['BB_LOWER'] = df['BB_MIDDLE'] - df['BB_STD'] * 2
+        df['CVD'] = calculate_cvd(df)
+        latest = df.iloc[-1]
+        current_price = float(latest['close'])
+        vz = calculate_vol_zscore(df)
+        cvd_value = float(df['CVD'].iloc[-1])
+        vol_window_sum = float(df['volume'].iloc[-CVD_WINDOW_CANDLES:].sum())
+        cvd_diff = cvd_value - float(df['CVD'].iloc[-2]) if len(df) >= 2 else 0.0
+        bb_percent = calculate_bb_percent(df, latest)
+        extension_pct = calculate_extension_pct(df)
+        atr_pct = calculate_atr_1h(df)
+        if MIN_ATR_PCT > 0 and atr_pct > 0 and atr_pct < MIN_ATR_PCT:
+            return None
+        chg_30m = get_recent_pct_change(ticker, minutes=30, exchange='binance')
+        chg_5m = get_recent_pct_change(ticker, minutes=5, exchange='binance')
+        chg_15m = get_recent_pct_change(ticker, minutes=15, exchange='binance')
+        momentum_blend = chg_5m * 0.4 + chg_15m * 0.3 + chg_30m * 0.3
+        price_chg = float(df['close'].iloc[-1]) - float(df['close'].iloc[-5])
+        with data_lock:
+            latest_prices_binance[ticker] = current_price
+        funding_rate = 0.0
+        try:
+            entry = get_all_funding_rates().get(ticker.upper())
+            if entry:
+                funding_rate = entry.get('funding', 0.0) or 0.0
+        except Exception:
+            pass
+        price_usd = current_price
+        oi_change_pct, oi_value = get_oi_change_1h(ticker.upper())
+        ls_ratio = get_long_short_ratio(ticker.upper())
+        oi_notional_usd = (oi_value * price_usd) if (oi_value and price_usd) else None
+        try:
+            ema_series = df['close'].ewm(span=20, adjust=False).mean()
+            ema20 = float(ema_series.iloc[-1])
+            ema60 = float(df['close'].ewm(span=60, adjust=False).mean().iloc[-1])
+            ema120 = float(df['close'].ewm(span=120, adjust=False).mean().iloc[-1]) if len(df) >= 30 else None
+            if len(ema_series) >= 4 and ema_series.iloc[-4] != 0:
+                ema20_slope_pct = (ema20 - float(ema_series.iloc[-4])) / float(ema_series.iloc[-4]) * 100
+            else:
+                ema20_slope_pct = 0.0
+        except Exception:
+            ema20 = ema60 = ema120 = None
+            ema20_slope_pct = 0.0
+        rsi_val = float(latest['RSI'])
+        rsi_delta = rsi_val - float(df['RSI'].iloc[-5])
+        # 24h 거래대금: USDT → 원화 백만원(빗썸/업비트 점수 함수 단위와 맞춤)
+        trade_value_usd = None
+        vol_million = 0
+        try:
+            qv = float((_latest_binance_ticker_info.get(ticker) or {}).get('quoteVolume', 0) or 0)
+            trade_value_usd = qv or None
+            vol_million = round(qv * get_usd_krw_rate() / 1_000_000)
+        except Exception:
+            pass
+        try:
+            box_lookback = df.iloc[-20:] if len(df) >= 20 else df
+            box_high = float(box_lookback['high'].max())
+            box_low = float(box_lookback['low'].min())
+        except Exception:
+            box_high = box_low = None
+        try:
+            candles_per_3d = {"1h": 72, "2h": 36, "6h": 12, "12h": 6}.get(CANDLE_INTERVAL, 72)
+            ref_idx = -min(candles_per_3d, len(df) - 1) if len(df) > 1 else -1
+            ref_price = float(df['close'].iloc[ref_idx])
+            recent_pct = (current_price - ref_price) / ref_price * 100 if ref_price > 0 else 0.0
+        except Exception:
+            recent_pct = 0.0
+        try:
+            candles_per_1d = {"1h": 24, "2h": 12, "6h": 4, "12h": 2}.get(CANDLE_INTERVAL, 24)
+            cv_window = df['close'].iloc[-candles_per_1d:] if len(df) >= candles_per_1d else df['close']
+            price_cv_24h = float(cv_window.std() / cv_window.mean()) if cv_window.mean() > 0 else 0.0
+        except Exception:
+            price_cv_24h = 0.0
+        try:
+            hl_flag = _zigzag_hl_flag(df['close'].values)
+        except Exception:
+            hl_flag = 0
+        try:
+            bb_pct_series = (df['close'] - df['BB_LOWER']) / (df['BB_UPPER'] - df['BB_LOWER']) * 100
+            rsi_dwell_os_h = _dwell_hours(df['RSI'] < 40)
+            rsi_dwell_ob_h = _dwell_hours(df['RSI'] > 60)
+            bb_dwell_low_h = _dwell_hours(bb_pct_series < 30)
+            bb_dwell_high_h = _dwell_hours(bb_pct_series > 70)
+        except Exception:
+            rsi_dwell_os_h = rsi_dwell_ob_h = bb_dwell_low_h = bb_dwell_high_h = 0.0
+        reg = current_market_regime_binance
+        long_score = calculate_long_score(
+            rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, momentum_blend,
+            price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
+            funding_rate, trade_value_usd, current_price, ema120, vol_million, reg,
+            exchange='binance', ema20_slope_pct=ema20_slope_pct, recent_pct_3d=recent_pct,
+            price_cv_24h=price_cv_24h, rsi_dwell_os_h=rsi_dwell_os_h, bb_dwell_low_h=bb_dwell_low_h
+        )
+        short_score = calculate_short_score(
+            rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, momentum_blend,
+            price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
+            funding_rate, trade_value_usd, current_price, ema120, vol_million, reg,
+            exchange='binance', ema20_slope_pct=ema20_slope_pct, price_cv_24h=price_cv_24h,
+            rsi_dwell_ob_h=rsi_dwell_ob_h, bb_dwell_high_h=bb_dwell_high_h, recent_pct=recent_pct
+        )
+        prepump_score = calculate_prepump_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
+                                                 atr_pct, vz, current_price, box_high, box_low,
+                                                 rsi_val, recent_pct, chg_30m, regime=reg,
+                                                 price_cv_24h=price_cv_24h, hl_flag=hl_flag)
+        preshort_score = calculate_preshort_score(oi_change_pct, cvd_diff, ema20, ema60, ema120,
+                                                   atr_pct, vz, current_price, box_high, box_low,
+                                                   rsi_val, recent_pct, chg_30m, regime=reg,
+                                                   price_cv_24h=price_cv_24h, bb_percent=bb_percent)
+        if atr_pct < LONG_LOW_ATR_THRESHOLD:
+            long_score = int(long_score * LONG_LOW_ATR_FACTOR)
+        max_lev, liq_risk = calc_liq_risk(atr_pct, current_price, ema20, ls_ratio if ls_ratio is not None else 1.0)
+        liq_risk = "|".join(f for f in str(liq_risk or "").split("|") if f and f != "NOFUT")  # 바이낸스 탭은 전부 선물 있음
+        short_score = apply_short_risk_cap(short_score, liq_risk)
+        components = {
+            "ema_l": score_ema_trend(current_price, ema20, ema60, ema120, 'long', ema20_slope_pct),
+            "ema_s": score_ema_trend(current_price, ema20, ema60, ema120, 'short', ema20_slope_pct),
+            "pp_l": score_price_position_long(rsi_val, bb_percent, rsi_delta),
+            "pp_s": score_price_position_short(rsi_val, bb_percent, rsi_delta),
+            "cvd_l": score_cvd_trend(cvd_diff, vol_window_sum, 'long'),
+            "cvd_s": score_cvd_trend(cvd_diff, vol_window_sum, 'short'),
+            "oi_sc": score_oi_v3(oi_change_pct),
+            "m30_l": score_chg30m_long(chg_30m),
+            "m30_s": score_chg30m_short(chg_30m),
+            "volz_sc": score_volz_v3(vz),
+            "liquidity_sc": score_liquidity_filter(atr_pct, vol_million),
+        }
+        return {
+            "ticker": ticker, "exchange": "binance", "price": current_price, "price_usd": price_usd,
+            "long_score": int(long_score), "short_score": int(short_score),
+            "prepump_score": int(prepump_score), "preshort_score": int(preshort_score),
+            "rsi": round(float(latest['RSI']), 1), "rsi_delta": round(rsi_delta, 1), "vol_z": round(vz, 1),
+            "bb_percent": round(bb_percent, 1), "cvd": round(cvd_value, 2), "cvd_diff": round(cvd_diff, 2),
+            "funding": funding_rate, "vol_24h_m": vol_million, "trade_value_usd": trade_value_usd,
+            "atr_pct": atr_pct, "oi_change_pct": oi_change_pct, "oi_value": oi_value, "ls_ratio": ls_ratio,
+            "chg_30m": chg_30m,
+            "ema20": round(ema20, 8) if ema20 is not None else None,
+            "ema60": round(ema60, 8) if ema60 is not None else None,
+            "ema120": round(ema120, 8) if ema120 is not None else None,
+            "box_high": round(box_high, 8) if box_high is not None else None,
+            "box_low": round(box_low, 8) if box_low is not None else None,
+            "recent_pct": round(recent_pct, 3),
+            "extension_pct": round(extension_pct, 3) if extension_pct is not None else None,
+            "components": components, "max_lev": max_lev, "liq_risk": liq_risk,
+            "regime": reg,
+            "_pmf": _pm_ticker_features(df, ticker, 'binance'),
+        }
+    except Exception as e:
+        print(f"[바이낸스:{ticker}] 데이터 수집 실패: {e}")
+        return None
+
+
+def process_ticker_binance(ticker):
+    r = _process_ticker_binance_raw(ticker)
+    if r:
+        r['verdict'], r['verdict_reason'] = calc_verdict(r)
+    return r
+
+
+def _pm_profile(exchange):
+    """바이낸스 탭은 바이낸스 전용 모델, 아직 없으면 원화 모델."""
+    if exchange != 'binance' or prob_model is None:
+        return 'krw'
+    try:
+        if getattr(prob_model, 'load_model', None) and prob_model.load_model(BINANCE_PROB_PROFILE):
+            return BINANCE_PROB_PROFILE
+    except TypeError:
+        return 'krw'
+    except Exception:
+        pass
+    return 'krw'
+
 ACCOUNT_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_account.csv")
 CMD_DIR = os.path.join(SCRIPT_DIR, "server_cmds")
 RESULTS_FILE = os.path.join(SCRIPT_DIR, "server_results.csv")
@@ -4206,6 +4630,9 @@ def write_market_snapshot(exchange='bithumb'):
     if exchange == 'bithumb':
         cache, prices, path, min_score, score_time = score_cache, latest_prices, MARKET_SNAPSHOT, current_min_score, _last_score_time[0]
         regime_now = current_market_regime
+    elif exchange == 'binance':  # [2026-11-23] 바이낸스 탭
+        cache, prices, path, min_score, score_time = score_cache_binance, latest_prices_binance, MARKET_SNAPSHOT_BINANCE, current_min_score_binance, _last_score_time_binance[0]
+        regime_now = current_market_regime_binance
     else:
         cache, prices, path, min_score, score_time = score_cache_upbit, latest_prices_upbit, MARKET_SNAPSHOT_UPBIT, current_min_score_upbit, _last_score_time_upbit[0]
         regime_now = current_market_regime_upbit
@@ -4217,6 +4644,8 @@ def write_market_snapshot(exchange='bithumb'):
         prices = dict(prices)
         if exchange == 'bithumb':
             chg24_map = dict(latest_chg24h)
+        elif exchange == 'binance':  # [2026-11-23] 바이낸스 탭
+            chg24_map = {c: v.get('priceChangePercent', 0) for c, v in _latest_binance_ticker_info.items()}
         else:
             chg24_map = {}
             for market, info in _latest_upbit_ticker_info.items():
@@ -4757,6 +5186,8 @@ def srv_get_candles(ticker, interval=None, exchange='bithumb'):
     try:
         if exchange == 'upbit':
             df = fetch_candlestick_upbit(ticker, chart_intervals=interval)
+        elif exchange == 'binance':  # [2026-11-23] 바이낸스 탭
+            df = fetch_candlestick_binance(ticker, chart_intervals=interval)
         else:
             df = fetch_candlestick(ticker, chart_intervals=interval)
     except Exception as e:
@@ -4838,7 +5269,7 @@ def srv_open(ticker, position_type, amount_won, leverage, exchange='bithumb', fo
     # 진입 당시 '유효 점수'(추세추종/매집형 중 더 높은 쪽) 저장 — Predict Score의
     # Level 항목이 "진입 당시 원본 스코어"를 기준으로 하기 때문에 이 시점에 스냅샷을 남긴다.
     # (물타기/불타기로 추가 진입할 땐 최초 진입 점수를 그대로 유지 — Level은 '처음' 판단 기준이라서)
-    snap = score_cache.get(ticker, {}) if exchange != 'upbit' else score_cache_upbit.get(ticker, {})
+    snap = {'upbit': score_cache_upbit, 'binance': score_cache_binance}.get(exchange, score_cache).get(ticker, {})  # [2026-11-23] 바이낸스 탭
     if position_type == "long":
         entry_score = max(snap.get('long_score', 0), snap.get('prepump_score', 0))
     else:
@@ -4941,7 +5372,7 @@ def srv_open_manual(ticker, position_type, entry_price, amount_won, leverage, ex
     fill_price = entry_price  # 라이브 시세 대신 사용자가 준 실제 체결가 그대로 사용
     balance -= total_cost
     if balance < 0: balance = 0
-    snap = score_cache.get(ticker, {}) if exchange != 'upbit' else score_cache_upbit.get(ticker, {})
+    snap = {'upbit': score_cache_upbit, 'binance': score_cache_binance}.get(exchange, score_cache).get(ticker, {})  # [2026-11-23] 바이낸스 탭
     if position_type == "long":
         entry_score = max(snap.get('long_score', 0), snap.get('prepump_score', 0))
     else:
@@ -5354,7 +5785,7 @@ def process_commands():
             lev = int(float(row[4])) if len(row) > 4 and row[4] else DEFAULT_LEVERAGE
             ptype = row[5] if len(row) > 5 else 'long'
             exchange = (row[6].strip().lower() if len(row) > 6 and row[6] else 'bithumb')
-            if exchange not in ('bithumb', 'upbit'):
+            if exchange not in ('bithumb', 'upbit', 'binance'):  # [2026-11-23] 바이낸스 탭
                 exchange = 'bithumb'
             entry_price = float(row[7]) if len(row) > 7 and row[7] else 0.0
             if action == 'charge':
@@ -5426,6 +5857,8 @@ def snapshot_loop():
         try:
             write_market_snapshot('bithumb')
             write_market_snapshot('upbit')
+            if BINANCE_ENABLED:  # [2026-11-23] 바이낸스 탭
+                write_market_snapshot('binance')
         except Exception as e:
             print(f"snapshot_loop 오류: {e}")
         time.sleep(PRICE_INTERVAL)
@@ -5436,11 +5869,13 @@ def score_updater(tickers_ref, exchange='bithumb'):  # noqa: F811
     def _mark():
         if exchange == 'bithumb':
             _last_score_time[0] = datetime.now().strftime('%H:%M:%S')
+        elif exchange == 'binance':  # [2026-11-23] 바이낸스 탭
+            _last_score_time_binance[0] = datetime.now().strftime('%H:%M:%S')
         else:
             _last_score_time_upbit[0] = datetime.now().strftime('%H:%M:%S')
     # 간단히: 원본을 그대로 돌리되, 스냅샷 시각은 data_queue.put 대신 여기서 주기 갱신
     def marker_loop():
-        cache = score_cache if exchange == 'bithumb' else score_cache_upbit
+        cache = {'bithumb': score_cache, 'binance': score_cache_binance}.get(exchange, score_cache_upbit)  # [2026-11-23] 바이낸스 탭
         while running:
             with score_lock:
                 if cache:
@@ -5513,6 +5948,16 @@ if __name__ == "__main__":
     threading.Thread(target=ticker_updater_upbit, args=(tickers_ref_upbit,), daemon=True).start()
     threading.Thread(target=price_updater_upbit, args=(tickers_ref_upbit,), daemon=True).start()
     threading.Thread(target=score_updater, args=(tickers_ref_upbit,), kwargs={'exchange': 'upbit'}, daemon=True).start()
+    if BINANCE_ENABLED:  # [2026-11-23] 바이낸스 탭
+        tickers_ref_binance = [[]]
+        try:
+            tickers_ref_binance[0] = get_binance_tickers()
+            print(f"바이낸스 티커 {len(tickers_ref_binance[0])}개 로드 (대상 {BINANCE_UNIVERSE}, 확률모델 {BINANCE_PROB_PROFILE})")
+        except Exception as e:
+            print(f"바이낸스 티커 목록 최초 로드 실패({e}), ticker_updater_binance가 재시도함")
+        threading.Thread(target=ticker_updater_binance, args=(tickers_ref_binance,), daemon=True).start()
+        threading.Thread(target=price_updater_binance, args=(tickers_ref_binance,), daemon=True).start()
+        threading.Thread(target=score_updater, args=(tickers_ref_binance,), kwargs={'exchange': 'binance'}, daemon=True).start()
     threading.Thread(target=weight_learning_loop, daemon=True).start()
     threading.Thread(target=snapshot_loop, daemon=True).start()
     threading.Thread(target=account_loop, daemon=True).start()
@@ -5525,8 +5970,10 @@ if __name__ == "__main__":
                 with score_lock:
                     n = len(score_cache)
                     n_upbit = len(score_cache_upbit)
+                    n_bn = len(score_cache_binance)  # [2026-11-23] 바이낸스 탭
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] 서버 가동 | 빗썸 {n}개(컷{current_min_score}/{current_market_regime}) | "
                       f"업비트 {n_upbit}개(컷{current_min_score_upbit}/{current_market_regime_upbit}) | "
+                      f"바이낸스 {n_bn}개({current_market_regime_binance}) | "
                       f"잔고 ${balance:,.2f} | 포지션 {len(positions)}개")
                 last_status = time.time()
     except KeyboardInterrupt:

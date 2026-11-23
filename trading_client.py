@@ -48,6 +48,9 @@ except Exception:
 
 MARKET_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_market.csv")
 MARKET_SNAPSHOT_UPBIT = os.path.join(SCRIPT_DIR, "server_market_upbit.csv")
+MARKET_SNAPSHOT_BINANCE = os.path.join(SCRIPT_DIR, "server_market_binance.csv")  # [2026-11-23] 바이낸스 탭
+EXCHANGE_LABELS = {"bithumb": "빗썸", "upbit": "업비트", "binance": "바이낸스"}  # [2026-11-23] 바이낸스 탭
+EXCHANGE_SNAPSHOTS = {"bithumb": MARKET_SNAPSHOT, "upbit": MARKET_SNAPSHOT_UPBIT, "binance": MARKET_SNAPSHOT_BINANCE}  # [2026-11-23] 바이낸스 탭
 ACCOUNT_SNAPSHOT = os.path.join(SCRIPT_DIR, "server_account.csv")
 CMD_DIR = os.path.join(SCRIPT_DIR, "server_cmds")
 RESULTS_FILE = os.path.join(SCRIPT_DIR, "server_results.csv")
@@ -648,7 +651,7 @@ class TradingClient:
         exchange_bar.pack(side="top", fill="x", padx=4, pady=(4, 0))
         tk.Label(exchange_bar, text="거래소:", font=("Arial", self.FONT_SMALL, "bold")).pack(side="left", padx=(2, 4))
         self._exchange_btn_widgets = {}
-        for ex, label in [("bithumb", "빗썸"), ("upbit", "업비트")]:
+        for ex, label in [("bithumb", "빗썸"), ("upbit", "업비트"), ("binance", "바이낸스")]:  # [2026-11-23] 바이낸스 탭
             b = tk.Label(exchange_bar, text=label, font=("Arial", self.FONT_SMALL, "bold"),
                          relief="raised", bd=1, cursor="hand2", padx=10, pady=3)
             b.pack(side="left", padx=2)
@@ -1126,7 +1129,7 @@ class TradingClient:
         if self.view_mode != 'rank' or not hasattr(self, 'rank_panel'):
             return
         rows = [r for r in (data_list or []) if r.get('p_up') is not None]
-        ex_label = "빗썸" if self.current_exchange == 'bithumb' else "업비트"
+        ex_label = EXCHANGE_LABELS.get(self.current_exchange, self.current_exchange)  # [2026-11-23] 바이낸스 탭
         if not rows:
             self._cfg(self._rank_info, text=f"[{ex_label}] 상승확률(p_up) 정보 없음 — 서버를 최신 코드로 재시작했는지, "
                                             f"models\\prob_model.pkl이 있는지 확인")
@@ -1548,7 +1551,7 @@ class TradingClient:
         # 카드가 더 많으면 기존 드래그/휠 스크롤(_pos_press/_pos_motion)로 넘겨본다.
 
     def poll_files(self):
-        snapshot_path = MARKET_SNAPSHOT if self.current_exchange == 'bithumb' else MARKET_SNAPSHOT_UPBIT
+        snapshot_path = EXCHANGE_SNAPSHOTS.get(self.current_exchange, MARKET_SNAPSHOT)  # [2026-11-23] 바이낸스 탭
         # [2026-09-27 추가] proot(Ubuntu) --bind 경유로 안드로이드 공용저장소(FUSE)에
         # 접근하면 경로 변환이 한 겹 더 생겨서, 정상 상황에서도 os.path.getmtime()이
         # 순간적으로 실패/지연되는 경우가 관측됐다(직접 Termux에서 돌릴 땐 없던 증상).
@@ -1572,7 +1575,7 @@ class TradingClient:
                 if current_interval != self._last_interval_shown:
                     self._highlight_interval_buttons(current_interval)
         age = time.time() - mt if mt else 1e9
-        ex_label = "빗썸" if self.current_exchange == 'bithumb' else "업비트"
+        ex_label = EXCHANGE_LABELS.get(self.current_exchange, self.current_exchange)  # [2026-11-23] 바이낸스 탭
         if age > STALE_SEC:
             # [2026-09-27 추가] 위 재시도에도 불구하고 뜬 일시적 지연(FUSE 홀딱)까지
             # 바로 "연결 끊김"으로 표시하면 몇 초에 한 번씩 깜빡이는 문제가 있었다.
@@ -1815,7 +1818,7 @@ class TradingClient:
                 price = row['price']
                 price_usd = row.get('price_usd')
 
-                krw_str = format_price_adaptive(price, "원")
+                krw_str = (f"${price:,.4f}" if price < 1 else f"${price:,.2f}") if self.current_exchange == 'binance' else format_price_adaptive(price, "원")  # [2026-11-23] 바이낸스 탭
                 if price_usd is not None and price_usd > 0:
                     usd_str = f"USD {price_usd:,.4f}" if price_usd < 1 else f"USD {price_usd:,.2f}"
                 else:
@@ -2161,7 +2164,7 @@ class TradingClient:
         pp, ps = row.get('prepump_score', 0), row.get('preshort_score', 0)
         price = row.get('price', 0)
         price_usd = row.get('price_usd')
-        krw_str = format_price_adaptive(price, "원")
+        krw_str = (f"${price:,.4f}" if price < 1 else f"${price:,.2f}") if self.current_exchange == 'binance' else format_price_adaptive(price, "원")  # [2026-11-23] 바이낸스 탭
         usd_str = (f"USD {price_usd:,.4f}" if price_usd < 1 else f"USD {price_usd:,.2f}") if price_usd else "N/A"
         cvd_val = row.get('cvd', 0)
         cvd_str = f"{cvd_val:+,.0f}" if abs(cvd_val) >= 100 else f"{cvd_val:+.2f}"
@@ -2995,25 +2998,26 @@ class TradingClient:
         global current_min_score, pp_current_min_score, watch_current_min_score, current_interval, current_regime
         if not self.auto_cfg.get('on'):
             return
-        other = 'upbit' if self.current_exchange == 'bithumb' else 'bithumb'
-        path = MARKET_SNAPSHOT_UPBIT if other == 'upbit' else MARKET_SNAPSHOT
-        try:
-            mt = os.path.getmtime(path)
-        except Exception:
-            return
         if not hasattr(self, '_auto_bg_mtime'):
             self._auto_bg_mtime = {}
-        if self._auto_bg_mtime.get(other) == mt:
-            return
-        saved = (current_min_score, pp_current_min_score, watch_current_min_score, current_interval, current_regime)
-        try:
-            res = read_market_snapshot(path)
-        finally:
-            (current_min_score, pp_current_min_score, watch_current_min_score, current_interval, current_regime) = saved
-        if not res:
-            return
-        self._auto_bg_mtime[other] = mt
-        self._auto_entry_check(res[0], ex=other)
+        for other, path in EXCHANGE_SNAPSHOTS.items():  # [2026-11-23] 바이낸스 탭 — 안 보이는 거래소 전부(빗썸·업비트·바이낸스)
+            if other == self.current_exchange:
+                continue
+            try:
+                mt = os.path.getmtime(path)
+            except Exception:
+                continue
+            if self._auto_bg_mtime.get(other) == mt:
+                continue
+            saved = (current_min_score, pp_current_min_score, watch_current_min_score, current_interval, current_regime)
+            try:
+                res = read_market_snapshot(path)
+            finally:
+                (current_min_score, pp_current_min_score, watch_current_min_score, current_interval, current_regime) = saved
+            if not res:
+                continue
+            self._auto_bg_mtime[other] = mt
+            self._auto_entry_check(res[0], ex=other)
 
     def _auto_entry_check(self, data_list, ex=None):
         """판정 롱/숏이 새로 뜬 코인을 $AUTO_ENTRY_USD×AUTO_ENTRY_LEVERAGE로 바로 진입(잔고 무시).
@@ -3777,11 +3781,14 @@ class TradingClient:
             ("구조", "이 앱은 주문 전용입니다. 실시간 계산(지표/점수)과 계좌(잔고/포지션/강제청산)는 "
                     "trading_server.py 가 담당하고, 이 앱은 서버가 갱신하는 CSV를 읽어 표시하며 "
                     "주문 명령만 보냅니다. 이 앱을 꺼도 포지션은 서버가 계속 감시합니다. "
-                    "서버는 빗썸과 업비트 두 거래소를 동시에 수집·채점합니다(아래 '거래소 토글' 참고)."),
-            ("거래소 토글 (빗썸/업비트)", "코인탭 상단의 '빗썸 | 업비트' 버튼으로 어느 거래소 시세/점수를 볼지 "
+                    "서버는 빗썸·업비트·바이낸스 세 거래소를 동시에 수집·채점합니다(아래 '거래소 토글' 참고)."),
+            ("거래소 토글 (빗썸/업비트/바이낸스)", "코인탭 상단의 '빗썸 | 업비트 | 바이낸스' 버튼으로 어느 거래소 시세/점수를 볼지 "
                     "고를 수 있습니다. 선택한 거래소가 코인 목록·차트·롱숏 진입·청산 명령에 그대로 적용됩니다. "
                     "단, 포지션/잔고/손익은 거래소와 무관하게 하나로 공유됩니다 — 실제 체결가가 바이낸스 "
-                    "USD 마크가격 기준이라(빗썸/업비트 KRW가는 표시·채점용), 어느 탭에서 진입하든 같은 계좌를 씁니다."),
+                    "USD 마크가격 기준이라(빗썸/업비트 KRW가는 표시·채점용), 어느 탭에서 진입하든 같은 계좌를 씁니다.\n"
+                    "· 바이낸스 탭(2026-11-23): 바이낸스 USDT 무기한 선물 중 빗썸·업비트에서 감시하는 코인 중 바이낸스 선물이 있는 코인을 바이낸스 캔들로 채점합니다. "
+                    "가격은 달러로 표시되고, 판정 규칙·확률모델은 빗썸/업비트와 같으며 캔들만 바이낸스 것을 씁니다. "
+                    "자동진입은 켜져 있으면 세 거래소 판정을 모두 봅니다(같은 코인을 이미 들고 있으면 건너뜀)."),
             # [2026-10-17] 판정 v2·확률모델·순위 탭 반영해서 앞부분 갱신(세부 설정값은 reports/SETTINGS.pdf)
             ("판정 (✅ 판정 롱/숏)", "카드에서 실제로 볼 신호는 이것 하나입니다. 2026-10-15부터 판정은 점수 누적식이 아니라 "
                     "확률모델 기준(판정 v2)입니다.\n"

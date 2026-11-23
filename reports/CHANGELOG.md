@@ -1,5 +1,21 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-11-23 (수동, 19~20시 KST, 사용자 요청) — 바이낸스 탭 추가 (바이낸스 데이터 검증 → 적용)
+
+- **1단계 검증**
+  - `binance_history_backfill.py`(신규): history_binance/ 1시간봉을 과거 쪽으로 1100일까지 보충(522종목 +435만 줄, 실패 0). 데이터 2023-11-19~
+  - `binance_backtest2.py`(신규, `run_binance_longtest.bat`): 모델 2개(원화 학습 / 바이낸스 학습, 월별 워크포워드) × 대상 코인 4개 × ATR<3% 필터. 결과 reports/binance_backtest2_20261123.md
+  - 통과 기준(앞/뒤 6개월 둘 다 +, 청산 ≤6%) 통과 최고: **원화 거래소 코인 · 원화 모델 239건 승률 72% 건당 +5.4% 청산 5.9% +$564(+$294/+$269)**
+  - 바이낸스 학습 모델은 수익은 컸지만 청산 22~28%로 전부 탈락(24h 상위 40 +$1,571·청산 28.4%·최악월 -$692). 24h 거래대금 상위 40 + 원화 모델은 -$609(청산 21.2%)
+- **2단계 적용**
+  - **trading_server.py**: 바이낸스 파이프라인(`BINANCE_ENABLED`) — 대상 `BINANCE_UNIVERSE='krw'`(history/ 코인 중 바이낸스 선물 있는 것, 지금 28개 안팎), 바이낸스 선물 1h 캔들·현재가·24h 거래대금(공개 API)로 빗썸/업비트와 같은 점수·판정·확률필터, `server_market_binance.csv`. 확률모델은 `BINANCE_PROB_PROFILE='krw'`. 대상 코인·바이낸스 탭 포지션 코인은 latest_prices_usd도 바이낸스가로 갱신. 주문 명령 exchange='binance' 허용, 차트·디스코드(라벨 '바이낸스')·상장일수(onboardDate) 지원. 점수 가중치 학습 로그(signal_outcomes.csv)엔 안 넣음
+  - **trading_client.py**: 거래소 토글 '빗썸 | 업비트 | 바이낸스', 바이낸스 탭 가격 $ 표시, 자동진입 백그라운드 체크가 안 보이는 거래소 전부(3개), 설명 창 문구
+  - **data_collector.py**: 매 주기 바이낸스 탭도 채점 → `market_data_log_binance_YYYYMM.csv`, `signal_outcomes_verdict_binance.csv`. `BINANCE_MODEL_JOBS=False`(True면 바이낸스 1h봉 이어받기 + 바이낸스 모델 재학습)
+  - **prob_model.py**: `profile='binance'` 경로(history_binance → models/prob_model_binance.pkl/_lite.json, 매시 24h 거래대금 상위 100만 학습). 원화 모델 동작은 그대로. `python prob_model.py binance`
+  - **live_trader.py**: `SIGNAL_SOURCES=("binance",)` — 바이낸스 탭 판정(signal_outcomes_verdict_binance.csv)을 따라 주문(event_id 앞에 bn_). 예전처럼 빗썸 판정은 ("krw",), 둘 다는 ("krw","binance")
+- 스모크 테스트(바이낸스 API 가짜 응답): 대상 코인 선정·1h/10m 캔들·채점·확률필터(원화/바이낸스 모델)·스냅샷·score_updater 루프·srv_open(binance)·수집기 바이낸스 기록 통과. py_compile 통과
+- SETTINGS.md/PDF 갱신(1-1 바이낸스 탭). **서버·클라이언트 재시작 필요**(수집기는 자동). 되돌리기: backups\20261123_binance_tab\ 또는 `BINANCE_ENABLED = False`
+
 ## 2026-11-23 (자동, 06:00 KST) — 변경 없음 · ⚠ 01:01부터 수집 0개 저장
 
 - **적용**: 없음 (코드/조건식/SETTINGS 무변경, 백업 없음). 표면 기준 통과 1건(판정 SHORT +분산≥40: 학습 12h 83→89%·홀드 93→100%)은 14일 창 이전(10/15~11/09)에서 개선 없음, 숏만 10배 시뮬 +372→+308%, 자동진입 3배·48h +$103→+$43이라 보류. 사용자 추적: 숏 +RSI≥60 홀드 8건·24h 92→83%·자동진입 $103→$43, 숏−롱점수>20 대기 근거 없음(+249→+170%)

@@ -396,6 +396,85 @@ def collect_once(tickers):
     return len(rows)
 
 
+# ============================================================
+# [2026-11-23 사용자 요청] 바이낸스 탭 수집 — 서버 process_ticker_binance로 같은 주기에 채점해서
+#  - market_data_log_binance_YYYYMM.csv (빗썸 로그와 같은 컬럼, 월별 파일)
+#  - signal_outcomes_verdict_binance.csv (판정 진입 건별 1~12h 수익률, 빗썸 것과 같은 형식)
+# 서버가 구버전(바이낸스 탭 없음)이면 조용히 건너뜀.
+# ============================================================
+BINANCE_SIGNAL_LOG_CSV = os.path.join(SCRIPT_DIR, "signal_outcomes_verdict_binance.csv")
+BINANCE_MODEL_JOBS = False   # 바이낸스 1시간봉 이어받기 + 바이낸스 전용 모델 재학습(아래 _maybe_background_jobs)
+_bn_state = {"tickers_ref": None, "tracker": None, "regime": {"candidate": None, "since": 0.0}}
+
+
+def _binance_on():
+    return bool(getattr(srv, "BINANCE_ENABLED", False)) and hasattr(srv, "process_ticker_binance")
+
+
+def _binance_start():
+    if not _binance_on() or _bn_state["tickers_ref"] is not None:
+        return
+    ref = [[]]
+    try:
+        ref[0] = srv.get_binance_tickers()
+        print(f"✅ 바이낸스 티커 {len(ref[0])}개 로드")
+    except Exception as e:
+        print(f"⚠️ 바이낸스 티커 로드 실패: {e}")
+    _bn_state["tickers_ref"] = ref
+    threading.Thread(target=srv.ticker_updater_binance, args=(ref,), daemon=True).start()
+    threading.Thread(target=srv.price_updater_binance, args=(ref,), daemon=True).start()
+
+
+def collect_binance_once():
+    if not _binance_on() or not _bn_state["tickers_ref"] or not _bn_state["tickers_ref"][0]:
+        return 0
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    results = []
+    with ThreadPoolExecutor(max_workers=srv.MAX_WORKERS) as pool:
+        futs = {pool.submit(srv.process_ticker_binance, t): t for t in _bn_state["tickers_ref"][0]}
+        for fut in as_completed(futs):
+            try:
+                r = fut.result()
+            except Exception:
+                r = None
+            if r:
+                results.append(r)
+    if not results:
+        print(f"[{ts}] 바이낸스 0개")
+        return 0
+    try:
+        raw = srv.detect_market_regime(results)
+        srv.current_market_regime_binance = srv.debounce_regime_value(
+            _bn_state["regime"], srv.current_market_regime_binance, raw)
+    except Exception as e:
+        print(f"⚠️ 바이낸스 레짐 판정 실패: {e}")
+    try:
+        srv.apply_prob_filter(results, 'binance')
+    except Exception as e:
+        print(f"⚠️ 바이낸스 상승확률 계산 실패: {e}")
+    path = os.path.join(SCRIPT_DIR, f"market_data_log_binance_{datetime.now():%Y%m}.csv")
+    new = not os.path.exists(path)
+    try:
+        with open(path, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if new:
+                w.writerow(CSV_HEADER)
+            w.writerows([_row_from_result(ts, r) for r in results])
+    except Exception as e:
+        print(f"⚠️ 바이낸스 로그 저장 실패: {e}")
+    try:
+        if _bn_state["tracker"] is None:
+            _bn_state["tracker"] = SignalTracker(BINANCE_SIGNAL_LOG_CSV)
+        n = _bn_state["tracker"].update(datetime.strptime(ts, "%Y-%m-%d %H:%M:%S"), results)
+        _bn_state["tracker"].save()
+        if n:
+            print(f"📌 바이낸스 새 진입 신호 {n}건 → {os.path.basename(BINANCE_SIGNAL_LOG_CSV)}")
+    except Exception as e:
+        print(f"⚠️ 바이낸스 신호 추적 실패: {e}")
+    print(f"[{ts}] 바이낸스 {len(results)}개 저장 (레짐 {srv.current_market_regime_binance})")
+    return len(results)
+
+
 # [2026-10-11 추가] 코드 자동 재적용. 매일 리포트 작업이 trading_server.py/data_collector.py를
 # 고치면, 수집기는 다음 사이클 시작 전에 그걸 감지하고 스스로 종료한다 — run_collector.bat의
 # 재시작 루프가 30초 뒤 새 코드로 다시 띄운다(bat 없이 직접 돌릴 땐 그냥 종료됨).
@@ -530,6 +609,26 @@ def _maybe_background_jobs(force=False):
                     pm.train()
             except Exception as e:
                 print(f"⚠️ 상승확률 모델 학습 실패: {e}")
+            # [2026-11-23] 바이낸스: 1시간봉 이어받기(20시간마다) → 바이낸스 전용 모델 재학습.
+            # 2차 백테스트에서 바이낸스 학습 모델은 청산이 많아(22~28%) 탈락 → 서버는 원화 모델을 씀. 그래서 기본 꺼 둠.
+            # 서버 BINANCE_PROB_PROFILE='binance'로 바꿀 때 같이 True로.
+            try:
+                import prob_model as pm
+                if BINANCE_MODEL_JOBS and _binance_on() and hasattr(pm, "BINANCE_HISTORY_DIR") and os.path.isdir(pm.BINANCE_HISTORY_DIR):
+                    st_path = os.path.join(pm.BINANCE_HISTORY_DIR, "_status.json")
+                    try:
+                        age_h = (time.time() - os.path.getmtime(st_path)) / 3600
+                    except OSError:
+                        age_h = 999
+                    if age_h >= 20:
+                        import binance_history_downloader as bhd
+                        print("📚 바이낸스 1시간봉 이어받기 시작")
+                        bhd.main()
+                    if pm.due('binance') and _ensure_sklearn():
+                        print("🧠 바이낸스 모델 학습 시작")
+                        pm.train(profile='binance')
+            except Exception as e:
+                print(f"⚠️ 바이낸스 history/모델 작업 실패: {e}")
         finally:
             _bg_state["running"] = False
     threading.Thread(target=_job, daemon=True).start()
@@ -603,6 +702,10 @@ def main():
     threading.Thread(target=_watchdog, daemon=True, name="watchdog").start()
     print(f"🐶 워치독 켜짐: {WATCHDOG_MIN}분 넘게 로그 저장이 없으면 자동 재시작")
     _maybe_auto_push(force=True)
+    try:
+        _binance_start()  # [2026-11-23] 바이낸스 탭
+    except Exception as e:
+        print(f"⚠️ 바이낸스 수집 시작 실패: {e}")
     _maybe_background_jobs(force=True)
     while True:
         _maybe_auto_push()
@@ -624,6 +727,10 @@ def main():
                 _last_ok[0] = time.time()
         except Exception as e:
             print(f"⚠️ 수집 실패: {e}")
+        try:
+            collect_binance_once()  # [2026-11-23] 바이낸스 탭
+        except Exception as e:
+            print(f"⚠️ 바이낸스 수집 실패: {e}")
         next_run += COLLECT_INTERVAL_SEC
         now = time.time()
         if next_run < now:

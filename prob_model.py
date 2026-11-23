@@ -21,6 +21,19 @@ MODEL_PATH = os.path.join(MODEL_DIR, "prob_model.pkl")
 # [2026-10-14] scikit-learn 없는 기기(태블릿 Termux 등)용 — 트리 구조만 JSON으로 내보내서 numpy로 예측.
 # models/*.pkl은 git에 안 올라가지만 이 JSON은 올라가서 pull만 하면 다른 기기에서도 p_up이 나온다.
 LITE_PATH = os.path.join(MODEL_DIR, "prob_model_lite.json")
+# [2026-11-23 사용자 요청] 바이낸스 전용 모델 — history_binance/ 1시간봉으로 따로 학습해 바이낸스 탭 판정에 쓴다.
+# 원화(빗썸·업비트) 모델(위 경로)은 그대로. profile='binance'로 부르면 아래 경로를 쓴다.
+BINANCE_HISTORY_DIR = os.path.join(BASE_DIR, "history_binance")
+BINANCE_MODEL_PATH = os.path.join(MODEL_DIR, "prob_model_binance.pkl")
+BINANCE_LITE_PATH = os.path.join(MODEL_DIR, "prob_model_binance_lite.json")
+BINANCE_TRAIN_TOP = 100      # 학습 행: 매시 24h 거래대금 상위 100(상장 7일↑) — 500종목 전부면 메모리·시간이 너무 큼
+BINANCE_TRAIN_DAYS = 1100    # 최근 이 일수만 학습
+
+
+def _paths(profile='krw'):
+    if profile == 'binance':
+        return BINANCE_MODEL_PATH, BINANCE_LITE_PATH, BINANCE_HISTORY_DIR
+    return MODEL_PATH, LITE_PATH, HISTORY_DIR
 TRAIN_LOG = os.path.join(MODEL_DIR, "train_log.txt")
 HORIZON_H = 24
 MODEL_VERSION = 2           # [2026-10-15] v2 = 24h 상승확률(p_up) + 4h 시장대비 기대수익(exp4) 두 모델
@@ -95,25 +108,28 @@ def add_cross_section(X):
 
 
 # ───────────────────────── 학습 ─────────────────────────
-def _load_history(history_dir=HISTORY_DIR):
+def _load_history(history_dir=HISTORY_DIR, with_value=False):
     frames = {}
     for f in sorted(glob.glob(os.path.join(history_dir, '*_1h.csv'))):
         base = os.path.basename(f)
-        try:
-            src, tk, _ = base.split('_', 2)
-        except ValueError:
+        parts = base.split('_')
+        if len(parts) < 3:
             continue
+        src, tk = parts[0], '_'.join(parts[1:-1])
         if tk in frames and src != 'upbit':
             continue  # 같은 종목이면 업비트 우선
         try:
             d = pd.read_csv(f)
             d['ts'] = pd.to_datetime(d['ts_kst'])
-            d = d.set_index('ts').sort_index()[['open', 'high', 'low', 'close', 'volume']].astype(float)
+            cols = ['open', 'high', 'low', 'close', 'volume'] + (['value'] if with_value and 'value' in d.columns else [])
+            d = d.set_index('ts').sort_index()[cols].astype(float)
             d = d[~d.index.duplicated()].asfreq('1h')
             d['close'] = d['close'].ffill()
             for col in ['open', 'high', 'low']:
                 d[col] = d[col].fillna(d['close'])
             d['volume'] = d['volume'].fillna(0)
+            if with_value:
+                d['value'] = d['value'].fillna(0) if 'value' in d.columns else d['volume'] * d['close']
             if len(d) >= MIN_ROWS_PER_TICKER:
                 frames[tk] = d
         except Exception:
@@ -121,14 +137,34 @@ def _load_history(history_dir=HISTORY_DIR):
     return frames
 
 
-def build_dataset(history_dir=HISTORY_DIR):
+def _binance_keep(frames):
+    """[2026-11-23] 바이낸스 학습 행 고르기: 매시 24h 거래대금 상위 BINANCE_TRAIN_TOP(상장 7일↑) + BTC, 짝수 시각만."""
+    V = pd.DataFrame({tk: d['value'].rolling(24, min_periods=1).sum().where(np.arange(len(d)) >= 168)
+                      for tk, d in frames.items()})
+    keep = V.rank(axis=1, ascending=False, method='first') <= BINANCE_TRAIN_TOP
+    if 'BTC' in keep.columns:
+        keep['BTC'] = V['BTC'].notna()
+    rowok = (keep.index.hour % 2 == 0) & (keep.index >= keep.index.max() - pd.Timedelta(days=BINANCE_TRAIN_DAYS))
+    return keep.where(np.broadcast_to(np.asarray(rowok)[:, None], keep.shape), False)
+
+
+def build_dataset(history_dir=HISTORY_DIR, profile='krw'):
     out = []
-    for tk, d in _load_history(history_dir).items():
+    frames = _load_history(history_dir, with_value=(profile == 'binance'))
+    keep = _binance_keep(frames) if (profile == 'binance' and frames) else None
+    for tk, d in frames.items():
+        if keep is not None:
+            mk = keep[tk].reindex(d.index).fillna(False).astype(bool).values
+            if not mk.any():
+                continue
         f = build_features(d)
         f['ticker'] = tk
         f['f24'] = (d['close'].shift(-HORIZON_H) / d['close'] - 1) * 100
         f['f4'] = (d['close'].shift(-4) / d['close'] - 1) * 100
-        f = f.iloc[200:]
+        if keep is not None:
+            f = f[mk]
+        else:
+            f = f.iloc[200:]
         out.append(f)
     if not out:
         return None
@@ -164,15 +200,18 @@ def _log(msg):
     print(f"[prob_model] {msg}")
 
 
-def train(history_dir=HISTORY_DIR, holdout_days=60):
-    """전체 history로 학습. 마지막 holdout_days는 먼저 검증용으로 떼서 성능을 기록한 뒤 전체로 재학습."""
+def train(history_dir=None, holdout_days=60, profile='krw'):
+    """전체 history로 학습. 마지막 holdout_days는 먼저 검증용으로 떼서 성능을 기록한 뒤 전체로 재학습.
+    [2026-11-23] profile='binance'면 history_binance/ 로 학습해서 prob_model_binance.pkl(+경량 JSON)에 저장."""
     t0 = time.time()
+    model_path, lite_path, default_dir = _paths(profile)
+    history_dir = history_dir or default_dir
     try:
         import sklearn
     except Exception:
         _log("scikit-learn 없음 — 학습 건너뜀")
         return False
-    X = build_dataset(history_dir)
+    X = build_dataset(history_dir, profile=profile)
     if X is None or len(X) < 10000:
         _log("history 데이터 부족 — 학습 건너뜀")
         return False
@@ -209,34 +248,34 @@ def train(history_dir=HISTORY_DIR, holdout_days=60):
     obj = {'model': model, 'model_x4': model_x4, 'version': MODEL_VERSION, 'features': FEATURES, 'trained_at': time.strftime('%Y-%m-%d %H:%M:%S'),
            'trained_ts': time.time(), 'rows': int(len(L)), 'tickers': int(L['ticker'].nunique()),
            'data_from': str(L['ts'].min()), 'data_to': str(L['ts'].max()),
-           'sklearn': sklearn.__version__, **meta}
+           'sklearn': sklearn.__version__, 'profile': profile, **meta}
     os.makedirs(MODEL_DIR, exist_ok=True)
-    tmp = MODEL_PATH + '.tmp'
+    tmp = model_path + '.tmp'
     with open(tmp, 'wb') as fp:
         pickle.dump(obj, fp)
-    os.replace(tmp, MODEL_PATH)
+    os.replace(tmp, model_path)
     try:
-        export_lite(obj)
+        export_lite(obj, lite_path)
     except Exception as e:
         _log(f"경량 모델 내보내기 실패: {e}")
-    _log(f"학습 완료 {time.time() - t0:.0f}s rows={len(L)} tickers={obj['tickers']} "
+    _log(f"{'[바이낸스] ' if profile == 'binance' else ''}학습 완료 {time.time() - t0:.0f}s rows={len(L)} tickers={obj['tickers']} "
          f"{obj['data_from'][:10]}~{obj['data_to'][:10]} " + json.dumps(meta, ensure_ascii=False))
     return True
 
 
-def model_age_hours():
+def model_age_hours(profile='krw'):
     try:
-        return (time.time() - os.path.getmtime(MODEL_PATH)) / 3600
+        return (time.time() - os.path.getmtime(_paths(profile)[0])) / 3600
     except Exception:
         return None
 
 
-def due():
-    a = model_age_hours()
+def due(profile='krw'):
+    a = model_age_hours(profile)
     if a is None or a >= RETRAIN_HOURS:
         return True
     try:
-        o = load_model()
+        o = load_model(profile)
         return not o or o.get('lite') or o.get('version', 1) < MODEL_VERSION
     except Exception:
         return False
@@ -310,15 +349,17 @@ class _LiteModel:
 
 # ───────────────────────── 예측 ─────────────────────────
 _lock = threading.Lock()
-_cache = {'mtime': None, 'obj': None}
+_caches = {}   # [2026-11-23] profile별 캐시('krw' / 'binance')
 
 
-def load_model():
+def load_model(profile='krw'):
     """sklearn 모델(pkl)을 우선 쓰고, sklearn이 없거나 pkl이 없으면 경량 JSON 모델을 쓴다.
-    pkl을 읽은 기기(PC)는 경량 JSON이 없거나 낡았으면 자동으로 다시 내보낸다."""
+    pkl을 읽은 기기(PC)는 경량 JSON이 없거나 낡았으면 자동으로 다시 내보낸다.
+    [2026-11-23] profile='binance'면 바이낸스 전용 모델 파일."""
+    MODEL_PATH, LITE_PATH, _hd = _paths(profile)
+    _cache = _caches.setdefault(profile, {'mtime': None, 'obj': None})
     try:
         mt = os.path.getmtime(MODEL_PATH)
-        src = MODEL_PATH
     except Exception:
         mt = None
     try:
@@ -336,7 +377,7 @@ def load_model():
                     obj = pickle.load(fp)
                 if lmt is None or lmt < mt:
                     try:
-                        export_lite(obj)
+                        export_lite(obj, LITE_PATH)
                         lmt = os.path.getmtime(LITE_PATH)
                     except Exception as e:
                         print(f"[prob_model] 경량 모델 내보내기 실패: {e}")
@@ -361,8 +402,8 @@ def load_model():
         return obj
 
 
-def model_info():
-    obj = load_model()
+def model_info(profile='krw'):
+    obj = load_model(profile)
     if not obj:
         return None
     return {k: v for k, v in obj.items() if k != 'model'}
@@ -383,9 +424,10 @@ def ticker_features(df):
         return None
 
 
-def predict(results, key='_pmf'):
-    """results: process_ticker 결과 dict 리스트(각자 r[key]에 ticker_features 결과). r['p_up']를 채운다."""
-    obj = load_model()
+def predict(results, key='_pmf', profile='krw'):
+    """results: process_ticker 결과 dict 리스트(각자 r[key]에 ticker_features 결과). r['p_up']를 채운다.
+    [2026-11-23] profile='binance'면 바이낸스 전용 모델로 예측(모델이 아직 없으면 p_up=None)."""
+    obj = load_model(profile)
     if not obj:
         for r in results:
             r['p_up'] = None
@@ -427,4 +469,5 @@ def predict(results, key='_pmf'):
 
 
 if __name__ == '__main__':
-    train()
+    import sys as _sys
+    train(profile='binance' if 'binance' in _sys.argv[1:] else 'krw')
