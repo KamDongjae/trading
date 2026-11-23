@@ -124,6 +124,7 @@ CONDITION_INDICATORS = [
     ("ls_ratio", "L/S비율"), ("ema20", "EMA20"), ("ema60", "EMA60"), ("recent_pct", "최근등락%"),
     ("long_score", "롱점수"), ("short_score", "숏점수"),
     ("prepump_score", "매집점수"), ("preshort_score", "분산점수"),
+    ("btc_up", "BTC추세(1h 120EMA 위=1)"),  # [2026-11-24 수동, 사용자 요청] 업비트 KRW-BTC 1시간봉, 5분마다 갱신
 ]
 _CONDITION_ALLOWED_NAMES = {name for name, _ in CONDITION_INDICATORS} | {"and", "or", "not", "True", "False"}
 _CONDITION_CHAR_PATTERN = re.compile(r'''^[a-zA-Z0-9_\s\.\+\-\*/()<>=!&|'"]*$''')  # 따옴표 추가(코인명 비교용) — 쉼표는 일부러 제외
@@ -131,6 +132,64 @@ _CONDITION_CHAR_PATTERN = re.compile(r'''^[a-zA-Z0-9_\s\.\+\-\*/()<>=!&|'"]*$'''
                                       # 무관하게 항상 참으로 평가되는 사고가 실제로 있었음 — 아예 차단)
 _CONDITION_TOKEN_PATTERN = re.compile(r'[a-zA-Z_][a-zA-Z0-9_]*')
 _QUOTED_STRING_PATTERN = re.compile(r"""(['"])(?:(?!\1).)*\1""")
+
+
+# [2026-11-24 수동, 사용자 요청] 롱 조건식 색칠 끔 + 관찰용 롱 조건 표시
+# 근거(reports\\cond_1y_48h_20261124.md, 1년 1h봉·48h 정리): 롱 v8 절 승률 43.7%/49.8%(무작위 41.1%)라
+# 60% 미달 → 초록 계열(롱) 조건식은 카드 배경을 칠하지 않는다. 숏(빨강)·기타 색 조건식은 그대로.
+# 조건식 목록·사용여부 체크는 안 바뀌고 색칠만 건너뜀. 다시 켜려면 False.
+LONG_COND_COLOR_OFF = True
+# 관찰용 롱 조건(진입·자동진입과 무관, 카드에 연파랑 배경 + 👀 뱃지만). 1년 1h봉 48h 정리 143건 60.1%
+# (앞6개월 57% / 뒤6개월 67%), 3배 건당 +0.2% — 기준(앞뒤 모두 60%) 미달이라 몇 주 지켜보는 용도.
+# funding은 % 단위(-0.01 = -0.01%). 끄려면 OBSERVE_LONG_ON = False
+OBSERVE_LONG_ON = True
+OBSERVE_LONG_EXPR = "funding < -0.01 && rsi < 35 && btc_up > 0"
+OBSERVE_LONG_COLOR = "#a0c4ff"
+_BTC_TREND = {"up": None, "ts": 0.0, "busy": False, "close": None, "ema120": None}
+
+
+def _refresh_btc_trend():
+    """업비트 KRW-BTC 1시간봉 400개로 EMA120을 계산해 종가가 위면 up=1, 아래면 0."""
+    try:
+        import pandas as _pd
+        url = "https://api.upbit.com/v1/candles/minutes/60"
+        rows, to = [], None
+        for _ in range(2):
+            params = {"market": "KRW-BTC", "count": 200}
+            if to:
+                params["to"] = to
+            data = requests.get(url, params=params, timeout=8).json()
+            if not isinstance(data, list) or not data:
+                break
+            rows += data
+            to = data[-1]["candle_date_time_utc"] + "Z"
+            time.sleep(0.15)
+        if len(rows) >= 150:
+            df = _pd.DataFrame(rows).drop_duplicates("candle_date_time_kst").sort_values("candle_date_time_kst")
+            close = df["trade_price"].astype(float)
+            ema = close.ewm(span=120, adjust=False).mean()
+            _BTC_TREND.update(up=1 if close.iloc[-1] > ema.iloc[-1] else 0, close=float(close.iloc[-1]),
+                              ema120=float(ema.iloc[-1]), ts=time.time())
+    except Exception as e:
+        print(f"BTC 추세 갱신 실패: {e}")
+    finally:
+        _BTC_TREND["busy"] = False
+
+
+def btc_up_value():
+    """BTC 추세(1/0). 5분 지나면 백그라운드에서 다시 받아옴(화면 안 멈춤). 아직 모르면 0."""
+    if time.time() - _BTC_TREND["ts"] > 300 and not _BTC_TREND["busy"]:
+        _BTC_TREND["busy"] = True
+        threading.Thread(target=_refresh_btc_trend, daemon=True).start()
+    return _BTC_TREND["up"] or 0
+
+
+def _is_long_color(color):
+    try:
+        r = int(color[1:3], 16); g = int(color[3:5], 16); b = int(color[5:7], 16)
+        return g > r and g > b
+    except Exception:
+        return False
 
 
 def translate_condition_expr(expr):
@@ -178,6 +237,7 @@ def evaluate_condition(expr, row):
         env = {name: row.get(name) for name, _ in CONDITION_INDICATORS}
         env = {k: (v if v is not None else 0) for k, v in env.items()}
         env['ticker'] = str(row.get('ticker', '')).lower()
+        env['btc_up'] = btc_up_value()  # [2026-11-24] 종목 행에 없는 시장 변수
         return bool(eval(translated, {"__builtins__": {}}, env))
     except Exception:
         return False
@@ -1906,6 +1966,8 @@ class TradingClient:
                 for cond in self.custom_conditions:
                     if not cond.get("enabled", True):
                         continue
+                    if LONG_COND_COLOR_OFF and _is_long_color(cond.get("color", "")):
+                        continue  # [2026-11-24] 롱 조건식 1년 48h 승률 60% 미달 → 색칠 안 함
                     if evaluate_condition(cond["expr"], row):
                         bg = cond["color"]
                         break
@@ -1922,7 +1984,13 @@ class TradingClient:
                 # bg 색상이 커스텀 조건식 내보내기 관례(롱:#2eaa4a계열 초록, 숏:#d13a3a계열
                 # 빨강)를 따른다는 전제로 RGB 우세채널만 보고 롱/숏 조건식 매칭을 판별한다.
                 conflict_badge = None
-                if bg != "white":
+                # [2026-11-24] 관찰용 롱 조건 — 진입 신호 아님(판정·자동진입과 무관), 표시만
+                obs_badge = None
+                if OBSERVE_LONG_ON and evaluate_condition(OBSERVE_LONG_EXPR, row):
+                    obs_badge = "👀 관찰 롱: 펀딩 음수+과매도+BTC 상승 (1년 48h 60%·검증 중, 진입 신호 아님)"
+                    if bg == "white":
+                        bg = OBSERVE_LONG_COLOR
+                if bg != "white" and bg != OBSERVE_LONG_COLOR:
                     try:
                         r = int(bg[1:3], 16); g = int(bg[3:5], 16); b = int(bg[5:7], 16)
                         cond_dir = 'long' if (g > r and g > b) else ('short' if (r > g and r > b) else None)
@@ -1998,6 +2066,8 @@ class TradingClient:
                         conflict_badge = "\n".join(x for x in conflict_badge.split("\n") if not x.startswith("⚠충돌: 단기")) or None
                     if v_badge:
                         conflict_badge = f"{v_badge}\n{conflict_badge}" if conflict_badge else v_badge
+                if obs_badge:
+                    conflict_badge = f"{conflict_badge}\n{obs_badge}" if conflict_badge else obs_badge
                 display_ticker = f"[{ticker}]" if ticker in self.pinned_tickers else ticker
                 line1 = f"{display_ticker}  {chg24h_str} ({krw_str})  {usd_str}  롱{ls} 숏{ss}  매집{pp} 분산{ps}"
                 since_txt = self._signal_since_text(ticker, border_color)
@@ -3873,7 +3943,10 @@ class TradingClient:
                     "첫 줄 오른쪽 '롱 mm-dd hh:mm~'은 그 판정이 처음 켜진 시각. "
                     "'권장≤Nx'는 청산선이 평소 변동폭의 5배 밖에 오도록 계산한 최대 레버리지 — 진입 시 이보다 높으면 확인창이 뜹니다. "
                     "🔥 뱃지=숏 청산위험(변동성 큼·이미 많이 오름) 또는 바이낸스 선물 미상장 코인. "
-                    "조건식 색이 진한 카드는 글자가 자동으로 흰색으로 바뀝니다."),
+                    "조건식 색이 진한 카드는 글자가 자동으로 흰색으로 바뀝니다. "
+                    "롱(초록) 조건식은 1년 검증에서 승률이 낮아 카드 색칠을 하지 않습니다(목록에는 남아 있음). "
+                    "연파랑 배경 + '👀 관찰 롱'은 펀딩 음수·RSI 35 미만·BTC 1시간봉이 120EMA 위일 때 뜨는 관찰용 표시로, "
+                    "판정·자동진입과 상관없는 참고용입니다. 조건식 창에서 btc_up(BTC 추세, 위=1)도 쓸 수 있습니다."),
             ("카드 색깔(점수 기준, 참고)", "🟢 초록=롱 신호(long_score≥컷) | 🔴 빨강=숏 신호(short_score≥컷) | "
                         "🔵 파랑=매집(prepump_score≥80) | 🟣 보라=분산(preshort_score≥80) | "
                         "🟡 노랑=관심(65점은 넘었지만 진입 컷 미달, 참고만 할 것) | 흰색=신호 없음. "

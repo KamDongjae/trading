@@ -1,6 +1,6 @@
 # Pyramide 설정값 정리
 
-마지막 갱신: 2026-11-23 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
+마지막 갱신: 2026-11-24 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
 
 ## 바꾸는 법
 
@@ -117,6 +117,9 @@
 | 자동진입 (설정 창) | `auto_entry.json`, 기록 `auto_entry_log.csv` | 1회 진입은 **고정 $** / **현금의 %**(`amt_mode`=usd/pct, `AUTO_ENTRY_PCT`=3, 진입할 때마다 그 시점 현금 기준) / **사용자 정의**(`amt_mode`=rule, C언어 형식 if/else — start_seed(처음 시드)·current_seed(총자산=현금+증거금+평가손익)·cash(현금) → position_size, sizing_rule.py, 등록 전 문법 검사. 실전은 live_sizing_rule.txt) — 11/22. 켜면 판정 롱/숏이 새로 뜰 때 증거금·레버리지(기본 $30×3, 하락장이면 롱 자동진입 안 함 체크 기본 켜짐 — `skip_bear_long`, 강한 숏(4h예상 -1% 이하)은 진입 금액 2배 기본 켜짐 — `strong_x2`, `AUTO_ENTRY_STRONG_SHORT_EXP4`=-1.0·`AUTO_ENTRY_STRONG_MULT`=2.0)로 바로 진입. 잔고 제한=충전 잔고 안에서만(부족하면 건너뜀), 잔고 무시=서버 `open_force`로 강제 진입(잔고 마이너스 가능). 클라이언트 켜져 있을 때만. 바이낸스 선물에 없는 코인(NOFUT)은 롱·숏 모두 자동진입 안 함(롱 판정 표시는 그대로). "진입 후 N시간 자동 정리"(기본 48, 0=안 함)는 자동진입 포지션만 정리(`auto_entry_positions.json`), 클라가 꺼져 있던 동안 시간이 지났으면 켜질 때 정리 |
 | 거래소 토글 | – | 빗썸 / 업비트 / 바이낸스(11/23). 자동진입은 켜져 있으면 세 거래소 판정을 모두 봄(같은 코인 보유 중이면 건너뜀) |
 | 순위 탭 | – | 4h 예상수익(exp4) 순 롱/숏 상위 10. 서버가 구버전이면 p_up 순 |
+| 롱 조건식 색칠 끔 (코드 상수) | `trading_client.py` `LONG_COND_COLOR_OFF`=True | 초록 계열(롱) 조건식은 카드 배경을 안 칠함(목록·사용여부는 그대로, 숏 조건식은 그대로). 1년 1h봉 48h 승률 43.7%/49.8% — 끄려면 False (11/24) |
+| 관찰 롱 표시 (코드 상수) | `OBSERVE_LONG_ON`=True, `OBSERVE_LONG_EXPR`="funding < -0.01 && rsi < 35 && btc_up > 0", `OBSERVE_LONG_COLOR`=#a0c4ff | 맞으면 카드 연파랑 배경 + "👀 관찰 롱" 뱃지만(판정·자동진입 무관). 1년 48h 143건 60.1%(앞 57%/뒤 67%) — 검증 중 (11/24) |
+| 조건식 변수 `btc_up` | – | 업비트 KRW-BTC 1시간봉 종가가 EMA120 위면 1, 아니면 0(클라가 5분마다 갱신). 클라 조건식에서만 씀 — 서버 디스코드 알림 쪽은 이 변수를 몰라서 btc_up 조건은 알림 안 감 (11/24) |
 
 ## 7. 변경 이력(설정 관련)
 
@@ -151,3 +154,4 @@
 | 11/23 | 서버 원격 재시작/종료 명령 `restart`/`shutdown`(`SERVER_RESTART_EXIT_CODE`=75, 사용자 요청) | backups\20261123_binance_tab (바이낸스 탭 이전 원본) |
 | 11/23 | 판정 하락장 롱 대기를 거래소별 자기 레짐으로(`_regime_of`, 업비트가 빗썸 레짐을 쓰던 것 수정 — 사용자: 시뮬 단계라 세 거래소 다 자기 레짐으로 두고 예외 케이스를 잡아 개선) | backups\20261123_regime_per_exchange |
 | 11/23 | 빗썸·업비트 감시 대상 40개를 안정 유니버스로(`UNIVERSE_MODE`="stable": 상장 1년↑·30일 일별 거래대금 중앙값 상위 40·매일 09:05 갱신·60위 안이면 유지·유의종목 제외·이상치 판정 대기) — 백테스트 청산 20.5%→3.6% (사용자 요청) | backups\20261123_universe |
+| 11/24 | 클라 `LONG_COND_COLOR_OFF`=True(롱 조건식 색칠 끔), `OBSERVE_LONG_*` 관찰 롱 표시, 조건식 변수 `btc_up` 추가 (사용자 요청, 근거 reports\cond_1y_48h_20261124.md). 숏 조건식 v5(`short_conditions_import_v5.txt`, v4에서 59% 1절 제거) | backups\20261124_long_cond |
