@@ -3976,7 +3976,13 @@ def _model_guard_apply(results, exchange='bithumb'):
             continue
         ld = r.get('listing_days')
         why = None
-        if LISTING_MIN_DAYS_VERDICT and ld is not None and ld < LISTING_MIN_DAYS_VERDICT:
+        try:
+            why = _universe_spike_reason(exchange, r)  # [2026-11-23] 안정 유니버스 이상치 대기
+        except Exception:
+            why = None
+        if why:
+            pass
+        elif LISTING_MIN_DAYS_VERDICT and ld is not None and ld < LISTING_MIN_DAYS_VERDICT:
             why = f"상장 {ld}일({LISTING_MIN_DAYS_VERDICT}일 미만)"
         elif model_on and r.get('p_up') is None:
             why = f"상장 7일 미만(1h봉 {MODEL_MIN_1H_BARS}개 미만)"
@@ -4142,6 +4148,235 @@ def score_updater(tickers_ref, exchange='bithumb'):
                 except Exception as e:
                     print(f"디스코드 알림 체크(업비트) 실패: {e}")
         time.sleep(SCORE_INTERVAL)
+
+# ============================================================
+# [2026-11-23 수동, 사용자 요청] 감시 대상 40개 선정 기준 교체(빗썸·업비트) — "안정 유니버스"
+# 예전: 업비트 = 24h 거래대금 상위 40(1분마다 새로), 빗썸 = 시세 API 순서대로 앞 40 → 급등·신규·이슈 코인이 계속 들어와
+#       숏이 스퀴즈에 물림(ELSA·PIEVERSE 강제청산).
+# 백테스트(reports/universe_backtest3_20261123.md, 바이낸스 1h봉 25/11~26/11, 원화 모델, 숏 $30·3배·48h):
+#   24h 거래대금 상위 40(매시 갱신): 청산 20.5% · $+130 · 뒤 6개월 -$427 · 최악월 -$749 · 469코인 거쳐감
+#   안정 유니버스(아래 규칙)        : 청산  3.6% · $+340 · 앞/뒤 6개월 +$199/+$141 · 최악월 -$144 · 62코인
+#   (60위 유지 빼면 청산 6.3%, 중앙값→합계 6.7%, 상장 1년→180일 7.6%, ATR<3% 추가하면 -$188이라 안 붙임)
+# 규칙:
+#  1) 후보 = 그 거래소 원화 마켓 전체 중 상장 UNIVERSE_MIN_AGE_D(365)일 이상(일봉 개수로 셈, 확인 안 되면 제외)
+#     + 업비트 '유의종목'(market_warning=CAUTION)·빗썸 투자유의(조회되면) 제외
+#  2) 순위 = 어제까지 30일 '일별 거래대금 중앙값'(하루 급등으로 안 흔들리게)
+#  3) 매일 UNIVERSE_REFRESH_HHMM(09:05)에 1번 갱신. 기존 코인은 UNIVERSE_KEEP_RANK(60)위 안이면 유지, 빈자리만 위에서 채움
+#  4) 판정 대기(이상치): 24h 거래대금 > 30일 중앙값×UNIVERSE_SPIKE_X(5) 또는 7일 등락 ±UNIVERSE_MOVE7_PCT(40)% 초과
+#  - 갱신 결과는 universe_krw.json(데이터 폴더)에 저장 → 재시작해도 유지. 첫 계산 전엔 저장된 목록 → 없으면 학습 코인(history/) 사용
+# 되돌리기: UNIVERSE_MODE = "top24h" (예전 방식) 또는 backups\20261123_universe\trading_server.py
+# ============================================================
+UNIVERSE_MODE = "stable"          # "stable" = 위 규칙 / "top24h" = 예전 방식
+UNIVERSE_MIN_AGE_D = 365
+UNIVERSE_KEEP_RANK = 60
+UNIVERSE_REFRESH_HHMM = (9, 5)
+UNIVERSE_SPIKE_X = 5.0
+UNIVERSE_MOVE7_PCT = 40.0
+UNIVERSE_FILE = os.path.join(SCRIPT_DIR, "universe_krw.json")
+UPBIT_MARKET_ALL_DETAIL_URL = "https://api.upbit.com/v1/market/all?isDetails=true"
+BITHUMB_MARKET_ALL_DETAIL_URL = "https://api.bithumb.com/v1/market/all?isDetails=true"
+_universe = {}                    # exchange -> {'date','members','med30','close7','built'}
+_universe_lock = threading.Lock()
+
+
+def _universe_load():
+    try:
+        with open(UNIVERSE_FILE, 'r', encoding='utf-8') as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            with _universe_lock:
+                _universe.update({k: v for k, v in d.items() if isinstance(v, dict) and v.get('members')})
+    except Exception:
+        pass
+
+
+def _universe_save():
+    try:
+        with _universe_lock:
+            d = dict(_universe)
+        tmp = UNIVERSE_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(d, f, ensure_ascii=False)
+        os.replace(tmp, UNIVERSE_FILE)
+    except Exception as e:
+        print(f"유니버스 저장 실패: {e}")
+
+
+def _universe_stats_upbit(ticker):
+    """업비트 일봉 → (상장일수, 어제까지 30일 거래대금 중앙값(원), 7일 전 종가). 실패면 None."""
+    try:
+        r = requests.get(UPBIT_CANDLE_DAY_URL, params={"market": f"KRW-{ticker}", "count": 200}, timeout=10)
+        d = r.json()
+        if not isinstance(d, list) or len(d) < 2:
+            return None
+        age = len(d)
+        if age >= 200 and UNIVERSE_MIN_AGE_D > 200:
+            time.sleep(0.15)
+            r2 = requests.get(UPBIT_CANDLE_DAY_URL, params={"market": f"KRW-{ticker}", "count": 200,
+                                                           "to": d[-1]['candle_date_time_utc'] + "Z"}, timeout=10)
+            d2 = r2.json()
+            if not isinstance(d2, list):
+                return None
+            age += len(d2)
+        done = d[1:31]  # d[0] = 오늘(진행 중) 봉
+        vals = [float(x.get('candle_acc_trade_price') or 0) for x in done]
+        if len(vals) < 20:
+            return None
+        close7 = float(d[7]['trade_price']) if len(d) > 7 else None
+        return age, float(np.median(vals)), close7
+    except Exception:
+        return None
+
+
+def _universe_stats_bithumb(ticker):
+    """빗썸 24h봉 → (상장일수, 어제까지 30일 거래대금 중앙값(원, 종가×거래량 근사), 7일 전 종가)."""
+    try:
+        df = _fetch_candlestick_raw(ticker, "KRW", "24h", timeout=10, retries=1)
+        if df is None or len(df) < 22:
+            return None
+        done = df.iloc[:-1]  # 마지막 = 오늘(진행 중) 봉
+        v = (done['close'] * done['volume']).iloc[-30:]
+        close7 = float(df['close'].iloc[-8]) if len(df) > 8 else None
+        return len(df), float(v.median()), close7
+    except Exception:
+        return None
+
+
+def _universe_warned(exchange):
+    """유의종목 집합. 조회 실패하면 빈 집합(걸러내지 않음)."""
+    url = UPBIT_MARKET_ALL_DETAIL_URL if exchange == 'upbit' else BITHUMB_MARKET_ALL_DETAIL_URL
+    try:
+        d = requests.get(url, timeout=10).json()
+        out = set()
+        for m in d if isinstance(d, list) else []:
+            mk = str(m.get('market', ''))
+            if not mk.startswith('KRW-'):
+                continue
+            ev = m.get('market_event') or {}
+            caution = ev.get('caution') if isinstance(ev.get('caution'), dict) else {}
+            if str(m.get('market_warning', 'NONE')).upper() not in ('NONE', '') or ev.get('warning') or any(caution.values()):
+                out.add(mk[4:])
+        return out
+    except Exception:
+        return set()
+
+
+def _universe_all_tickers(exchange):
+    if exchange == 'upbit':
+        r = requests.get(UPBIT_MARKET_ALL_URL, timeout=10)
+        return [m['market'][4:] for m in r.json() if str(m.get('market', '')).startswith('KRW-')]
+    data = Bithumb.get_current_price("ALL")
+    return [k for k in data.keys() if k != 'date']
+
+
+def build_stable_universe(exchange):
+    """매일 1번. 전체 원화 코인을 훑어 안정 유니버스 40개를 정한다(업비트 약 1~2분, 빗썸 약 1~3분)."""
+    t0 = time.time()
+    tickers = _universe_all_tickers(exchange)
+    warned = _universe_warned(exchange)
+    stats = {}
+    fn = _universe_stats_upbit if exchange == 'upbit' else _universe_stats_bithumb
+    for t in tickers:
+        if not running:
+            return None
+        s = fn(t)
+        if s is None:
+            time.sleep(1.0)
+            s = fn(t)  # 한 번 재시도(429 등)
+        if s:
+            stats[t] = s
+        time.sleep(0.15)
+    if len(stats) < TOP_COIN_COUNT:
+        print(f"[유니버스] {exchange} 조회 부족({len(stats)}/{len(tickers)}) — 이전 목록 유지")
+        return None
+    elig = {t: s for t, s in stats.items() if s[0] >= UNIVERSE_MIN_AGE_D and t not in warned and s[1] > 0}
+    ranked = sorted(elig, key=lambda t: elig[t][1], reverse=True)
+    rank = {t: i + 1 for i, t in enumerate(ranked)}
+    with _universe_lock:
+        prev = list((_universe.get(exchange) or {}).get('members') or [])
+    keep = [t for t in prev if rank.get(t, 10 ** 9) <= UNIVERSE_KEEP_RANK]
+    members = list(keep)
+    for t in ranked:
+        if len(members) >= TOP_COIN_COUNT:
+            break
+        if t not in members:
+            members.append(t)
+    members.sort(key=lambda t: rank[t])
+    info = {'date': datetime.now().strftime('%Y-%m-%d'), 'built': datetime.now().strftime('%Y-%m-%d %H:%M'),
+            'members': members, 'med30': {t: elig[t][1] for t in members},
+            'close7': {t: elig[t][2] for t in members if elig[t][2]}}
+    added = [t for t in members if t not in prev]
+    dropped = [t for t in prev if t not in members]
+    with _universe_lock:
+        _universe[exchange] = info
+    _universe_save()
+    print(f"[유니버스] {exchange} {len(members)}개 갱신 ({time.time() - t0:.0f}s, 후보 {len(elig)}/{len(tickers)}, 유의 {len(warned)}) "
+          f"+{','.join(added) or '-'} / -{','.join(dropped) or '-'}")
+    return members
+
+
+def _universe_fallback(exchange):
+    """첫 계산 전: 저장된 목록 → 없으면 학습 코인(history/) 중 그 거래소에 있는 것."""
+    with _universe_lock:
+        u = _universe.get(exchange)
+    if u and u.get('members'):
+        return list(u['members'])
+    try:
+        known = {str(t).upper() for t in _model_known_tickers()}
+        allt = set(_universe_all_tickers(exchange))
+        lst = [t for t in known if t in allt]
+        if lst:
+            return lst[:TOP_COIN_COUNT]
+    except Exception:
+        pass
+    return ["BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "TRX", "AVAX", "LINK", "BNB"]
+
+
+def _universe_due(exchange):
+    with _universe_lock:
+        u = _universe.get(exchange) or {}
+    now = datetime.now()
+    today = now.strftime('%Y-%m-%d')
+    if u.get('date') == today:
+        return False
+    if not u.get('members'):
+        return True  # 목록이 아예 없으면 바로
+    return (now.hour, now.minute) >= UNIVERSE_REFRESH_HHMM or u.get('date', '') < (now - timedelta(days=1)).strftime('%Y-%m-%d')
+
+
+def universe_updater(tickers_ref, exchange):
+    while running:
+        try:
+            if _universe_due(exchange):
+                m = build_stable_universe(exchange)
+                if m:
+                    tickers_ref[0] = m
+        except Exception as e:
+            print(f"[유니버스] {exchange} 갱신 실패: {e}")
+            time.sleep(600)
+        time.sleep(60)
+
+
+def _universe_spike_reason(exchange, r):
+    """이상치면 사유 문자열, 아니면 None. 유니버스 정보 없으면 None."""
+    if UNIVERSE_MODE != "stable" or exchange not in ('upbit', 'bithumb'):
+        return None
+    t = str(r.get('ticker', '')).upper()
+    with _universe_lock:
+        u = _universe.get(exchange) or {}
+    med = (u.get('med30') or {}).get(t)
+    c7 = (u.get('close7') or {}).get(t)
+    try:
+        acc = float(r.get('vol_24h_m') or 0) * 1_000_000
+        if med and med > 0 and acc > med * UNIVERSE_SPIKE_X:
+            return f"이상치(24h 거래대금 30일 중앙값의 {acc / med:.1f}배)"
+        px = float(r.get('price') or 0)
+        if c7 and c7 > 0 and px > 0 and abs(px / c7 - 1) * 100 > UNIVERSE_MOVE7_PCT:
+            return f"이상치(7일 {(px / c7 - 1) * 100:+.0f}%)"
+    except Exception:
+        return None
+    return None
+
 
 def ticker_updater(tickers_ref):
     while running:
@@ -5967,25 +6202,39 @@ if __name__ == "__main__":
     migrate_signal_log_schema()
 
     tickers_ref = [[]]
-    try:
-        price_data = Bithumb.get_current_price("ALL")
-        tickers_ref[0] = [k for k in list(price_data.keys()) if k != "date"][:TOP_COIN_COUNT]
-        print(f"빗썸 티커 {len(tickers_ref[0])}개 로드")
-    except:
-        tickers_ref[0] = ["BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "TRX", "AVAX", "LINK", "BNB"]
-
     tickers_ref_upbit = [[]]
-    try:
-        tickers_ref_upbit[0] = get_upbit_tickers(limit=TOP_COIN_COUNT)
-        print(f"업비트 티커 {len(tickers_ref_upbit[0])}개 로드")
-    except Exception as e:
-        print(f"업비트 티커 목록 최초 로드 실패({e}), ticker_updater_upbit가 재시도함")
-        tickers_ref_upbit[0] = ["BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "TRX", "AVAX", "LINK", "BNB"]
+    if UNIVERSE_MODE == "stable":  # [2026-11-23] 안정 유니버스
+        _universe_load()
+        for _ex, _ref in (('bithumb', tickers_ref), ('upbit', tickers_ref_upbit)):
+            _ref[0] = _universe_fallback(_ex)
+            with _universe_lock:
+                _u = _universe.get(_ex) or {}
+            print(f"{'빗썸' if _ex == 'bithumb' else '업비트'} 티커 {len(_ref[0])}개 로드(안정 유니버스 "
+                  f"{_u.get('built', '첫 계산 전 — 학습 코인으로 시작, 1~3분 뒤 갱신')})")
+    else:
+        try:
+            price_data = Bithumb.get_current_price("ALL")
+            tickers_ref[0] = [k for k in list(price_data.keys()) if k != "date"][:TOP_COIN_COUNT]
+            print(f"빗썸 티커 {len(tickers_ref[0])}개 로드")
+        except:
+            tickers_ref[0] = ["BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "TRX", "AVAX", "LINK", "BNB"]
+        try:
+            tickers_ref_upbit[0] = get_upbit_tickers(limit=TOP_COIN_COUNT)
+            print(f"업비트 티커 {len(tickers_ref_upbit[0])}개 로드")
+        except Exception as e:
+            print(f"업비트 티커 목록 최초 로드 실패({e}), ticker_updater_upbit가 재시도함")
+            tickers_ref_upbit[0] = ["BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "TRX", "AVAX", "LINK", "BNB"]
 
-    threading.Thread(target=ticker_updater, args=(tickers_ref,), daemon=True).start()
+    if UNIVERSE_MODE == "stable":
+        threading.Thread(target=universe_updater, args=(tickers_ref, 'bithumb'), daemon=True).start()
+    else:
+        threading.Thread(target=ticker_updater, args=(tickers_ref,), daemon=True).start()
     threading.Thread(target=price_updater, args=(tickers_ref,), daemon=True).start()
     threading.Thread(target=score_updater, args=(tickers_ref,), kwargs={'exchange': 'bithumb'}, daemon=True).start()
-    threading.Thread(target=ticker_updater_upbit, args=(tickers_ref_upbit,), daemon=True).start()
+    if UNIVERSE_MODE == "stable":
+        threading.Thread(target=universe_updater, args=(tickers_ref_upbit, 'upbit'), daemon=True).start()
+    else:
+        threading.Thread(target=ticker_updater_upbit, args=(tickers_ref_upbit,), daemon=True).start()
     threading.Thread(target=price_updater_upbit, args=(tickers_ref_upbit,), daemon=True).start()
     threading.Thread(target=score_updater, args=(tickers_ref_upbit,), kwargs={'exchange': 'upbit'}, daemon=True).start()
     if BINANCE_ENABLED:  # [2026-11-23] 바이낸스 탭
