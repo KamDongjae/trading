@@ -1,0 +1,20 @@
+[
+ {
+  "ticker": "PIEVERSE",
+  "side": "short",
+  "entry_time": "2026-11-22 09:53:32",
+  "exit_time": "2026-11-22 18:19:24",
+  "pnl": -27.04,
+  "type": "강제청산",
+  "device": "DESKTOP-4RITL9E"
+ },
+ {
+  "ticker": "ELSA",
+  "side": "short",
+  "entry_time": "2026-11-22 10:13:07",
+  "exit_time": "2026-11-22 22:03:35",
+  "pnl": -27.04,
+  "type": "강제청산",
+  "device": "DESKTOP-4RITL9E"
+ }
+]

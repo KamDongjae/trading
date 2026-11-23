@@ -3,3 +3,6 @@
 [2026-11-23 10:03:23.53] client exited normally, no restart 
 [2026-11-23 10:05:33.99] client start 
 주문용 클라이언트 시작 | 데이터 폴더: /storage/emulated/0/Documents
+[2026-11-23 15:39:38.66] client exited normally, no restart 
+[2026-11-23 15:39:50.68] client start 
+주문용 클라이언트 시작 | 데이터 폴더: /storage/emulated/0/Documents
