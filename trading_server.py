@@ -4172,6 +4172,10 @@ UNIVERSE_KEEP_RANK = 60
 UNIVERSE_REFRESH_HHMM = (9, 5)
 UNIVERSE_SPIKE_X = 5.0
 UNIVERSE_MOVE7_PCT = 40.0
+# [2026-11-23 수동, 사용자 요청] 빗썸·업비트 감시 목록은 바이낸스 선물(USDT 무기한)에 없는 코인만.
+# 바이낸스에 있는 코인은 바이낸스 탭이 맡는다. 바이낸스 목록을 못 받아오면 갱신을 미루고 이전 목록 유지.
+# 되돌리기: False
+UNIVERSE_EXCLUDE_BINANCE = True
 UNIVERSE_FILE = os.path.join(SCRIPT_DIR, "universe_krw.json")
 UPBIT_MARKET_ALL_DETAIL_URL = "https://api.upbit.com/v1/market/all?isDetails=true"
 BITHUMB_MARKET_ALL_DETAIL_URL = "https://api.bithumb.com/v1/market/all?isDetails=true"
@@ -4261,6 +4265,18 @@ def _universe_warned(exchange):
         return set()
 
 
+def _universe_binance_set():
+    """바이낸스 선물 코인 집합(제외용). 못 받아오면 None."""
+    if not UNIVERSE_EXCLUDE_BINANCE:
+        return set()
+    try:
+        _binance_refresh_meta()
+    except Exception:
+        pass
+    ob = _binance_meta.get('onboard') or {}
+    return set(ob) if ob else None
+
+
 def _universe_all_tickers(exchange):
     if exchange == 'upbit':
         r = requests.get(UPBIT_MARKET_ALL_URL, timeout=10)
@@ -4272,7 +4288,11 @@ def _universe_all_tickers(exchange):
 def build_stable_universe(exchange):
     """매일 1번. 전체 원화 코인을 훑어 안정 유니버스 40개를 정한다(업비트 약 1~2분, 빗썸 약 1~3분)."""
     t0 = time.time()
-    tickers = _universe_all_tickers(exchange)
+    bn = _universe_binance_set()
+    if bn is None:
+        print(f"[유니버스] {exchange} 바이낸스 선물 목록 조회 실패 — 이전 목록 유지")
+        return None
+    tickers = [t for t in _universe_all_tickers(exchange) if str(t).upper() not in bn]
     warned = _universe_warned(exchange)
     stats = {}
     fn = _universe_stats_upbit if exchange == 'upbit' else _universe_stats_bithumb
@@ -4286,7 +4306,7 @@ def build_stable_universe(exchange):
         if s:
             stats[t] = s
         time.sleep(0.15)
-    if len(stats) < TOP_COIN_COUNT:
+    if len(stats) < min(TOP_COIN_COUNT, max(1, len(tickers) // 2)):  # 바이낸스 제외로 후보가 40개 안팎일 수 있어 절반 기준
         print(f"[유니버스] {exchange} 조회 부족({len(stats)}/{len(tickers)}) — 이전 목록 유지")
         return None
     elig = {t: s for t, s in stats.items() if s[0] >= UNIVERSE_MIN_AGE_D and t not in warned and s[1] > 0}
@@ -4303,6 +4323,7 @@ def build_stable_universe(exchange):
             members.append(t)
     members.sort(key=lambda t: rank[t])
     info = {'date': datetime.now().strftime('%Y-%m-%d'), 'built': datetime.now().strftime('%Y-%m-%d %H:%M'),
+            'ex_bn': bool(UNIVERSE_EXCLUDE_BINANCE),
             'members': members, 'med30': {t: elig[t][1] for t in members},
             'close7': {t: elig[t][2] for t in members if elig[t][2]}}
     added = [t for t in members if t not in prev]
@@ -4310,7 +4331,8 @@ def build_stable_universe(exchange):
     with _universe_lock:
         _universe[exchange] = info
     _universe_save()
-    print(f"[유니버스] {exchange} {len(members)}개 갱신 ({time.time() - t0:.0f}s, 후보 {len(elig)}/{len(tickers)}, 유의 {len(warned)}) "
+    print(f"[유니버스] {exchange} {len(members)}개 갱신 ({time.time() - t0:.0f}s, 후보 {len(elig)}/{len(tickers)}, 유의 {len(warned)}"
+          f"{', 바이낸스 제외 ' + str(len(bn)) if bn else ''}) "
           f"+{','.join(added) or '-'} / -{','.join(dropped) or '-'}")
     return members
 
@@ -4319,12 +4341,15 @@ def _universe_fallback(exchange):
     """첫 계산 전: 저장된 목록 → 없으면 학습 코인(history/) 중 그 거래소에 있는 것."""
     with _universe_lock:
         u = _universe.get(exchange)
+    bn = _universe_binance_set() or set()
     if u and u.get('members'):
-        return list(u['members'])
+        lst = [t for t in u['members'] if str(t).upper() not in bn]
+        if lst:
+            return lst
     try:
         known = {str(t).upper() for t in _model_known_tickers()}
         allt = set(_universe_all_tickers(exchange))
-        lst = [t for t in known if t in allt]
+        lst = [t for t in known if t in allt and t not in bn]
         if lst:
             return lst[:TOP_COIN_COUNT]
     except Exception:
@@ -4337,6 +4362,8 @@ def _universe_due(exchange):
         u = _universe.get(exchange) or {}
     now = datetime.now()
     today = now.strftime('%Y-%m-%d')
+    if UNIVERSE_EXCLUDE_BINANCE and u.get('members') and not u.get('ex_bn'):
+        return True  # [2026-11-23] 바이낸스 제외 적용 전 목록이면 바로 다시 계산
     if u.get('date') == today:
         return False
     if not u.get('members'):
