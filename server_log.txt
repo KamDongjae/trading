@@ -17846,3 +17846,36 @@ C:\Users\K\AppData\Local\Programs\Python\Python313\Lib\site-packages\numpy\lib\_
 [자동 재학습] 로지스틱 점수모델 갱신 완료
 [자동 재학습] 해결신호 34436건 기준 배수 갱신 완료: {'bithumb': {'long': {'ema': 0.5, 'pp': 0.5, 'cvd': 0.5, 'volz': 0.5, 'm30': 1.6, 'liq': 1.6}, 'short': {'ema': 1.6, 'pp': 0.5, 'cvd': 0.5, 'oi': 0.5, 'volz': 1.6, 'm30': 0.5, 'liq': np.float64(1.15)}}, 'upbit': {'long': {'ema': 0.5, 'pp': 1.6, 'cvd': 0.5, 'volz': 0.5, 'm30': 0.5, 'liq': 0.5}, 'short': {'ema': 1.6, 'pp': 0.5, 'cvd': 0.5, 'oi': 0.5, 'volz': 0.5, 'm30': 0.5, 'liq': 0.5}}}
 ✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 905개 갱신
+[02:10:28] 서버 가동 | 빗썸 13개(컷45/횡보장) | 업비트 8개(컷45/횡보장) | 바이낸스 28개(상승장) | 잔고 $263.92 | 포지션 16개
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+[02:11:29] 서버 가동 | 빗썸 13개(컷45/횡보장) | 업비트 8개(컷45/횡보장) | 바이낸스 28개(상승장) | 잔고 $263.92 | 포지션 16개
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 905개 갱신
+[02:12:29] 서버 가동 | 빗썸 13개(컷45/횡보장) | 업비트 8개(컷45/횡보장) | 바이낸스 28개(상승장) | 잔고 $263.92 | 포지션 16개
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+[유니버스] upbit 38개 갱신 (216s, 후보 38/70, 유의 14, 바이낸스 제외 522) +USDT,PEPE,SHIB,DATA,BEAM,POKT,CPOOL,STRAX,XEC,BTT,SC,RAY,CTC,CRO,DKA,MET2,MBL,SNT,ORBS,QKC,ARDR,HP,MLK,TFUEL,IQ,BORA,TOKAMAK,GAME2,MED,MOC,BOUNTY,CBK,FCT2,HUNT,MVL,META,AHT,USD1 / --
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+[02:13:29] 서버 가동 | 빗썸 13개(컷45/횡보장) | 업비트 8개(컷45/횡보장) | 바이낸스 28개(상승장) | 잔고 $263.92 | 포지션 16개
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+[유니버스] bithumb 40개 갱신 (276s, 후보 104/148, 유의 18, 바이낸스 제외 522) +USDT,PEPE,SHIB,FORT,MEV,OSMO,HFT,PROMPT,PUFFER,BEAM,AGI,DATA,NCT,A8,BONK,GHX,B3,PEAQ,CSPR,EPT,XCN,XEC,SWELL,AVL,POKT,CPOOL,BIOT,VERONA,GRND,ADP,MBL,DAO,ELF,COS,OBSR,REQ,BFC,XPR,RAY,MVC / --
+✅ 펀딩레이트/가격 905개 갱신
