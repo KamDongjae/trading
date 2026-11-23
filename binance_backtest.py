@@ -88,12 +88,22 @@ def load_dir(d, pattern):
     return frames
 
 
-def feature_table(frames, universe_top=None):
+def _age_h(d, tk, onboard):
+    """상장 후 시간. 바이낸스는 _symbols.json 상장시각 기준(받은 데이터 시작이 아니라), 원화는 데이터 첫 봉 기준."""
+    ob = (onboard or {}).get(tk)
+    if ob:
+        t0 = pd.Timestamp(int(ob), unit='ms', tz='UTC').tz_convert('Asia/Seoul').tz_localize(None)
+        return np.asarray((d.index - t0) / pd.Timedelta(hours=1), dtype=float)
+    return np.arange(len(d), dtype=float)
+
+
+def feature_table(frames, universe_top=None, onboard=None):
     keep = None
     if universe_top:
         # 매시 24h 거래대금 상위 N(상장 7일 이상)을 먼저 정해서, 그 행만 피처를 남긴다(500종목 메모리 절약)
         V = pd.DataFrame({tk: d['value'].rolling(24, min_periods=1).sum()
-                          .where(np.arange(len(d)) >= max(MIN_AGE_VERDICT_H, 200)) for tk, d in frames.items()})
+                          .where((_age_h(d, tk, onboard) >= MIN_AGE_VERDICT_H) & (np.arange(len(d)) >= 200))
+                          for tk, d in frames.items()})
         keep = V.rank(axis=1, ascending=False, method='first') <= universe_top
         if 'BTC' in keep.columns:
             keep['BTC'] = V['BTC'].notna()
@@ -105,14 +115,15 @@ def feature_table(frames, universe_top=None):
                 continue
         f = pm.build_features(d)
         f['ticker'] = tk
-        f['age_h'] = np.arange(len(d), dtype=float)
+        f['age_h'] = _age_h(d, tk, onboard)
+        f['_n'] = np.arange(len(d), dtype=float)
         f['val24'] = d['value'].rolling(24, min_periods=1).sum()
         f['high'] = d['high']
         f['f24'] = (d['close'].shift(-24) / d['close'] - 1) * 100
         f['f4'] = (d['close'].shift(-4) / d['close'] - 1) * 100
         if keep is not None:
             f = f[mk.values]
-        f = f[f['age_h'] >= 200]
+        f = f[f['_n'] >= 200]
         out.append(f)
     X = pd.concat(out).reset_index()
     X = X.rename(columns={X.columns[0]: 'ts'})
@@ -155,7 +166,7 @@ def walk_forward_predict(T, K, months):
     return pd.concat(parts) if parts else pd.DataFrame()
 
 
-def simulate(P, frames, liq_block=True):
+def simulate(P, frames, liq_block=True, entry_ok=None):
     """P: 예측 붙은 유니버스 행. 판정 → 자동진입 → 48h 정리 시뮬. 거래 목록 반환."""
     P = P.sort_values(['ts', 'ticker'])
     raw = (P['exp4'] < EXP4_MAX) & (P['p_up'] < PUP_MAX)
@@ -191,6 +202,8 @@ def simulate(P, frames, liq_block=True):
                 continue
             # 자동진입
             if r.age_h < MIN_AGE_AUTO_H:
+                continue
+            if entry_ok is not None and not entry_ok(r):
                 continue
             if ts < hold_until.get(tk, ts - pd.Timedelta(hours=1)):
                 continue
@@ -241,7 +254,16 @@ def main():
     log(f"원화 {len(kf)}종목 {len(K):,}행")
     log("바이낸스 history 읽는 중")
     bf = load_dir(a.bin_dir, 'binance_*_1h.csv')
-    B = feature_table(bf, universe_top=TOP_N)
+    onboard = {}
+    try:
+        import json
+        with open(os.path.join(a.bin_dir, '_symbols.json'), encoding='utf-8') as fp:
+            for sym, m in json.load(fp).items():
+                if m.get('onboard'):
+                    onboard[m['coin']] = m['onboard']
+    except Exception as e:
+        log(f"_symbols.json 못 읽음(상장일 = 데이터 시작으로 계산): {e}")
+    B = feature_table(bf, universe_top=TOP_N, onboard=onboard)
     log(f"바이낸스 {len(bf)}종목, 유니버스 행 {len(B):,}")
     KU = feature_table(kf, universe_top=TOP_N)
 
@@ -251,6 +273,9 @@ def main():
     for nm, P, fr in [('binance', PB, bf), ('krw', PK, kf)]:
         res[nm] = simulate(P, fr, liq_block=True)
         res[nm + '_noblock'] = simulate(P, fr, liq_block=False)
+        res[nm + '_atr3'] = simulate(P, fr, entry_ok=lambda r: r.atr_pct < 3)
+        res[nm + '_r30'] = simulate(P, fr, entry_ok=lambda r: r.r168 < 30)
+        res[nm + '_both'] = simulate(P, fr, entry_ok=lambda r: r.atr_pct < 3 and r.r168 < 30)
 
     os.makedirs(REPORT_DIR, exist_ok=True)
     allt = pd.concat([v.assign(src=k) for k, v in res.items() if not v.empty])
@@ -266,7 +291,16 @@ def main():
              summarize(res['binance'], '바이낸스 (청산 48h 차단)'),
              summarize(res['binance_noblock'], '바이낸스 (차단 없음)'),
              summarize(res['krw'], '원화 history (청산 48h 차단)'),
-             summarize(res['krw_noblock'], '원화 history (차단 없음)'), ""]
+             summarize(res['krw_noblock'], '원화 history (차단 없음)'), "",
+             "### 진입 필터 비교 (청산 48h 차단 포함)", "",
+             "| 데이터 | 진입 | 승률 | 건당 ROI | 청산 | $손익 | 최악월 | 월 진입 |",
+             "|---|---|---|---|---|---|---|---|",
+             summarize(res['binance_atr3'], '바이낸스 ATR<3%'),
+             summarize(res['binance_r30'], '바이낸스 7일<+30%'),
+             summarize(res['binance_both'], '바이낸스 ATR<3% & 7일<+30%'),
+             summarize(res['krw_atr3'], '원화 ATR<3%'),
+             summarize(res['krw_r30'], '원화 7일<+30%'),
+             summarize(res['krw_both'], '원화 ATR<3% & 7일<+30%'), ""]
     if not tb.empty:
         lines += ["## 바이낸스 월별", "", "| 월 | 진입 | 청산 | $손익 |", "|---|---|---|---|"]
         for m, g in tb.groupby(tb['ts'].dt.to_period('M')):
