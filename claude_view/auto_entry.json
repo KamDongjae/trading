@@ -1,0 +1,1 @@
+{"on": true, "force": false, "usd": 30.0, "lev": 3, "amt_mode": "rule", "pct": 4.0, "rule": "if (start_seed < current_seed) {\n    position_size = int(current_seed * 0.03);\n} else {\n    position_size = int(start_seed * 0.03);\n}", "start_seed": 1000.0, "hold_h": 48.0, "skip_bear_long": true, "strong_x2": true}
