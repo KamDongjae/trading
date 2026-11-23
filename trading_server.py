@@ -4232,6 +4232,21 @@ def _universe_stats_upbit(ticker):
         return None
 
 
+BITHUMB_V1_WEEKS_URL = "https://api.bithumb.com/v1/candles/weeks"
+
+
+def _bithumb_age_weeks(ticker):
+    """빗썸 v1 주봉 개수×7 = 대략 상장 일수(최대 1400일). 실패하면 0."""
+    try:
+        time.sleep(0.1)
+        d = requests.get(BITHUMB_V1_WEEKS_URL, params={"market": f"KRW-{ticker}", "count": 200}, timeout=10).json()
+        if isinstance(d, list):
+            return len(d) * 7
+    except Exception:
+        pass
+    return 0
+
+
 def _universe_stats_bithumb(ticker):
     """빗썸 24h봉 → (상장일수, 어제까지 30일 거래대금 중앙값(원, 종가×거래량 근사), 7일 전 종가)."""
     try:
@@ -4241,7 +4256,12 @@ def _universe_stats_bithumb(ticker):
         done = df.iloc[:-1]  # 마지막 = 오늘(진행 중) 봉
         v = (done['close'] * done['volume']).iloc[-30:]
         close7 = float(df['close'].iloc[-8]) if len(df) > 8 else None
-        return len(df), float(v.median()), close7
+        age = len(df)
+        if age >= 200 and UNIVERSE_MIN_AGE_D > 200:
+            # [2026-11-23] 빗썸 public 캔들은 최근 200개까지만 줘서 상장일이 전부 200일로 잡혔음(빗썸 0개 원인)
+            # → v1 주봉(최대 200주)으로 상장 기간을 센다. 실패하면 200 그대로(= 1년 컷에서 빠짐)
+            age = max(age, _bithumb_age_weeks(ticker))
+        return age, float(v.median()), close7
     except Exception:
         return None
 
@@ -4310,6 +4330,13 @@ def build_stable_universe(exchange):
         print(f"[유니버스] {exchange} 조회 부족({len(stats)}/{len(tickers)}) — 이전 목록 유지")
         return None
     elig = {t: s for t, s in stats.items() if s[0] >= UNIVERSE_MIN_AGE_D and t not in warned and s[1] > 0}
+    if len(elig) < 10:  # [2026-11-23] 후보가 거의 없으면(조회·필터 이상 의심) 저장하지 않고 이전 목록 유지
+        n_age = sum(1 for x in stats.values() if x[0] >= UNIVERSE_MIN_AGE_D)
+        n_warn = sum(1 for t in stats if t in warned)
+        ages = sorted((x[0] for x in stats.values()), reverse=True)[:5]
+        print(f"[유니버스] {exchange} 후보 {len(elig)}개뿐 — 저장 안 함, 이전 목록 유지 "
+              f"(조회 {len(stats)}/{len(tickers)}, 상장{UNIVERSE_MIN_AGE_D}일↑ {n_age}, 유의 {n_warn}, 최장 일봉수 {ages})")
+        return None
     ranked = sorted(elig, key=lambda t: elig[t][1], reverse=True)
     rank = {t: i + 1 for i, t in enumerate(ranked)}
     with _universe_lock:
@@ -4378,6 +4405,8 @@ def universe_updater(tickers_ref, exchange):
                 m = build_stable_universe(exchange)
                 if m:
                     tickers_ref[0] = m
+                else:
+                    time.sleep(1800)  # [2026-11-23] 실패하면 30분 뒤 다시(매분 전체 재조회 방지)
         except Exception as e:
             print(f"[유니버스] {exchange} 갱신 실패: {e}")
             time.sleep(600)
