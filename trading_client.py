@@ -63,6 +63,21 @@ AUTO_ENTRY_SKIP_BEAR_LONG = True     # [2026-11-22 수동] 레짐 하락장이�
 AUTO_ENTRY_STRONG_SHORT_EXP4 = -1.0  # [2026-11-22 수동] 숏이고 4h예상(exp4) ≤ 이 값이면 '강한 숏'
 AUTO_ENTRY_STRONG_MULT = 2.0         # 강한 숏 진입 금액 배수(1년 백테스트 +$887→+$1,324)
 AUTO_ENTRY_MIN_LISTING_DAYS = 180    # [2026-11-22 수동, 사용자 요청] 상장 6개월(180일) 미만 코인은 자동진입 안 함(서버 snapshot listing_days 기준, 판정 표시는 서버가 7일 이상만). 0이면 끔
+# [2026-11-23 수동, 사용자 요청] 재진입 가드 — 11/23 10:05 재시작 직후 업비트 첫 스냅샷이 비어 있어(서버 "업비트 0개")
+# 계속 떠 있던 ELSA·PIEVERSE 숏이 '새 신호'로 잡혀 10:06:40에 동시 재진입(둘 다 전날 강제청산된 코인).
+#  1) 판정 기억(_auto_seen)을 파일에 저장해 재시작해도 유지. 같은 코인·같은 방향 판정을 AUTO_RESIGNAL_GAP_H 안에
+#     본 적이 있으면 잠깐 꺼졌다 다시 떠도(빈 스냅샷·서버 워밍업) 새 신호로 안 본다. 빈 스냅샷은 무시.
+#  2) 강제청산된 코인은 같은 방향 AUTO_LIQ_BLOCK_H 동안 자동진입 안 함. 강제청산 기록은 trade_history_usd.csv에서
+#     옮겨 trading 폴더의 liquidations_mock_<기기이름>.json 에 누적 보관(지우지 않음 — '끝난 것만 삭제'로 거래기록을 지워도 남음).
+#     이 파일은 auto_git_push.bat(*.json)로 git에 올라가서 상시 가동 PC의 기록을 다른 기기도 받는다.
+#     기기마다 파일을 따로 써서 git 충돌이 안 나고, 차단 판단은 모든 기기의 liquidations_mock_*.json 을 합쳐서 한다.
+# 되돌리기: AUTO_RESIGNAL_GAP_H=0, AUTO_LIQ_BLOCK_H=0 또는 backups\20261123_reentry_guard\trading_client.py
+AUTO_SEEN_FILE = os.path.join(SCRIPT_DIR, "auto_entry_seen.json")   # 기기별(.gitignore)
+import socket as _socket
+AUTO_LIQ_DIR = _fallback_dir   # trading 폴더(git)
+AUTO_LIQ_FILE = os.path.join(AUTO_LIQ_DIR, "liquidations_mock_%s.json" % re.sub(r'[^A-Za-z0-9_-]', '_', _socket.gethostname() or 'pc'))
+AUTO_RESIGNAL_GAP_H = 6
+AUTO_LIQ_BLOCK_H = 48
 AUTO_POS_FILE = os.path.join(SCRIPT_DIR, "auto_entry_positions.json")  # 자동진입으로 산 포지션(정리 예정 시각)
 # [2026-11-22 수동, 사용자 요청] Claude 보고용 사본 — 1분마다 trading\\claude_view\\ 에 자동진입 기록 복사 + client_status.json
 CLAUDE_VIEW = True
@@ -672,6 +687,8 @@ class TradingClient:
         self._auto_closing = set()
         self._auto_seen = {}       # (거래소, 티커) -> 직전 판정
         self._auto_primed = set()  # 첫 스냅샷을 이미 본 거래소(켤 때 떠 있던 신호는 안 삼)
+        self._auto_last_seen = self._load_auto_seen()  # [2026-11-23] (거래소, 티커, 방향) -> 마지막으로 본 시각(파일 유지)
+        self._auto_liq = self._load_auto_liq()          # [2026-11-23] 강제청산 누적 기록
 
         # 타임프레임(계산 기준 캔들) 전환 버튼 — 테이블 바로 위
         tf_bar = tk.Frame(self.root)
@@ -3003,6 +3020,8 @@ class TradingClient:
         카드에 보이는 판정(확률필터 ON/OFF 설정 반영)을 기준으로 한다.
         [2026-11-22] ex를 주면 그 거래소 기준(보고 있지 않은 거래소 백그라운드 체크용)."""
         ex = ex or self.current_exchange
+        if not data_list:
+            return  # [2026-11-23] 빈 스냅샷(서버 재시작 직후 "0개")으로 기준을 잡지 않음
         cur = {}
         rows_by_t = {}  # [2026-11-22 수동] 바이낸스 선물 여부(liq_risk NOFUT) 확인용
         for row in data_list:
@@ -3015,11 +3034,18 @@ class TradingClient:
         primed = ex in self._auto_primed
         self._auto_primed.add(ex)
         new_signals = []
+        now_ts = time.time()
         for t, v in cur.items():
             prev = self._auto_seen.get((ex, t), "")
             self._auto_seen[(ex, t)] = v
-            if v and v != prev and primed:
+            if not v:
+                continue
+            last = self._auto_last_seen.get((ex, t, v))
+            self._auto_last_seen[(ex, t, v)] = now_ts
+            recent = last is not None and AUTO_RESIGNAL_GAP_H and now_ts - last < AUTO_RESIGNAL_GAP_H * 3600
+            if v != prev and primed and not recent:
                 new_signals.append((t, v))
+        self._save_auto_seen()
         c = self.auto_cfg
         if not new_signals or not c.get('on'):
             return
@@ -3041,6 +3067,11 @@ class TradingClient:
             # [2026-11-22 수동, 사용자 요청] 바이낸스 선물 없는 코인(NOFUT)은 롱·숏 모두 자동진입 안 함
             if "NOFUT" in str(rows_by_t.get(t, {}).get('liq_risk', '') or ''):
                 self._auto_log(ex, t, ptype, "skip", "바이낸스 선물 없음")
+                continue
+            # [2026-11-23 수동, 사용자 요청] 강제청산된 코인은 같은 방향 48h 자동진입 안 함
+            lq = self._liq_block_until(t, ptype)
+            if lq:
+                self._auto_log(ex, t, ptype, "skip", f"강제청산 후 {AUTO_LIQ_BLOCK_H:g}h 차단(~{time.strftime('%m-%d %H:%M', time.localtime(lq))})")
                 continue
             # [2026-11-22 수동, 사용자 요청] 상장 6개월 미만 코인은 자동진입 안 함(수동 진입용 판정은 7일 이상이면 표시)
             ld = rows_by_t.get(t, {}).get('listing_days')
@@ -3120,6 +3151,93 @@ class TradingClient:
             self._cfg(self.auto_entry_status, text=f"{t} 응답 없음(서버 확인)", fg="#e04040")
             return
         self.root.after(500, lambda: self._auto_wait(cmd_id, ex, t, ptype, tries - 1, usd, lev, action))
+
+    # [2026-11-23] 재진입 가드 — 판정 기억·강제청산 기록 저장/조회
+    def _load_auto_seen(self):
+        out = {}
+        try:
+            with open(AUTO_SEEN_FILE, 'r', encoding='utf-8') as f:
+                d = json.load(f)
+            cut = time.time() - max(AUTO_RESIGNAL_GAP_H, 1) * 3600 * 4
+            for k, ts in (d or {}).items():
+                parts = k.split('|')
+                if len(parts) == 3 and float(ts) >= cut:
+                    out[tuple(parts)] = float(ts)
+        except Exception:
+            pass
+        return out
+
+    def _save_auto_seen(self):
+        try:
+            cut = time.time() - max(AUTO_RESIGNAL_GAP_H, 1) * 3600 * 4
+            d = {'|'.join(k): ts for k, ts in self._auto_last_seen.items() if ts >= cut}
+            tmp = AUTO_SEEN_FILE + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(d, f)
+            os.replace(tmp, AUTO_SEEN_FILE)
+        except Exception as e:
+            print(f"자동진입 판정 기억 저장 실패: {e}")
+
+    def _load_auto_liq(self, all_devices=False):
+        """이 기기 기록(쓰기용) 또는 모든 기기 liquidations_mock_*.json 합친 기록(차단 판단용)."""
+        import glob
+        files = glob.glob(os.path.join(AUTO_LIQ_DIR, "liquidations_mock_*.json")) if all_devices else [AUTO_LIQ_FILE]
+        out = []
+        for fp in files:
+            try:
+                with open(fp, 'r', encoding='utf-8') as f:
+                    d = json.load(f)
+                if isinstance(d, list):
+                    out.extend(d)
+            except Exception:
+                pass
+        return out
+
+    def _sync_auto_liq(self):
+        """trade_history_usd.csv의 강제청산 행을 누적 기록으로 옮긴다(이미 있는 건 건너뜀, 기존 기록은 지우지 않음)."""
+        try:
+            # 파일이 git pull로 바뀌었을 수 있으니 매번 다시 읽어 합친다(기존 기록은 절대 안 지움)
+            mine = self._load_auto_liq()
+            have = {(r.get('ticker'), r.get('entry_time'), r.get('exit_time')) for r in mine}
+            mine += [r for r in self._auto_liq if (r.get('ticker'), r.get('entry_time'), r.get('exit_time')) not in have]
+            self._auto_liq = mine
+            known = {(r.get('ticker'), r.get('entry_time'), r.get('exit_time')) for r in self._auto_liq}
+            added = False
+            for h in read_history_csv():
+                if '강제' not in (h.get('type') or ''):
+                    continue
+                key = (h['ticker'], h['entry_time'], h['exit_time'])
+                if key in known:
+                    continue
+                side = 'short' if h.get('direction') in ('숏', 'short', 'SHORT') else 'long'
+                self._auto_liq.append({'ticker': h['ticker'], 'side': side, 'entry_time': h['entry_time'],
+                                       'exit_time': h['exit_time'], 'pnl': h.get('pnl'), 'type': h.get('type'),
+                                       'device': _socket.gethostname()})
+                known.add(key)
+                added = True
+            if added:
+                tmp = AUTO_LIQ_FILE + '.tmp'
+                with open(tmp, 'w', encoding='utf-8') as f:
+                    json.dump(self._auto_liq, f, ensure_ascii=False, indent=1)
+                os.replace(tmp, AUTO_LIQ_FILE)
+        except Exception as e:
+            print(f"강제청산 기록 동기화 실패: {e}")
+
+    def _liq_block_until(self, ticker, side):
+        """이 코인·방향이 최근 강제청산돼 아직 차단 중이면 해제 시각(epoch), 아니면 0."""
+        if not AUTO_LIQ_BLOCK_H:
+            return 0
+        self._sync_auto_liq()
+        until = 0
+        for r in self._load_auto_liq(all_devices=True) + self._auto_liq:
+            if r.get('ticker') != ticker or r.get('side') != side:
+                continue
+            try:
+                ts = time.mktime(time.strptime(str(r.get('exit_time'))[:19], '%Y-%m-%d %H:%M:%S'))
+            except Exception:
+                continue
+            until = max(until, ts + AUTO_LIQ_BLOCK_H * 3600)
+        return until if until > time.time() else 0
 
     def _load_auto_pos(self):
         try:

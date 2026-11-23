@@ -52,7 +52,7 @@ import hashlib
 import threading
 import argparse
 from decimal import Decimal, ROUND_DOWN
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
 import requests
@@ -101,6 +101,15 @@ SIGNAL_REASON_KEYS = ("4h예상", "모델 숏")   # 판정 v2 신호만
 #   강한 숏 건당 ROI 앞 6개월 +11.8%(66건)·뒤 +11.7%(53건) vs 나머지 +1.5~5.8%. 낙폭 -$119 → -$205
 STRONG_SHORT_EXP4 = -1.0
 STRONG_MULT = 2.0
+# [2026-11-23 수동, 사용자 요청] 강제청산 후 재진입 차단 — 모의 클라에서 11/22 강제청산된 ELSA·PIEVERSE를 11/23에 다시 숏 쳐서
+# 또 -63%/-15%. 강제청산된 코인은 같은 방향으로 LIQ_BLOCK_H 동안 자동진입 안 함(수동 주문은 그대로).
+# 강제청산 기록은 live_state.json "liq_records"에 누적 보관(지우지 않음). 시작할 때 live_trades.csv의 강제청산 행도 다시 읽음.
+# '거래소에서 사라짐'은 그 순간 표시가격 기준 증거금 손실이 LIQ_DETECT_PCT% 이상이면 강제청산으로 본다.
+# 되돌리기: LIQ_BLOCK_H = 0 또는 backups\20261123_reentry_guard\live_trader.py
+LIQ_BLOCK_H = 48
+LIQ_DETECT_PCT = 70
+# 강제청산 기록 사본 — trading 폴더 json이라 auto_git_push.bat로 git에 올라감(금액 없이 코인·방향·시각만). 누적만 하고 안 지움.
+LIQ_HISTORY_FILE = os.path.join(SCRIPT_DIR, "liquidations_live.json")
 
 _print_lock = threading.Lock()
 
@@ -419,6 +428,7 @@ class Trader:
             except Exception as e:
                 log(f"⚠️ 상태 파일 읽기 실패: {e}")
         self.seen = set(self.state.get("seen", []))
+        self._seed_liq_records()
         self._last_symbols_load = 0
         if dry and "dry_cash" not in self.state:
             self.state["dry_cash"] = DRY_SEED_USDT
@@ -629,6 +639,9 @@ class Trader:
         symbol = self.to_symbol(ticker)
         if not symbol:
             return skip("바이낸스 USDT 무기한 심볼 없음")
+        lq = self.liq_block_until(symbol, direction)
+        if lq:
+            return skip(f"강제청산 후 {LIQ_BLOCK_H:g}h 차단(~{lq:%m-%d %H:%M})")
         opens = self.open_trades()
         if any(t["symbol"] == symbol for t in opens.values()):
             return skip("이미 이 코인 보유 중(봇)")
@@ -793,7 +806,80 @@ class Trader:
             exit_price = self.bn.mark_price(symbol)
         self._finish(eid, t, exit_price, why)
 
+    # [2026-11-23] 강제청산 기록·차단
+    def _seed_liq_records(self):
+        recs = self.state.setdefault("liq_records", [])
+        known = {r.get("event_id") for r in recs}
+        try:
+            if os.path.exists(TRADES_CSV):
+                with open(TRADES_CSV, encoding="utf-8-sig") as f:
+                    for r in csv.DictReader(f):
+                        if "강제청산" in (r.get("close_reason") or "") and r.get("event_id") not in known:
+                            recs.append({"event_id": r.get("event_id"), "symbol": r.get("symbol"),
+                                         "direction": r.get("direction"), "exit_time": r.get("exit_time"),
+                                         "why": r.get("close_reason")})
+                            known.add(r.get("event_id"))
+            for r in recs:
+                self._liq_history_add(r)
+        except Exception as e:
+            log(f"⚠️ 강제청산 기록 읽기 실패: {e}")
+
+    def _liq_history_load(self):
+        try:
+            with open(LIQ_HISTORY_FILE, encoding="utf-8") as f:
+                d = json.load(f)
+            return d if isinstance(d, list) else []
+        except Exception:
+            return []
+
+    def _liq_history_add(self, rec):
+        """git 기록 파일에 한 줄 추가(다시 읽어서 합친 뒤 저장, 기존 기록은 안 지움)."""
+        try:
+            hist = self._liq_history_load()
+            key = (rec.get("event_id"), rec.get("exit_time"))
+            if key not in {(r.get("event_id"), r.get("exit_time")) for r in hist}:
+                hist.append({k: rec.get(k) for k in ("event_id", "symbol", "direction", "exit_time", "why")})
+                atomic_write_json(LIQ_HISTORY_FILE, hist)
+        except Exception as e:
+            log(f"⚠️ 강제청산 기록 파일 저장 실패: {e}")
+
+    def liq_block_until(self, symbol, direction):
+        if not LIQ_BLOCK_H:
+            return None
+        until = None
+        for r in self.state.get("liq_records", []) + self._liq_history_load():
+            if r.get("symbol") != symbol or r.get("direction") != direction:
+                continue
+            try:
+                u = datetime.strptime(str(r.get("exit_time"))[:19], "%Y-%m-%d %H:%M:%S") + timedelta(hours=LIQ_BLOCK_H)
+            except Exception:
+                continue
+            until = max(until, u) if until else u
+        return until if until and until > datetime.now() else None
+
+    def _is_liquidation(self, t, exit_price, why):
+        if "강제청산" in why:
+            return True
+        if "사라짐" not in why:
+            return False
+        try:
+            mark = exit_price or self.bn.mark_price(t["symbol"])
+            sign = 1 if t["direction"] == "LONG" else -1
+            return (mark / float(t["entry_price"]) - 1) * 100 * sign * float(t["leverage"]) <= -LIQ_DETECT_PCT
+        except Exception:
+            return False
+
     def _finish(self, eid, t, exit_price, why):
+        try:
+            if self._is_liquidation(t, exit_price, why):
+                rec = {"event_id": eid, "symbol": t["symbol"], "direction": t["direction"],
+                       "exit_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "why": why}
+                with self.lock:
+                    self.state.setdefault("liq_records", []).append(rec)
+                self._liq_history_add(rec)
+                log(f"⛔ {t['symbol']} {t['direction']} 강제청산으로 기록 — {LIQ_BLOCK_H:g}h 같은 방향 자동진입 차단")
+        except Exception as e:
+            log(f"⚠️ 강제청산 판정 실패: {e}")
         pnl = ""
         if exit_price:
             sign = 1 if t["direction"] == "LONG" else -1

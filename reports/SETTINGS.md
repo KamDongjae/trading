@@ -110,3 +110,4 @@
 | 11/22 | Claude 보고용 사본 `claude_view/`(서버·클라·live_trader, 1분마다, `CLAUDE_VIEW`), 1회 진입 '현금의 %' 모드(클라 자동진입 `amt_mode/pct`, live_trader `margin_pct`·모의 가상현금 `DRY_SEED_USDT`=1000) (사용자 요청) | backups\20261122_claude_view_pct |
 | 11/22 | 1회 진입 금액 '사용자 정의'(C언어 형식 if/else, sizing_rule.py) — 클라 자동진입 `amt_mode=rule`·live_trader `margin_rule`/live_sizing_rule.txt (사용자 요청) | backups\20261122_sizing_rule |
 | 11/22 | 사용자 정의 current_seed 현금 → 총자산(현금+증거금+평가손익), `cash` 변수 추가 (사용자 요청) | backups\20261122_equity_seed |
+| 11/23 | 재진입 가드(사용자 요청): ① 클라 자동진입 판정 기억을 파일(auto_entry_seen.json, 기기별)로 유지·빈 스냅샷 무시·같은 코인·방향 판정을 6h 안에 봤으면 새 신호 아님(`AUTO_RESIGNAL_GAP_H`) — 11/23 10:05 재시작 직후 ELSA·PIEVERSE 동시 재진입 대응 ② 강제청산된 코인은 같은 방향 48h 자동진입 차단(클라 `AUTO_LIQ_BLOCK_H`, live_trader `LIQ_BLOCK_H`). 강제청산 기록은 trading 폴더 liquidations_mock_<기기>.json / liquidations_live.json 에 누적(git으로 올라감, 안 지움). 위험 플래그 숏 2배안은 백테스트상 수익만 줄어 미적용 | backups\20261123_reentry_guard |
