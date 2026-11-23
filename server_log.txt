@@ -8523,3 +8523,10 @@ C:\Users\K\AppData\Local\Programs\Python\Python313\Lib\site-packages\numpy\lib\_
 ✅ 펀딩레이트/가격 905개 갱신
 ✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
 ✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+[09:08:05] 서버 가동 | 빗썸 40개(컷50/하락장) | 업비트 40개(컷45/고변동성) | 잔고 $555.39 | 포지션 11개
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
