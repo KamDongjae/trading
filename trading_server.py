@@ -3814,6 +3814,15 @@ def _pm_ticker_features(df, ticker=None, exchange='bithumb'):
     except Exception:
         return None
 
+def _regime_of(exchange):
+    """[2026-11-23 사용자 요청] 하락장 롱 대기 등은 그 거래소 자기 레짐으로 판단(빗썸/업비트/바이낸스 각각)."""
+    if exchange == 'upbit':
+        return current_market_regime_upbit
+    if exchange == 'binance':
+        return globals().get('current_market_regime_binance', current_market_regime)
+    return current_market_regime
+
+
 def apply_prob_filter(results, exchange='bithumb'):
     """results 전체에 p_up을 채우고, 확률이 판정 방향과 안 맞으면 판정을 대기로 내린다."""
     try:
@@ -3849,7 +3858,7 @@ def apply_prob_filter(results, exchange='bithumb'):
             r['verdict_raw'], r['verdict_reason_raw'] = '', ''  # [2026-11-22 복구]
         e4 = r.get('exp4')
         if VERDICT_V2 and e4 is not None:
-            reg = r.get('regime') or current_market_regime
+            reg = r.get('regime') or _regime_of(exchange)  # [2026-11-23] 거래소별 자기 레짐(업비트도 빗썸 레짐 말고 업비트 레짐)
             if v == 'LONG':
                 if p < PROB_LONG_MIN:
                     r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) 확률 {p:.2f} 미달"
@@ -3870,7 +3879,7 @@ def apply_prob_filter(results, exchange='bithumb'):
             _short_stop_apply(r, exchange)
             continue
         if v == 'LONG':
-            reg = r.get('regime') or current_market_regime
+            reg = r.get('regime') or _regime_of(exchange)  # [2026-11-23] 거래소별 자기 레짐(업비트도 빗썸 레짐 말고 업비트 레짐)
             if USE_PROB_FILTER and p < PROB_LONG_MIN:
                 r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) 확률 {p:.2f} 미달"
             elif BEAR_LONG_BLOCK and reg == '하락장':

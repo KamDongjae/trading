@@ -25,7 +25,7 @@
 | `SHORT_STOP_PCT` / `SHORT_STOP_WATCH_H` / `SHORT_STOP_BLOCK_H` | 3.0 / 24 / 24 | 판정 후 24h 안에 +3% 역행하면 24h 차단. 1년 검증: 12h 승률 62→65%, 10% 이상 역행 9.4→6.6% | 서버·수집기 재시작하면 차단 기록 초기화 |
 | `SHORT_REQUIRE_FUTURES` | True (⚠ 11/21 21시 덮어쓰기로 서버 코드에서 빠져 있음 — 복구 전까지 미작동) | 숏 판정은 바이낸스 선물 있는 코인만. 선물이 없는 코인(카드에 '선물 미상장', NOFUT)은 숏 판정 대신 "숏후보 바이낸스 선물 없음 대기". 롱 판정은 그대로. 바이낸스 롱숏비율이 안 잡히면 NOFUT로 보므로, 바이낸스 응답이 잠깐 끊기면 그동안 숏이 대기될 수 있음 | False면 예전처럼 모든 코인 숏 |
 | `DROP_NO_PRICE_ON_CLOSE` | True | 청산을 눌렀는데(자동 정리 포함) 가격을 끝내 못 구하면(약 4초 재시도) 포지션을 지움. 증거금은 잔고로 그대로 돌려주고(손익 0), 그 포지션의 진입 기록은 지우고 청산 기록도 안 남김. 서버 로그에 🗑️로 표시 | False면 예전처럼 "가격 없음" 실패 |
-| `BEAR_LONG_BLOCK` | True | 레짐이 하락장이면 롱 판정 대기 | False면 하락장에도 롱 |
+| `BEAR_LONG_BLOCK` | True | 레짐이 하락장이면 롱 판정 대기. 레짐은 거래소별 자기 것(빗썸/업비트/바이낸스 각각, 11/23~ — 전엔 업비트도 빗썸 레짐을 썼음). 클라 자동진입 '하락장 롱 제외'도 그 거래소 레짐 기준 | False면 하락장에도 롱 |
 | `BEAR_LONG_UNLOCK_MKT_R24` | 0.0 | 하락장이라도 40종목 평균 24h 등락이 이 %보다 크면 롱 허용 | 999로 하면 해제 기능 끔 |
 | `USE_PROB_FILTER` | True | 24h 상승확률 필터(롱 p_up≥0.50, 숏 p_up≤0.45) | False면 필터 없이(표시는 유지) |
 | `PROB_LONG_MIN` | 0.55 | 롱 판정 최소 상승확률 (10/30 0.55→0.50 → 11/12 0.55 복귀: 0.50 이후 p_up 0.50~0.55 롱 12h 승률 33%(6건) vs ≥0.55 80%(5건)) | 0.50으로 내리면 롱 판정이 늘어남(10/30~11/11 상태) |
@@ -131,3 +131,4 @@
 | 11/23 | 재진입 가드(사용자 요청): ① 클라 자동진입 판정 기억을 파일(auto_entry_seen.json, 기기별)로 유지·빈 스냅샷 무시·같은 코인·방향 판정을 6h 안에 봤으면 새 신호 아님(`AUTO_RESIGNAL_GAP_H`) — 11/23 10:05 재시작 직후 ELSA·PIEVERSE 동시 재진입 대응 ② 강제청산된 코인은 같은 방향 48h 자동진입 차단(클라 `AUTO_LIQ_BLOCK_H`, live_trader `LIQ_BLOCK_H`). 강제청산 기록은 trading 폴더 liquidations_mock_<기기>.json / liquidations_live.json 에 누적(git으로 올라감, 안 지움). 위험 플래그 숏 2배안은 백테스트상 수익만 줄어 미적용 | backups\20261123_reentry_guard |
 | 11/23 | 바이낸스 탭: `BINANCE_ENABLED`·`BINANCE_UNIVERSE`='krw'·`BINANCE_PROB_PROFILE`='krw'(서버), 수집기 바이낸스 기록·`BINANCE_MODEL_JOBS`=False, 클라 거래소 토글 3개, prob_model 바이낸스 모델 경로, live_trader `SIGNAL_SOURCES`=("binance",) (사용자 요청) | backups\20261123_binance_tab |
 | 11/23 | 서버 원격 재시작/종료 명령 `restart`/`shutdown`(`SERVER_RESTART_EXIT_CODE`=75, 사용자 요청) | backups\20261123_binance_tab (바이낸스 탭 이전 원본) |
+| 11/23 | 판정 하락장 롱 대기를 거래소별 자기 레짐으로(`_regime_of`, 업비트가 빗썸 레짐을 쓰던 것 수정 — 사용자: 시뮬 단계라 세 거래소 다 자기 레짐으로 두고 예외 케이스를 잡아 개선) | backups\20261123_regime_per_exchange |

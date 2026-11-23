@@ -1,0 +1,7 @@
+[2026-11-23 19:54:49] restart start
+found server pid 24616: python  trading_server.py 
+backup C:\Users\K\Desktop\trading\backups\20261123_binance_tab\simulation_data_usd_before_restart.csv (20 lines)
+killed pid 24616
+data file ok (20 lines)
+run_server.bat will restart the server in about 30s
+[2026-11-23 19:54:52] restart done

@@ -8,3 +8,4 @@
 주문용 클라이언트 시작 | 데이터 폴더: /storage/emulated/0/Documents
 [2026-11-23 19:38:06.49] client exited normally, no restart 
 [2026-11-23 19:38:54.58] client start 
+주문용 클라이언트 시작 | 데이터 폴더: /storage/emulated/0/Documents
