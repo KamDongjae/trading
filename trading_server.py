@@ -5820,6 +5820,10 @@ def process_commands():
                 ok, msg = srv_set_report_dir(raw_ticker)
             elif action == 'get_candles':
                 ok, msg = srv_get_candles(ticker, interval=ptype, exchange=exchange)
+            elif action in ('restart', 'shutdown'):  # [2026-11-23 사용자 요청] 원격 재시작/종료
+                _exit_request[0] = SERVER_RESTART_EXIT_CODE if action == 'restart' else 0
+                ok, msg = True, ("서버 재시작 — 저장 후 종료, run_server.bat가 30초 뒤 다시 켬" if action == 'restart'
+                                 else "서버 종료 — 저장 후 종료(다시 안 켬)")
             else:
                 ok, msg = False, f"알 수 없는 명령: {action}"
             append_result(cmd_id, 'ok' if ok else 'fail', msg)
@@ -5830,6 +5834,32 @@ def process_commands():
             try: os.remove(path)
             except Exception: pass
 
+# [2026-11-23 사용자 요청] 원격 재시작/종료 명령(server_cmds 에 action 'restart' / 'shutdown').
+#  restart = 잔고·포지션 저장 후 종료코드 SERVER_RESTART_EXIT_CODE(0이 아님) → run_server.bat가 '비정상 종료'로 보고 30초 뒤 새 코드로 다시 켬
+#  shutdown = 저장 후 종료코드 0 → bat도 끝남(다시 켜려면 run_server.bat 실행). bat 없이 직접 켠 서버는 둘 다 그냥 꺼짐
+SERVER_RESTART_EXIT_CODE = 75
+_exit_request = [None]
+
+
+def _do_exit_request():
+    code = _exit_request[0]
+    if code is None:
+        return
+    try:
+        save_to_csv()
+        write_account_snapshot()
+    except Exception as e:
+        print(f"종료 전 저장 실패: {e}")
+    try:
+        lp = os.path.join(SCRIPT_DIR, "trading_server.lock")
+        if os.path.exists(lp):
+            os.remove(lp)
+    except Exception:
+        pass
+    print(f"[{datetime.now():%H:%M:%S}] 원격 {'재시작' if code else '종료'} 명령으로 서버 종료(코드 {code})", flush=True)
+    os._exit(code)
+
+
 def account_loop():
     """1초 주기: 명령 처리 → 강제청산 감시 → 계좌 스냅샷 갱신"""
     last_save = time.time()
@@ -5837,6 +5867,7 @@ def account_loop():
     while running:
         try:
             process_commands()
+            _do_exit_request()
             check_forced_liquidation()
             write_account_snapshot()
             if time.time() - last_save >= 60:

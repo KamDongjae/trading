@@ -65,6 +65,7 @@
 | `BINANCE_ENABLED` | True | 바이낸스 탭 수집·채점 | False면 끔(서버·수집기) |
 | `BINANCE_UNIVERSE` | 'krw' | 대상 코인. 'krw' = 원화 거래소 코인(history/ 폴더 = 빗썸·업비트 감시 코인) 중 바이낸스 선물 있는 것. '30d' = 상장 `BINANCE_MIN_AGE_D`일↑ 중 30일 거래대금 상위 `BINANCE_TOP_N`, '24h' = 24h 거래대금 상위 | 'krw'가 2차 백테스트 통과(아래) |
 | `BINANCE_TOP_N` / `BINANCE_MIN_AGE_D` | 40 / 0 | '30d'·'24h'일 때만 씀 | |
+| `SERVER_RESTART_EXIT_CODE` | 75 | (11/23) `server_cmds`에 `restart` 명령이 오면 저장 후 이 코드로 종료 → run_server.bat가 30초 뒤 새 코드로 다시 켬(Claude가 원격으로 재시작할 때 씀). `shutdown`은 코드 0으로 종료(bat도 끝) | bat 없이 직접 켠 서버는 둘 다 그냥 꺼짐 |
 | `BINANCE_PROB_PROFILE` | 'krw' | 판정에 쓸 확률모델. 'krw' = 원화 학습 모델(빗썸·업비트와 같음), 'binance' = `models\prob_model_binance.pkl`(`python prob_model.py binance`로 학습) | 바이낸스 모델은 2차 백테스트에서 청산 22~28%로 탈락 |
 
 **2차 백테스트(reports/binance_backtest2_20261123.md, 25/11~26/11, 바이낸스 1h봉, 숏, $30·3배·48h)**: 원화 거래소 코인·원화 모델 239건 승률 72% 건당 +5.4% 청산 5.9% **+$564**(앞/뒤 6개월 +$294/+$269) ← 채택. 24h 거래대금 상위 40은 원화 모델 -$609(청산 21.2%)·바이낸스 모델 +$1,571(청산 28.4%, 최악월 -$692). 상장 1년↑ 30일 거래대금 상위 40·바이낸스 모델 +$953(청산 23.1%).
@@ -129,3 +130,4 @@
 | 11/22 | 사용자 정의 current_seed 현금 → 총자산(현금+증거금+평가손익), `cash` 변수 추가 (사용자 요청) | backups\20261122_equity_seed |
 | 11/23 | 재진입 가드(사용자 요청): ① 클라 자동진입 판정 기억을 파일(auto_entry_seen.json, 기기별)로 유지·빈 스냅샷 무시·같은 코인·방향 판정을 6h 안에 봤으면 새 신호 아님(`AUTO_RESIGNAL_GAP_H`) — 11/23 10:05 재시작 직후 ELSA·PIEVERSE 동시 재진입 대응 ② 강제청산된 코인은 같은 방향 48h 자동진입 차단(클라 `AUTO_LIQ_BLOCK_H`, live_trader `LIQ_BLOCK_H`). 강제청산 기록은 trading 폴더 liquidations_mock_<기기>.json / liquidations_live.json 에 누적(git으로 올라감, 안 지움). 위험 플래그 숏 2배안은 백테스트상 수익만 줄어 미적용 | backups\20261123_reentry_guard |
 | 11/23 | 바이낸스 탭: `BINANCE_ENABLED`·`BINANCE_UNIVERSE`='krw'·`BINANCE_PROB_PROFILE`='krw'(서버), 수집기 바이낸스 기록·`BINANCE_MODEL_JOBS`=False, 클라 거래소 토글 3개, prob_model 바이낸스 모델 경로, live_trader `SIGNAL_SOURCES`=("binance",) (사용자 요청) | backups\20261123_binance_tab |
+| 11/23 | 서버 원격 재시작/종료 명령 `restart`/`shutdown`(`SERVER_RESTART_EXIT_CODE`=75, 사용자 요청) | backups\20261123_binance_tab (바이낸스 탭 이전 원본) |
