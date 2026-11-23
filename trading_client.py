@@ -599,6 +599,19 @@ class TradingClient:
             b.bind("<ButtonRelease-1>", lambda e, k=key: self.set_pos_sort(k))
             self._pos_sort_btn_widgets[key] = b
         self._highlight_pos_sort_buttons()
+        # [2026-11-23 수동, 사용자 요청] 포지션 탭 안에서 자동진입 / 사용자 진입 구분 탭
+        # 자동 = auto_entry_positions.json(self._auto_pos)에 있는 티커, 나머지는 사용자(수동) 진입
+        self.pos_src_mode = 'all'
+        tk.Label(self.pos_sort_bar, text=" | ", font=("Arial", self.FONT_SMALL)).pack(side="left")
+        self._pos_src_btn_widgets = {}
+        for key in ('all', 'auto', 'manual'):
+            b = tk.Label(self.pos_sort_bar, text=self._pos_src_label(key), font=("Arial", self.FONT_SMALL, "bold"),
+                         bg="#eeeeee", fg="black", relief="raised", bd=1, cursor="hand2", padx=8, pady=2)
+            b.pack(side="left", padx=2)
+            b.bind("<ButtonRelease-1>", lambda e, k=key: self.set_pos_src(k))
+            self._pos_src_btn_widgets[key] = b
+        self._pos_src_counts = {'all': 0, 'auto': 0, 'manual': 0}
+        self._highlight_pos_src_buttons()
 
         # 포지션 패널 (코인/포지션 뷰 전환 버튼이 pack 여부를 제어 — 여기선 만들기만 함)
         self.pos_panel = tk.Frame(self.root, bd=1, relief="groove", bg="#16181d")
@@ -1019,6 +1032,29 @@ class TradingClient:
             else:
                 self._cfg(b, bg="#eeeeee", fg="black", text=self._pos_sort_label(key))
 
+    def _pos_src_label(self, key, n=None):
+        name = {"all": "전체", "auto": "자동진입", "manual": "사용자 진입"}[key]
+        return name if n is None else f"{name} ({n})"
+
+    def _highlight_pos_src_buttons(self):
+        counts = getattr(self, '_pos_src_counts', {})
+        for key, b in self._pos_src_btn_widgets.items():
+            on = key == self.pos_src_mode
+            self._cfg(b, text=self._pos_src_label(key, counts.get(key)),
+                      bg="#1a7abf" if on else "#eeeeee", fg="white" if on else "black")
+
+    def _is_auto_pos(self, ticker):
+        return ticker in (getattr(self, '_auto_pos', None) or {})
+
+    def set_pos_src(self, key):
+        """[2026-11-23] 포지션 탭: 전체 / 자동진입 / 사용자 진입."""
+        if key == self.pos_src_mode:
+            return
+        self.pos_src_mode = key
+        self._last_pos_order = None  # 탭 바꾸면 바로 다시 배치
+        _, _, pos_list = self._account
+        self._render_pos_panel(pos_list)
+
     def _pos_sort_label(self, key):
         return {"name": "이름순", "pnl": "수익률순", None: "기본"}.get(key, "기본")
 
@@ -1329,8 +1365,12 @@ class TradingClient:
                 'trend': trend, 'risk': risk}
 
     def _show_empty_pos_message(self):
-        if not hasattr(self, '_empty_pos_label') or not self._empty_pos_label.winfo_exists():
-            self._empty_pos_label = tk.Label(self.pos_inner, text="보유 중인 포지션이 없습니다",
+        msg = {"auto": "자동진입 포지션이 없습니다", "manual": "사용자 진입 포지션이 없습니다"}.get(
+            getattr(self, 'pos_src_mode', 'all'), "보유 중인 포지션이 없습니다")
+        if hasattr(self, '_empty_pos_label') and self._empty_pos_label.winfo_exists():
+            self._cfg(self._empty_pos_label, text=msg)
+        else:
+            self._empty_pos_label = tk.Label(self.pos_inner, text=msg,
                                               font=("Arial", self.ui_font_base), bg="#16181d", fg="#888888")
             self._empty_pos_label.pack(pady=30)
 
@@ -1340,6 +1380,13 @@ class TradingClient:
 
     def _render_pos_panel(self, pos_list):
         self._cfg(self.btn_view_positions, text=f"포지션 ({len(pos_list)})")
+        n_auto = sum(1 for p in pos_list if self._is_auto_pos(p['ticker']))
+        self._pos_src_counts = {'all': len(pos_list), 'auto': n_auto, 'manual': len(pos_list) - n_auto}
+        self._highlight_pos_src_buttons()
+        if self.pos_src_mode == 'auto':
+            pos_list = [p for p in pos_list if self._is_auto_pos(p['ticker'])]
+        elif self.pos_src_mode == 'manual':
+            pos_list = [p for p in pos_list if not self._is_auto_pos(p['ticker'])]
         pos_list = self._apply_pos_sort(pos_list)
         if not pos_list:
             for t in list(self.pos_cards.keys()):
@@ -1418,6 +1465,8 @@ class TradingClient:
                 card._tag_cross = tk.Label(hdr, font=("Arial", fs_small, "bold"),
                                             bg="#2b2f36", fg=DIM, padx=6, pady=1)
                 card._tag_cross.pack(side="left")
+                card._tag_src = tk.Label(hdr, font=("Arial", fs_small, "bold"), padx=6, pady=1)  # [2026-11-23] 자동/수동
+                card._tag_src.pack(side="left", padx=(4, 0))
                 card._trend_light = tk.Label(hdr, font=("Arial", fs_small, "bold"), bg=DARK_BG, fg=DIM)
                 card._trend_light.pack(side="left", padx=(5, 0))
                 card._warn = tk.Label(hdr, font=("Arial", fs_small, "bold"), bg=DARK_BG, fg="#f6465a")
@@ -1502,6 +1551,10 @@ class TradingClient:
             self._cfg(card._badge, text=side_txt, bg=side_color)
             self._cfg(card._title, text=t)
             self._cfg(card._tag_cross, text=f"Cross {lev}x")
+            if self._is_auto_pos(t):
+                self._cfg(card._tag_src, text="자동", bg="#1f3b57", fg="#7fb8ff")
+            else:
+                self._cfg(card._tag_src, text="수동", bg="#3b2f1f", fg="#f0b90b")
             pred = self.predict_score(t, ptype, p.get('entry_score', 0))  # Predict Score(0~100)
             arrow = {"up": "▲", "down": "▼", "flat": "‒"}[pred['trend']]
             self._cfg(card._trend_light, text=f"P{pred['score']}{arrow}", fg=pred['tier_color'])
