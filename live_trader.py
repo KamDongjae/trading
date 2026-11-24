@@ -110,7 +110,7 @@ STRONG_MULT = 2.0
 # 강제청산 기록은 live_state.json "liq_records"에 누적 보관(지우지 않음). 시작할 때 live_trades.csv의 강제청산 행도 다시 읽음.
 # '거래소에서 사라짐'은 그 순간 표시가격 기준 증거금 손실이 LIQ_DETECT_PCT% 이상이면 강제청산으로 본다.
 # 되돌리기: LIQ_BLOCK_H = 0 또는 backups\20261123_reentry_guard\live_trader.py
-LIQ_BLOCK_H = 48
+LIQ_BLOCK_H = 168  # [2026-11-24 수동, 사용자 요청] 48h→7일(168h). 바이낸스 백테스트(원화 코인): 청산 14→11, $+564→$+613, 최악월 -$69→-$18. 되돌리기: 48 또는 backups\20261124_liq_block_7d\live_trader.py
 LIQ_DETECT_PCT = 70
 # 강제청산 기록 사본 — trading 폴더 json이라 auto_git_push.bat로 git에 올라감(금액 없이 코인·방향·시각만). 누적만 하고 안 지움.
 LIQ_HISTORY_FILE = os.path.join(SCRIPT_DIR, "liquidations_live.json")

@@ -80,7 +80,7 @@ import socket as _socket
 AUTO_LIQ_DIR = _fallback_dir   # trading 폴더(git)
 AUTO_LIQ_FILE = os.path.join(AUTO_LIQ_DIR, "liquidations_mock_%s.json" % re.sub(r'[^A-Za-z0-9_-]', '_', _socket.gethostname() or 'pc'))
 AUTO_RESIGNAL_GAP_H = 6
-AUTO_LIQ_BLOCK_H = 48
+AUTO_LIQ_BLOCK_H = 168  # [2026-11-24 수동, 사용자 요청] 48h→7일(168h). 바이낸스 백테스트(원화 코인): 청산 14→11, $+564→$+613, 최악월 -$69→-$18. 되돌리기: 48 또는 backups\20261124_liq_block_7d\trading_client.py
 AUTO_POS_FILE = os.path.join(SCRIPT_DIR, "auto_entry_positions.json")  # 자동진입으로 산 포지션(정리 예정 시각)
 # [2026-11-22 수동, 사용자 요청] Claude 보고용 사본 — 1분마다 trading\\claude_view\\ 에 자동진입 기록 복사 + client_status.json
 CLAUDE_VIEW = True

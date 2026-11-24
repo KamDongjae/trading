@@ -159,3 +159,4 @@
 | 11/23 | 빗썸·업비트 감시 대상 40개를 안정 유니버스로(`UNIVERSE_MODE`="stable": 상장 1년↑·30일 일별 거래대금 중앙값 상위 40·매일 09:05 갱신·60위 안이면 유지·유의종목 제외·이상치 판정 대기) — 백테스트 청산 20.5%→3.6% (사용자 요청) | backups\20261123_universe |
 | 11/24 | 안정 유니버스 바이낸스 제외 보강: 1000배수 코인(PEPE·SHIB·BONK·XEC 등) 이름 맞춤 + `UNIVERSE_EXCLUDE_STABLE`=True(USDT·USD1 등 제외) + `UNIVERSE_EX_VER`=2(재시작 직후 재계산) (사용자 요청) | backups\20261124_universe_fix |
 | 11/24 | 클라 `LONG_COND_COLOR_OFF`=True(롱 조건식 색칠 끔), `OBSERVE_LONG_*` 관찰 롱 표시, 조건식 변수 `btc_up` 추가 (사용자 요청, 근거 reports\cond_1y_48h_20261124.md). 숏 조건식 v5(`short_conditions_import_v5.txt`, v4에서 59% 1절 제거) | backups\20261124_long_cond |
+| 11/24 | 강제청산 코인 같은 방향 자동진입 차단 48h → 7일(클라 `AUTO_LIQ_BLOCK_H`·live_trader `LIQ_BLOCK_H` = 168). 백테스트 청산 14→11, $+564→$+613, 최악월 -$69→-$18 (사용자 요청) | backups\20261124_liq_block_7d |
