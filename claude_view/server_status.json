@@ -1,26 +1,10 @@
 {
- "ts": "2026-11-24 09:29:17",
- "pid": 25140,
+ "ts": "2026-11-24 09:59:09",
+ "pid": 26940,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 263.92,
- "n_positions": 16,
+ "balance": 369.29,
+ "n_positions": 14,
  "positions": [
-  {
-   "ticker": "VVV",
-   "type": "short",
-   "amount": 60.0,
-   "leverage": 3,
-   "entry_price": 24.975936,
-   "entry_time": "2026-11-22 09:53:13"
-  },
-  {
-   "ticker": "ENSO",
-   "type": "short",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.48666929999999997,
-   "entry_time": "2026-11-22 09:58:19"
-  },
   {
    "ticker": "ORCA",
    "type": "short",
