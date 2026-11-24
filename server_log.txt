@@ -25124,3 +25124,18 @@ C:\Users\K\AppData\Local\Programs\Python\Python313\Lib\site-packages\numpy\lib\_
 ✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
 ✅ 펀딩레이트/가격 905개 갱신
 ✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+[14:08:50] 서버 가동 | 빗썸 40개(컷45/하락장) | 업비트 32개(컷45/하락장) | 바이낸스 28개(상승장) | 잔고 $457.64 | 포지션 11개
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+[14:09:50] 서버 가동 | 빗썸 40개(컷45/하락장) | 업비트 28개(컷45/하락장) | 바이낸스 28개(상승장) | 잔고 $457.64 | 포지션 11개
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 905개 갱신
+✅ 펀딩레이트/가격 905개 갱신
