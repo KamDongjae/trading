@@ -4176,6 +4176,12 @@ UNIVERSE_MOVE7_PCT = 40.0
 # 바이낸스에 있는 코인은 바이낸스 탭이 맡는다. 바이낸스 목록을 못 받아오면 갱신을 미루고 이전 목록 유지.
 # 되돌리기: False
 UNIVERSE_EXCLUDE_BINANCE = True
+# [2026-11-24 수동, 사용자 요청] 바이낸스 제외 보강 — 바이낸스는 PEPE·SHIB·BONK·XEC 등을 '1000PEPE'처럼 배수 붙여 상장해서
+# 이름이 안 맞아 빗썸·업비트 목록에 남았음 → 앞 숫자(1000/1000000/1M) 뗀 이름도 제외. 스테이블코인(USDT·USD1 등)도 원화 목록에서 제외.
+# 되돌리기: UNIVERSE_EXCLUDE_STABLE = False / backups\20261124_universe_fix\trading_server.py
+UNIVERSE_EXCLUDE_STABLE = True
+UNIVERSE_STABLES = {"USDT", "USDC", "USD1", "USDE", "USDS", "FDUSD", "TUSD", "DAI", "PYUSD", "RLUSD", "USDP", "BUSD"}
+UNIVERSE_EX_VER = 2   # 저장된 목록이 이 버전보다 낮으면 바로 다시 계산
 UNIVERSE_FILE = os.path.join(SCRIPT_DIR, "universe_krw.json")
 UPBIT_MARKET_ALL_DETAIL_URL = "https://api.upbit.com/v1/market/all?isDetails=true"
 BITHUMB_MARKET_ALL_DETAIL_URL = "https://api.bithumb.com/v1/market/all?isDetails=true"
@@ -4294,7 +4300,18 @@ def _universe_binance_set():
     except Exception:
         pass
     ob = _binance_meta.get('onboard') or {}
-    return set(ob) if ob else None
+    if not ob:
+        return None
+    out = set()
+    for c in ob:
+        c = str(c).upper()
+        out.add(c)
+        base = re.sub(r'^(1000000|10000|1000|1M)', '', c)  # 1000PEPE → PEPE, 1MBABYDOGE → BABYDOGE
+        if base and base != c:
+            out.add(base)
+    if UNIVERSE_EXCLUDE_STABLE:
+        out |= UNIVERSE_STABLES
+    return out
 
 
 def _universe_all_tickers(exchange):
@@ -4350,7 +4367,7 @@ def build_stable_universe(exchange):
             members.append(t)
     members.sort(key=lambda t: rank[t])
     info = {'date': datetime.now().strftime('%Y-%m-%d'), 'built': datetime.now().strftime('%Y-%m-%d %H:%M'),
-            'ex_bn': bool(UNIVERSE_EXCLUDE_BINANCE),
+            'ex_bn': bool(UNIVERSE_EXCLUDE_BINANCE), 'ex_ver': UNIVERSE_EX_VER,
             'members': members, 'med30': {t: elig[t][1] for t in members},
             'close7': {t: elig[t][2] for t in members if elig[t][2]}}
     added = [t for t in members if t not in prev]
@@ -4391,6 +4408,8 @@ def _universe_due(exchange):
     today = now.strftime('%Y-%m-%d')
     if UNIVERSE_EXCLUDE_BINANCE and u.get('members') and not u.get('ex_bn'):
         return True  # [2026-11-23] 바이낸스 제외 적용 전 목록이면 바로 다시 계산
+    if UNIVERSE_EXCLUDE_BINANCE and u.get('members') and int(u.get('ex_ver') or 1) < UNIVERSE_EX_VER:
+        return True  # [2026-11-24] 1000배수·스테이블 제외 보강 전 목록이면 바로 다시 계산
     if u.get('date') == today:
         return False
     if not u.get('members'):

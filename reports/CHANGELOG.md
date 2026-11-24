@@ -1,5 +1,14 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-11-24 (수동, 11시 KST, 사용자 요청) — 빗썸·업비트 목록 바이낸스 제외 보강(1000배수 코인·스테이블)
+
+- 확인: 아침 리포트의 'SKY·LSK·IOST 자동진입' 건은 코드 오류가 아님 — 바이낸스 제외 코드가 서버에 반영된 건 11/24 02:09 재시작(02:12~02:13 목록 재계산) 이후. 그 전(22:29·01:01·01:04)엔 옛 목록으로 돌던 서버. 재계산 이후엔 빗썸·업비트 쪽 바이낸스 코인 진입 없음
+- 대신 재계산된 목록에서 남은 구멍 2개 발견: ① 바이낸스가 `1000PEPE`·`1000SHIB`·`1000BONK`·`1000XEC`처럼 배수 붙여 상장한 코인은 이름이 안 맞아 빗썸·업비트 목록에 남음(PEPE·SHIB·BONK·XEC) ② 스테이블코인 USDT·USD1이 목록에 들어감
+- **trading_server.py**: `_universe_binance_set` — 바이낸스 코인명에서 앞 숫자(1000000/10000/1000/1M) 뗀 이름도 제외 집합에 추가, `UNIVERSE_EXCLUDE_STABLE`=True면 `UNIVERSE_STABLES`도 제외. 저장 목록에 `ex_ver` 기록, `UNIVERSE_EX_VER`(2)보다 낮으면 `_universe_due`가 바로 재계산
+- 테스트: py_compile 통과, 스텁 import(네트워크 막음)로 import·`_universe_binance_set`(1000PEPE→PEPE, 1INCH 그대로, 스테이블 포함, 조회 실패 시 None=이전 목록 유지)·`_universe_due`(옛 목록 True / 새 목록 False) 확인
+- 서버는 원격 restart 명령으로 재시작 → 1~3분 뒤 `[유니버스] … 갱신` 줄에서 PEPE·SHIB·BONK·XEC·USDT·USD1 빠졌는지 확인. 빈자리는 다음 순위 코인으로 채워짐
+- 되돌리기: backups\20261124_universe_fix\trading_server.py 또는 `UNIVERSE_EXCLUDE_STABLE = False`(1000배수 제외는 되돌리기 파일로)
+
 ## 2026-11-24 (수동, 사용자 요청) — 조건식 1년 재검증: 롱 색칠 끔 + 관찰 롱 표시 + 숏 v5
 
 - 근거: reports\cond_1y_48h_20261124.md (업비트·빗썸 1h봉 2025-11-21~2026-11-21, 42종목, 48h 정리, 같은 종목 48h 쿨다운). 무작위 롱 41.1% / 숏 55.1%
