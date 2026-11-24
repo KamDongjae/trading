@@ -5071,7 +5071,67 @@ def write_account_snapshot():
 CLAUDE_VIEW = True
 CLAUDE_VIEW_SEC = 60
 CLAUDE_VIEW_DIR = os.path.join(_fallback_dir, "claude_view")
-_CLAUDE_VIEW_FILES = ("server_account.csv", "trade_history_usd.csv", "simulation_data_usd.csv")
+_CLAUDE_VIEW_FILES = ("server_account.csv", "trade_history_usd.csv", "simulation_data_usd.csv",
+                      "signal_outcomes.csv")  # [2026-11-24] 업비트 포함 신호 세부점수 기록(청산 분석용)
+
+# [2026-11-24 사용자 요청] 청산 종목 지표 비교용 기록 (claude_view/ 에만 씀, 원본 데이터·매매 로직 영향 없음)
+#   1) entry_snapshots.csv : open 명령이 성공할 때 그 순간 해당 거래소 지표 한 줄
+#   2) upbit_market_log_YYYYMM.csv : 업비트 감시 코인 지표를 5분마다 한 줄씩(빗썸 수집 로그와 같은 용도)
+_SNAP_FIELDS = ['price', 'price_usd', 'long_score', 'short_score', 'prepump_score', 'preshort_score',
+                'rsi', 'rsi_delta', 'vol_z', 'bb_percent', 'cvd', 'cvd_diff', 'funding', 'vol_24h_m',
+                'atr_pct', 'oi_change_pct', 'chg_30m', 'ls_ratio', 'ema20', 'ema60', 'recent_pct',
+                'max_lev', 'liq_risk', 'verdict', 'verdict_reason', 'p_up', 'exp4', 'listing_days']
+UPBIT_VIEW_LOG_SEC = 300
+_last_upbit_view_log = [0.0]
+
+def _snap_cache_for(exchange):
+    if exchange == 'upbit':
+        return score_cache_upbit, current_market_regime_upbit
+    if exchange == 'binance':
+        return score_cache_binance, globals().get('current_market_regime_binance', '')
+    return score_cache, current_market_regime
+
+def _append_view_csv(path, header, rows):
+    new_file = not os.path.exists(path)
+    with open(path, 'a', newline='', encoding='utf-8-sig' if new_file else 'utf-8') as f:
+        w = csv.writer(f)
+        if new_file:
+            w.writerow(header)
+        w.writerows(rows)
+
+def log_entry_snapshot(ticker, ptype, exchange, amount, lev, action, msg):
+    if not CLAUDE_VIEW:
+        return
+    try:
+        cache, regime = _snap_cache_for(exchange)
+        with score_lock:
+            r = dict(cache.get(ticker, {}))
+        row = [datetime.now().strftime('%Y-%m-%d %H:%M:%S'), exchange, ticker, ptype, amount, lev, action,
+               regime, 'Y' if r else 'N'] + [r.get(k, '') if r.get(k) is not None else '' for k in _SNAP_FIELDS] + [msg]
+        os.makedirs(CLAUDE_VIEW_DIR, exist_ok=True)
+        _append_view_csv(os.path.join(CLAUDE_VIEW_DIR, "entry_snapshots.csv"),
+                         ['time', 'exchange', 'ticker', 'side', 'usd', 'leverage', 'action', 'regime', 'has_data']
+                         + _SNAP_FIELDS + ['message'], [row])
+    except Exception as e:
+        print(f"entry_snapshots 기록 실패: {e}")
+
+def write_upbit_view_log():
+    if not CLAUDE_VIEW or time.time() - _last_upbit_view_log[0] < UPBIT_VIEW_LOG_SEC:
+        return
+    _last_upbit_view_log[0] = time.time()
+    try:
+        with score_lock:
+            snap = {t: dict(r) for t, r in score_cache_upbit.items()}
+        if not snap:
+            return
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        rows = [[ts, t, current_market_regime_upbit] + [r.get(k, '') if r.get(k) is not None else '' for k in _SNAP_FIELDS]
+                for t, r in snap.items()]
+        os.makedirs(CLAUDE_VIEW_DIR, exist_ok=True)
+        _append_view_csv(os.path.join(CLAUDE_VIEW_DIR, f"upbit_market_log_{datetime.now():%Y%m}.csv"),
+                         ['timestamp', 'ticker', 'regime'] + _SNAP_FIELDS, rows)
+    except Exception as e:
+        print(f"upbit_market_log 기록 실패: {e}")
 
 def _claude_view_copy(src, dst):
     import shutil
@@ -6147,6 +6207,8 @@ def process_commands():
                 ok, msg = False, f"알 수 없는 명령: {action}"
             append_result(cmd_id, 'ok' if ok else 'fail', msg)
             print(f"[명령] {action} {ticker} → {'OK' if ok else 'FAIL'}: {msg}")
+            if ok and action in ('open', 'open_force', 'open_manual'):  # [2026-11-24] 진입 순간 지표 기록(claude_view)
+                log_entry_snapshot(ticker, ptype, exchange, amount, lev, action, msg)
         except Exception as e:
             append_result(fname, 'fail', f"처리 오류: {e}")
         finally:
@@ -6195,6 +6257,7 @@ def account_loop():
             if time.time() - last_view >= CLAUDE_VIEW_SEC:  # [2026-11-22] Claude 보고용 사본
                 last_view = time.time()
                 write_claude_view()
+                write_upbit_view_log()  # [2026-11-24] 업비트 지표 5분 기록
         except Exception as e:
             print(f"account_loop 오류: {e}")
         time.sleep(1)

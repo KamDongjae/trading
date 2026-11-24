@@ -1,5 +1,15 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-11-24 (수동, 17시 KST, 사용자 요청) — 업비트 지표 기록을 claude_view에 추가(청산 종목 지표 비교용)
+
+- 이유: 강제청산 4건(PIEVERSE·ELSA×2·PROM)이 전부 업비트 판정이라 진입 순간 지표를 비교하려 했는데, 업비트 코인 지표는 원본 폴더 스냅샷(현재값)뿐이고 과거 기록이 trading 폴더에 없음
+- **trading_server.py** (매매·판정 로직 변경 없음, claude_view/ 쓰기만 추가):
+  - `log_entry_snapshot` — open/open_force/open_manual 성공 시 그 순간 해당 거래소 지표 한 줄을 `claude_view/entry_snapshots.csv`에 추가(RSI·ATR·BB·펀딩·OI·거래대금·recent_pct·max_lev·liq_risk·판정·p_up·exp4·listing_days 등)
+  - `write_upbit_view_log` — 업비트 감시 코인 지표를 5분마다 `claude_view/upbit_market_log_YYYYMM.csv`에 추가
+  - `_CLAUDE_VIEW_FILES`에 `signal_outcomes.csv` 추가(빗썸·업비트 신호 세부점수 과거 기록)
+- 테스트: py_compile 통과, 함수 단독 실행으로 두 CSV 생성·헤더·값 확인
+- 되돌리기: backups\20261124_claude_view_upbit\trading_server.py 또는 `CLAUDE_VIEW = False`
+
 ## 2026-11-24 (수동, 11시 KST, 사용자 요청) — 빗썸·업비트 목록 바이낸스 제외 보강(1000배수 코인·스테이블)
 
 - 확인: 아침 리포트의 'SKY·LSK·IOST 자동진입' 건은 코드 오류가 아님 — 바이낸스 제외 코드가 서버에 반영된 건 11/24 02:09 재시작(02:12~02:13 목록 재계산) 이후. 그 전(22:29·01:01·01:04)엔 옛 목록으로 돌던 서버. 재계산 이후엔 빗썸·업비트 쪽 바이낸스 코인 진입 없음
