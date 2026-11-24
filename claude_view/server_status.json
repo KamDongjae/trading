@@ -1,18 +1,10 @@
 {
- "ts": "2026-11-24 11:25:22",
+ "ts": "2026-11-24 11:54:46",
  "pid": 15240,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 399.16,
- "n_positions": 13,
+ "balance": 414.63,
+ "n_positions": 12,
  "positions": [
-  {
-   "ticker": "BLUR",
-   "type": "short",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.006968874,
-   "entry_time": "2026-11-22 11:32:00"
-  },
   {
    "ticker": "IRYS",
    "type": "short",

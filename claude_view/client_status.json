@@ -1,5 +1,5 @@
 {
- "ts": "2026-11-24 11:24:49",
+ "ts": "2026-11-24 11:55:06",
  "pid": 20304,
  "data_dir": "/storage/emulated/0/Documents",
  "auto_entry": {
@@ -15,7 +15,7 @@
   "skip_bear_long": true,
   "strong_x2": true
  },
- "auto_status_text": "",
- "balance": 399.16,
- "n_positions": 13
+ "auto_status_text": "11:32 BLUR 자동정리",
+ "balance": 414.63,
+ "n_positions": 12
 }
