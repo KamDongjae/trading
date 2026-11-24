@@ -1,26 +1,10 @@
 {
- "ts": "2026-11-24 11:54:46",
+ "ts": "2026-11-24 12:30:13",
  "pid": 15240,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 414.63,
- "n_positions": 12,
+ "balance": 487.67,
+ "n_positions": 10,
  "positions": [
-  {
-   "ticker": "IRYS",
-   "type": "short",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.020485589999999998,
-   "entry_time": "2026-11-22 12:15:35"
-  },
-  {
-   "ticker": "MMT",
-   "type": "short",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.20535240000000002,
-   "entry_time": "2026-11-22 12:19:59"
-  },
   {
    "ticker": "PONS",
    "type": "short",
