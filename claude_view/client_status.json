@@ -1,6 +1,6 @@
 {
- "ts": "2026-11-24 14:55:36",
- "pid": 20304,
+ "ts": "2026-11-24 15:30:50",
+ "pid": 23540,
  "data_dir": "/storage/emulated/0/Documents",
  "auto_entry": {
   "on": true,
@@ -15,7 +15,7 @@
   "skip_bear_long": true,
   "strong_x2": true
  },
- "auto_status_text": "13:32 ZIL SHORT 진입",
- "balance": 457.64,
- "n_positions": 11
+ "auto_status_text": "15:25 PONS 자동정리",
+ "balance": 487.26,
+ "n_positions": 10
 }

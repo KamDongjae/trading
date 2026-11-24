@@ -1,18 +1,10 @@
 {
- "ts": "2026-11-24 14:55:52",
- "pid": 15240,
+ "ts": "2026-11-24 15:30:28",
+ "pid": 9348,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 457.64,
- "n_positions": 11,
+ "balance": 487.26,
+ "n_positions": 10,
  "positions": [
-  {
-   "ticker": "PONS",
-   "type": "short",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.0916539,
-   "entry_time": "2026-11-22 15:25:26"
-  },
   {
    "ticker": "BERA",
    "type": "short",
