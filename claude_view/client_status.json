@@ -1,5 +1,5 @@
 {
- "ts": "2026-11-24 09:59:21",
+ "ts": "2026-11-24 10:34:42",
  "pid": 16676,
  "data_dir": "/storage/emulated/0/Documents",
  "auto_entry": {
@@ -15,7 +15,7 @@
   "skip_bear_long": true,
   "strong_x2": true
  },
- "auto_status_text": "09:58 ENSO 자동정리",
- "balance": 369.29,
- "n_positions": 14
+ "auto_status_text": "10:25 ORCA 자동정리",
+ "balance": 399.16,
+ "n_positions": 13
 }

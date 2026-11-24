@@ -1,18 +1,10 @@
 {
- "ts": "2026-11-24 09:59:09",
+ "ts": "2026-11-24 10:34:31",
  "pid": 26940,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 369.29,
- "n_positions": 14,
+ "balance": 399.16,
+ "n_positions": 13,
  "positions": [
-  {
-   "ticker": "ORCA",
-   "type": "short",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 1.182663,
-   "entry_time": "2026-11-22 10:25:17"
-  },
   {
    "ticker": "BLUR",
    "type": "short",
