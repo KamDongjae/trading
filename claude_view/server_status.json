@@ -1,9 +1,9 @@
 {
- "ts": "2026-11-24 13:00:37",
+ "ts": "2026-11-24 13:34:57",
  "pid": 15240,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 487.67,
- "n_positions": 10,
+ "balance": 457.64,
+ "n_positions": 11,
  "positions": [
   {
    "ticker": "PONS",
@@ -84,6 +84,14 @@
    "leverage": 3,
    "entry_price": 0.16211718,
    "entry_time": "2026-11-24 01:04:38"
+  },
+  {
+   "ticker": "ZIL",
+   "type": "short",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.000836106,
+   "entry_time": "2026-11-24 13:32:23"
   }
  ],
  "note": "모의 서버 상태 사본. 실시간 손익은 server_account.csv, 청산 기록은 trade_history_usd.csv"
