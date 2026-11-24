@@ -3202,8 +3202,9 @@ class TradingClient:
                 continue
             # [2026-11-22 수동, 사용자 요청] 상장 6개월 미만 코인은 자동진입 안 함(수동 진입용 판정은 7일 이상이면 표시)
             ld = rows_by_t.get(t, {}).get('listing_days')
-            if AUTO_ENTRY_MIN_LISTING_DAYS and ld is not None and ld < AUTO_ENTRY_MIN_LISTING_DAYS:
-                self._auto_log(ex, t, ptype, "skip", f"상장 {ld}일(6개월 미만)" if ld >= 0 else "상장일 확인 안 됨")
+            # [2026-11-24 수동, 사용자 요청] 보수적으로: 상장일 열이 없거나(None, 재시작 직후 구버전 스냅샷 등) 조회 실패(-1)여도 건너뜀
+            if AUTO_ENTRY_MIN_LISTING_DAYS and (ld is None or ld < AUTO_ENTRY_MIN_LISTING_DAYS):
+                self._auto_log(ex, t, ptype, "skip", f"상장 {ld}일(6개월 미만)" if (ld is not None and ld >= 0) else "상장일 확인 안 됨")
                 continue
             # [2026-11-22 수동, 사용자 요청] 하락장 롱 제외
             row_t = rows_by_t.get(t, {})
