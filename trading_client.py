@@ -1119,7 +1119,25 @@ class TradingClient:
         self.pos_src_mode = key
         self._last_pos_order = None  # 탭 바꾸면 바로 다시 배치
         _, _, pos_list = self._account
+        self._update_invested_pnl_labels(pos_list)  # [2026-11-25] 선택한 탭 기준 투입·수익
         self._render_pos_panel(pos_list)
+
+    def _update_invested_pnl_labels(self, pos_list):
+        """[2026-11-25 수동, 사용자 요청] 위쪽 '투입'·'수익'은 포지션 탭에서 고른 구분(전체/자동진입/사용자 진입)만 합산.
+        현금·총자산·외부통장은 계좌 전체 그대로."""
+        mode = getattr(self, 'pos_src_mode', 'all')
+        if mode == 'auto':
+            sel = [p for p in pos_list if self._is_auto_pos(p['ticker'])]
+            tag = "(자동)"
+        elif mode == 'manual':
+            sel = [p for p in pos_list if not self._is_auto_pos(p['ticker'])]
+            tag = "(사용자)"
+        else:
+            sel, tag = pos_list, ""
+        inv = sum(p['amount'] for p in sel)
+        pnl = sum(p['pnl'] for p in sel)
+        self.invested_label.config(text=f"투입{tag}: ${inv:,.2f}")
+        self.pnl_label.config(text=f"수익{tag}: ${pnl:+,.2f}", fg="red" if pnl < 0 else "green")
 
     def _pos_sort_label(self, key):
         return {"name": "이름순", "pnl": "수익률순", None: "기본"}.get(key, "기본")
@@ -1735,8 +1753,7 @@ class TradingClient:
         total_pnl = sum(p['pnl'] for p in pos_list)
         total = balance + invested + total_pnl
         self.cash_label.config(text=f"현금: ${balance:,.2f}")
-        self.invested_label.config(text=f"투입: ${invested:,.2f}")
-        self.pnl_label.config(text=f"수익: ${total_pnl:+,.2f}", fg="red" if total_pnl < 0 else "green")
+        self._update_invested_pnl_labels(pos_list)  # [2026-11-25] 투입·수익은 포지션 탭 선택(전체/자동진입/사용자 진입) 기준
         self.total_label.config(text=f"총자산: ${total:,.2f}")
         # 외부통장 잔액 + (지금까지 실생활로 빠져나간 돈) - (지금까지 넣은 돈) = 진짜 순수익(트레이딩 성과)
         net_profit = (total + bank_balance) + bank_total_spent - bank_total_deposit
@@ -4057,7 +4074,9 @@ class TradingClient:
             ("포지션 패널", "화면 하단 검은 패널. 한 번에 최대 2개 표시, 나머지는 위아래 드래그로 스크롤. "
                           "카드 탭 → 티커 자동 입력, Close 버튼 → 즉시 청산, "
                           "청산가는 증거금 90% 소진 지점(진입가 × (1∓0.9/배율)) — [2026-07-21] 기본이 "
-                          "격리마진(CROSS_MARGIN_MODE=False)으로 바뀌어서 포지션별로 이 지점에서 개별 청산됨."),
+                          "격리마진(CROSS_MARGIN_MODE=False)으로 바뀌어서 포지션별로 이 지점에서 개별 청산됨. "
+                          "정렬 버튼 옆 '전체 / 자동진입 / 사용자 진입'을 고르면 카드와 함께 위쪽 '투입'·'수익' 금액도 "
+                          "그 포지션만 합쳐서 보여줌(현금·총자산은 계좌 전체)."),
         ]
         for title, desc in helps:
             t = tk.Label(inner, text=f"■ {title}", font=("Arial", fs, "bold"), anchor="w", fg="#1a5fb4")
