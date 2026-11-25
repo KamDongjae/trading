@@ -1,5 +1,5 @@
 {
- "ts": "2026-11-25 21:58:28",
+ "ts": "2026-11-25 22:33:48",
  "pid": 13128,
  "data_dir": "/storage/emulated/0/Documents",
  "auto_entry": {
@@ -15,7 +15,7 @@
   "skip_bear_long": true,
   "strong_x2": true
  },
- "auto_status_text": "",
- "balance": 788.5,
- "n_positions": 5
+ "auto_status_text": "22:29 IOST 자동정리",
+ "balance": 819.24,
+ "n_positions": 4
 }

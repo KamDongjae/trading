@@ -1,18 +1,10 @@
 {
- "ts": "2026-11-25 21:59:02",
+ "ts": "2026-11-25 22:33:30",
  "pid": 3196,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 788.5,
- "n_positions": 5,
+ "balance": 819.24,
+ "n_positions": 4,
  "positions": [
-  {
-   "ticker": "IOST",
-   "type": "short",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.0005889483,
-   "entry_time": "2026-11-23 22:29:36"
-  },
   {
    "ticker": "SKY",
    "type": "short",
