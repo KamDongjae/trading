@@ -3843,6 +3843,10 @@ def apply_prob_filter(results, exchange='bithumb'):
     # 시장 평균(전 종목 단순평균) 4h/24h 등락 — prob_model 학습 피처(mkt_r24)와 같은 정의
     try:
         _f = [r['_pmf'] for r in results if r.get('_pmf')]
+        if exchange == 'binance' and BINANCE_UNIVERSE == 'v3' and _binance_v3.get('ref'):
+            # [2026-11-25] 바이낸스 V3: 시장 4h 평균은 REF(필터 후 상위 200) 기준 — 학습·검증과 같은 정의
+            _ref = _binance_v3['ref']
+            _f = [r['_pmf'] for r in results if r.get('_pmf') and r.get('ticker') in _ref] or _f
         _r4 = [f['r4'] for f in _f if f.get('r4') == f.get('r4') and f.get('r4') is not None]
         _r24 = [f['r24'] for f in _f if f.get('r24') == f.get('r24') and f.get('r24') is not None]
         mkt_r4 = sum(_r4) / len(_r4) if _r4 else None
@@ -4008,12 +4012,48 @@ def _model_guard_apply(results, exchange='bithumb'):
 _apply_prob_filter_unguarded = apply_prob_filter
 
 
+def _binance_v3_guard(results, feats):
+    """[2026-11-25 사용자 요청] 바이낸스 V3 판정 가드(검증 조건과 같게): 상장 2년 미만 · 1h ATR ≥ 2.5 · 7일 ≥ +50% · 확률 없음 → 판정 대기."""
+    for r in results:
+        v, vr = r.get('verdict', ''), r.get('verdict_raw', '')
+        if v not in ('LONG', 'SHORT') and vr not in ('LONG', 'SHORT'):
+            continue
+        t = r.get('ticker')
+        atr, r7 = feats.get(t, (None, None))
+        ld = r.get('listing_days')
+        why = None
+        if r.get('p_up') is None:
+            why = "V3 모델 확률 없음"
+        elif ld is None or ld < 0 or ld < BINANCE_V3_MIN_LISTING_D:
+            why = f"상장 {ld}일({BINANCE_V3_MIN_LISTING_D}일 미만)" if (ld is not None and ld >= 0) else "상장일 확인 안 됨"
+        elif atr is None or atr != atr or atr >= BINANCE_V3_ATR_MAX:
+            why = f"ATR {atr:.2f}%(≥{BINANCE_V3_ATR_MAX:g})" if (atr is not None and atr == atr) else "ATR 계산 안 됨"
+        elif r7 is None or r7 != r7 or r7 >= BINANCE_V3_R7_MAX:
+            why = f"7일 {r7:+.0f}%(≥+{BINANCE_V3_R7_MAX:g}%)" if (r7 is not None and r7 == r7) else "7일 등락 계산 안 됨"
+        if why:
+            tag = v or vr
+            r['verdict'], r['verdict_raw'] = '', ''
+            r['verdict_reason'] = f"{why} 대기({tag}) · {r.get('verdict_reason', '')}"
+            r['verdict_reason_raw'] = ''
+
+
 def apply_prob_filter(results, exchange='bithumb'):  # noqa: F811 — 판정 범위 가드를 덧붙이는 래퍼
+    v3 = exchange == 'binance' and BINANCE_UNIVERSE == 'v3'
+    feats = {}
+    if v3:  # _pmf는 아래에서 지워지므로 미리 ATR·7일 등락(모델 피처와 같은 값)을 챙겨 둠
+        for r in results:
+            f = r.get('_pmf') or {}
+            feats[r.get('ticker')] = (f.get('atr_pct'), f.get('r168'))
     out = _apply_prob_filter_unguarded(results, exchange)
     try:
         _model_guard_apply(results, exchange)
     except Exception as e:
         print(f"판정 범위 가드 실패: {e}")
+    if v3:
+        try:
+            _binance_v3_guard(results, feats)
+        except Exception as e:
+            print(f"바이낸스 V3 판정 가드 실패: {e}")
     return out
 
 
@@ -4108,6 +4148,7 @@ def score_updater(tickers_ref, exchange='bithumb'):
             time.sleep(2)
             continue
         results = []
+        _cycle_t0 = time.time()
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
             futures = {pool.submit(proc_fn, t): t for t in tickers}
             for future in as_completed(futures):
@@ -4157,7 +4198,10 @@ def score_updater(tickers_ref, exchange='bithumb'):
                     check_discord_alerts(results, current_min_score_upbit, exchange='upbit')
                 except Exception as e:
                     print(f"디스코드 알림 체크(업비트) 실패: {e}")
-        time.sleep(SCORE_INTERVAL)
+        if exchange == 'binance':  # [2026-11-25] 바이낸스 탭 300코인 — 사이클 시작 간격 최소 BINANCE_SCORE_MIN_CYCLE_SEC
+            time.sleep(max(SCORE_INTERVAL, BINANCE_SCORE_MIN_CYCLE_SEC - (time.time() - _cycle_t0)))
+        else:
+            time.sleep(SCORE_INTERVAL)
 
 # ============================================================
 # [2026-11-23 수동, 사용자 요청] 감시 대상 40개 선정 기준 교체(빗썸·업비트) — "안정 유니버스"
@@ -4514,11 +4558,32 @@ MARKET_SNAPSHOT_BINANCE = os.path.join(SCRIPT_DIR, "server_market_binance.csv") 
 # ============================================================
 BINANCE_ENABLED = True
 BINANCE_FAPI = "https://fapi.binance.com"
-BINANCE_UNIVERSE = "krw"         # 'krw' = 원화 거래소 코인 중 바이낸스 선물 있는 것 / '30d'·'24h' = 거래대금 상위
-BINANCE_TOP_N = 40                # '30d'·'24h' 일 때 개수
+# [2026-11-25 사용자 요청] 바이낸스 탭 개편(V3) — 'krw'(원화 코인 28개 + 원화 모델) → 'v3'(바이낸스 전체 필터 후 1-300위 + 바이낸스 V3 모델)
+#  검증: reports/binance_backtest11~13_20261125.md (25/11~26/11 1년 워크포워드, 숏 $30·3배·48h)
+#   V3(코인+BTC 특성, 바이낸스 학습) · 필터 후 1-300위 · 상장 2년↑ · ATR<2.5: 327건 승률 78% +$1,063, 앞/뒤 6개월 +$477/+$586,
+#   청산 5.5%(앞 4.7% / 뒤 5.9%), 마이너스 달 0/13, 최대 낙폭 -$114
+#   (예전 원화 모델: 원화 코인 28개 $+347 / 필터 후 81-200위 $+2,354 낙폭 -$898 · 최상위 1-80위는 손해)
+#  - 대상: 매일 09시 필터(밈·스테이블·배수 제외, 상장 1년↑, 30일 내 하루 ±30% 이력 없음, 1h ATR(24h 평균)<3, 7일<+50%)
+#          후 24h 거래대금 상위 BINANCE_TOP_N(300). 시장 4h 평균(숏 반등 대기)은 그중 상위 200(REF) 기준
+#  - 판정 가드(바이낸스 탭만): 상장 BINANCE_V3_MIN_LISTING_D(730)일 미만 · 1h ATR ≥ BINANCE_V3_ATR_MAX(2.5) · 7일 ≥ +50% 면 판정 대기
+#  - 되돌리기: BINANCE_UNIVERSE = "krw", BINANCE_TOP_N = 40, BINANCE_PROB_PROFILE = "krw" (또는 backups\20261125_v3_binance\)
+BINANCE_UNIVERSE = "v3"          # 'v3' = 위 필터 후 상위 N / 'krw' = 원화 거래소 코인 중 바이낸스 선물 있는 것 / '30d'·'24h' = 거래대금 상위
+BINANCE_TOP_N = 300               # 'v3'·'30d'·'24h' 일 때 개수
 BINANCE_MIN_AGE_D = 0           # 상장 후 최소 일수(판정 7일 컷은 따로 있음)
 BINANCE_UNIVERSE_SEC = 600          # 대상 코인 목록 갱신 주기
-BINANCE_PROB_PROFILE = "krw"
+BINANCE_PROB_PROFILE = "binance_v3"
+BINANCE_V3_REF_N = 200            # 시장 4h 평균 기준 묶음(학습 REF와 같은 정의)
+BINANCE_V3_AGE_D = 365            # 대상 필터: 상장 1년↑
+BINANCE_V3_SHOCK_PCT = 30.0       # 대상 필터: 30일 내 하루 ±30% 이력 제외
+BINANCE_V3_UNI_ATR_MAX = 3.0      # 대상 필터: 1h ATR(24h 평균) < 3
+BINANCE_V3_UNI_R7_MAX = 50.0      # 대상 필터: 7일 < +50%
+BINANCE_V3_MIN_LISTING_D = 730    # 판정 가드: 상장 2년↑
+BINANCE_V3_ATR_MAX = 2.5          # 판정 가드: 1h ATR < 2.5
+BINANCE_V3_R7_MAX = 50.0          # 판정 가드: 7일 < +50%
+BINANCE_V3_STABLES = {"USDT", "USDC", "FDUSD", "TUSD", "BUSD", "USD1", "USDP", "DAI", "USDE", "RLUSD", "PYUSD", "XUSD", "EUR", "BFUSD"}
+BINANCE_SCORE_MIN_CYCLE_SEC = 180  # 바이낸스 탭 채점 주기 최소 간격(300코인 × 캔들 요청 — API 한도 보호)
+BINANCE_OI_TTL = 1800             # 바이낸스 탭 OI·롱숏비 캐시(초) — 심볼별 요청이라 300코인이면 한도(5분 1000회) 넘음
+BINANCE_UNIVERSE_FILE = os.path.join(SCRIPT_DIR, "universe_binance.json")
 
 data_queue_binance = _NullQueue()
 price_queue_binance = _NullQueue()
@@ -4529,7 +4594,8 @@ price_history_binance = defaultdict(lambda: deque(maxlen=PRICE_HISTORY_MAXLEN))
 current_min_score_binance = MIN_SCORE
 current_market_regime_binance = 'normal'
 _last_score_time_binance = [""]
-_binance_meta = {'ts': 0.0, 'onboard': {}, 'symbol': {}}   # 코인 -> 상장시각(ms) / 심볼
+_binance_meta = {'ts': 0.0, 'onboard': {}, 'symbol': {}, 'subtype': {}}   # 코인 -> 상장시각(ms) / 심볼 / [2026-11-25] 분류(밈 등)
+_binance_v3 = {'day': None, 'list': [], 'ref': set(), 'built': '', 'running': False}   # [2026-11-25] V3 대상 목록
 _binance_vol30 = {'ts': 0.0, 'val': {}}
 _regime_streak.setdefault('binance', {'candidate': None, 'since': 0.0})
 _discord_alerted.setdefault('binance', set())
@@ -4568,15 +4634,16 @@ def _binance_refresh_meta(force=False):
     info = _binance_get("/fapi/v1/exchangeInfo")
     if not info:
         return
-    onboard, symbol = {}, {}
+    onboard, symbol, subtype = {}, {}, {}
     for s in info.get("symbols", []):
         if s.get("contractType") == "PERPETUAL" and s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING":
             coin = str(s.get("baseAsset", "")).upper()
             if coin:
                 onboard[coin] = int(s.get("onboardDate") or 0)
                 symbol[coin] = s.get("symbol")
+                subtype[coin] = [str(x) for x in (s.get("underlyingSubType") or [])]
     if onboard:
-        _binance_meta.update({'ts': time.time(), 'onboard': onboard, 'symbol': symbol})
+        _binance_meta.update({'ts': time.time(), 'onboard': onboard, 'symbol': symbol, 'subtype': subtype})
 
 
 def _binance_listing_days(ticker):
@@ -4642,6 +4709,139 @@ def _krw_universe():
     return {str(t).upper() for t in known}
 
 
+def _bn_v3_now_day():
+    """KST 지금 시각과 '09시 기준 날짜'(09:00~다음날 09:00 → 그날)."""
+    now_kst = pd.Timestamp(time.time(), unit='s') + pd.Timedelta(hours=9)
+    return now_kst, (now_kst - pd.Timedelta(hours=9)).normalize()
+
+
+def _bn_v3_is_multiplier(c):
+    c = str(c)
+    return c[:1].isdigit() and any(c.startswith(p) for p in ("1000000", "10000", "1000", "100", "1M"))
+
+
+def _bn_v3_coin_stats(coin, day):
+    """그날 08시 1h봉(09시 마감)까지로 24h 거래대금(USDT)·ATR(24h 평균)·7일 등락·30일 급변 이력 계산.
+    prob_model.v3_ref_members / binance_backtest4.daily_metrics 와 같은 정의. 실패하면 None."""
+    d = _binance_get("/fapi/v1/klines", {"symbol": _binance_symbol(coin), "interval": "1h", "limit": 800}, retries=1)
+    if not isinstance(d, list) or len(d) < 200:
+        return None
+    try:
+        df = pd.DataFrame([[k[0], k[2], k[3], k[4], k[7]] for k in d], columns=["t", "high", "low", "close", "qv"])
+        df["t"] = pd.to_datetime(df["t"].astype('int64'), unit="ms") + pd.Timedelta(hours=9)
+        df = df.set_index("t").astype(float)
+        df = df[df.index <= day + pd.Timedelta(hours=8)]
+        if len(df) < 170:
+            return None
+        c = df["close"]
+        tr = pd.concat([df["high"] - df["low"], (df["high"] - c.shift()).abs(), (df["low"] - c.shift()).abs()], axis=1).max(axis=1)
+        atr = float((tr.rolling(14).mean() / c * 100).rolling(24, min_periods=12).mean().iloc[-1])
+        v24 = float(df["qv"].rolling(24, min_periods=12).sum().iloc[-1])
+        r7 = float((c.iloc[-1] / c.iloc[-169] - 1) * 100)
+        dcl = c.resample('1D').last()
+        ret = dcl.pct_change().abs() * 100
+        win = ret[(ret.index >= day - pd.Timedelta(days=30)) & (ret.index <= day - pd.Timedelta(days=1))]
+        shock = bool((win >= BINANCE_V3_SHOCK_PCT).any())
+        return {'atr': atr, 'v24': v24, 'r7': r7, 'shock': shock}
+    except Exception as e:
+        print(f"[바이낸스 V3:{coin}] 대상 계산 실패: {e}")
+        return None
+
+
+def _binance_v3_build():
+    """[2026-11-25] 바이낸스 V3 대상 목록(하루 한 번, 09시 기준). 결과는 BINANCE_UNIVERSE_FILE(서버·수집기 공유)."""
+    lock = BINANCE_UNIVERSE_FILE + ".lock"
+    try:
+        _binance_refresh_meta()
+        now_kst, day = _bn_v3_now_day()
+        meta = _binance_meta
+        cands = []
+        for coin, ob in (meta.get('onboard') or {}).items():
+            if coin in BINANCE_V3_STABLES or _bn_v3_is_multiplier(coin) or not ob:
+                continue
+            if any('meme' in s.lower() for s in (meta.get('subtype') or {}).get(coin, [])):
+                continue
+            obk = pd.Timestamp(int(ob), unit='ms') + pd.Timedelta(hours=9)
+            if (day - obk).days < BINANCE_V3_AGE_D:
+                continue
+            cands.append(coin)
+        t0 = time.time()
+        stats = {}
+        for coin in cands:
+            if not running:
+                return
+            s = _bn_v3_coin_stats(coin, day)
+            if s:
+                stats[coin] = s
+            time.sleep(0.15)
+        elig = [c for c, s in stats.items() if s['v24'] == s['v24'] and s['v24'] > 0 and s['atr'] == s['atr']
+                and s['atr'] < BINANCE_V3_UNI_ATR_MAX and s['r7'] == s['r7'] and s['r7'] < BINANCE_V3_UNI_R7_MAX and not s['shock']]
+        elig.sort(key=lambda c: stats[c]['v24'], reverse=True)
+        lst = elig[:BINANCE_TOP_N]
+        ref = lst[:BINANCE_V3_REF_N]
+        if 'BTC' not in lst and 'BTC' in (meta.get('symbol') or {}):
+            lst.append('BTC')   # BTC 특성(btc_r24 등)용 — 판정 대상이기도 함
+        if len(lst) < min(50, BINANCE_TOP_N // 2):
+            print(f"[바이낸스 V3] 대상 {len(lst)}개뿐(후보 {len(cands)} · 계산 {len(stats)}) — 예전 목록 유지")
+            return
+        built = now_kst.strftime('%Y-%m-%d %H:%M')
+        obj = {'day': str(day.date()), 'list': lst, 'ref': ref, 'built': built,
+               'n_cands': len(cands), 'n_calc': len(stats), 'n_elig': len(elig)}
+        tmp = BINANCE_UNIVERSE_FILE + ".tmp"
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(obj, f, ensure_ascii=False)
+        os.replace(tmp, BINANCE_UNIVERSE_FILE)
+        with data_lock:
+            _binance_v3.update({'day': obj['day'], 'list': lst, 'ref': set(ref), 'built': built})
+        print(f"[바이낸스 V3] 대상 {len(lst)}개(REF {len(ref)}) — 후보 {len(cands)} · 필터 통과 {len(elig)} · {time.time() - t0:.0f}s")
+    except Exception as e:
+        print(f"[바이낸스 V3] 대상 목록 만들기 실패: {e}")
+    finally:
+        _binance_v3['running'] = False
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
+
+
+def _binance_v3_load_file():
+    try:
+        with open(BINANCE_UNIVERSE_FILE, 'r', encoding='utf-8') as f:
+            obj = json.load(f)
+        if obj.get('list'):
+            with data_lock:
+                _binance_v3.update({'day': obj.get('day'), 'list': list(obj['list']), 'ref': set(obj.get('ref') or []),
+                                    'built': obj.get('built', '')})
+    except Exception:
+        pass
+
+
+def _binance_v3_tickers():
+    """오늘(09시 기준) 목록이 있으면 그것, 없으면 백그라운드로 만들기 시작하고 그동안은 예전 목록(없으면 빈 목록)."""
+    _now, day = _bn_v3_now_day()
+    dkey = str(day.date())
+    if _binance_v3['day'] != dkey:
+        _binance_v3_load_file()
+    if _binance_v3['day'] == dkey:
+        return list(_binance_v3['list'])
+    lock = BINANCE_UNIVERSE_FILE + ".lock"
+    try:
+        busy = os.path.exists(lock) and time.time() - os.path.getmtime(lock) < 900   # 다른 프로세스(서버/수집기)가 만드는 중
+    except OSError:
+        busy = False
+    if not _binance_v3['running'] and not busy and time.time() - _binance_v3.get('last_try', 0) > 600:
+        _binance_v3['last_try'] = time.time()
+        try:
+            with open(lock, 'w') as f:
+                f.write(str(os.getpid()))
+        except OSError:
+            pass
+        _binance_v3['running'] = True
+        threading.Thread(target=_binance_v3_build, daemon=True).start()
+        print(f"[바이낸스 V3] {dkey} 대상 목록 만들기 시작(2~4분) — 그동안 예전 목록 {len(_binance_v3['list'])}개")
+    return list(_binance_v3['list'])
+
+
 def get_binance_tickers():
     """대상 코인 목록(BINANCE_UNIVERSE 참고)."""
     _binance_refresh_meta()
@@ -4662,6 +4862,8 @@ def get_binance_tickers():
             continue
     with data_lock:
         _latest_binance_ticker_info.update(info)
+    if BINANCE_UNIVERSE == 'v3':  # [2026-11-25] 바이낸스 V3 대상(하루 한 번 09시 기준, 백그라운드 계산)
+        return [c for c in _binance_v3_tickers() if c in info]
     now_ms = time.time() * 1000
     old = [c for c in info if (now_ms - _binance_meta['onboard'].get(c, now_ms)) / 86400000 >= BINANCE_MIN_AGE_D]
     old.sort(key=lambda c: info[c]['quoteVolume'], reverse=True)
@@ -4684,7 +4886,11 @@ def ticker_updater_binance(tickers_ref):
                 tickers_ref[0] = tickers
         except Exception as e:
             print(f"바이낸스 티커 목록 갱신 실패: {e}")
-        time.sleep(BINANCE_UNIVERSE_SEC)
+        # [2026-11-25] V3: 오늘 목록을 만드는 중(백그라운드)이면 30초마다 확인해서 끝나는 대로 바꿈
+        if BINANCE_UNIVERSE == 'v3' and _binance_v3.get('day') != str(_bn_v3_now_day()[1].date()):
+            time.sleep(30)
+        else:
+            time.sleep(BINANCE_UNIVERSE_SEC)
 
 
 def price_updater_binance(tickers_ref):
@@ -4711,6 +4917,25 @@ def price_updater_binance(tickers_ref):
         except Exception as e:
             print(f"바이낸스 가격 업데이트 실패: {e}")
         time.sleep(PRICE_INTERVAL)
+
+
+def _bn_cached_oi(base):
+    """[2026-11-25] 바이낸스 탭 OI: 캐시가 BINANCE_OI_TTL 안이면 그대로(빗썸·업비트 쪽은 OI_CACHE_TTL 그대로)."""
+    with _oi_lock:
+        hit = _oi_cache.get(base)
+        age = time.time() - _oi_cache_time.get(base, 0)
+    if hit is not None and age < BINANCE_OI_TTL:
+        return hit
+    return get_oi_change_1h(base)
+
+
+def _bn_cached_lsr(base):
+    with _lsr_lock:
+        hit = _lsr_cache.get(base)
+        age = time.time() - _lsr_cache_time.get(base, 0)
+    if base in _lsr_cache and age < BINANCE_OI_TTL:
+        return hit
+    return get_long_short_ratio(base)
 
 
 def _process_ticker_binance_raw(ticker):
@@ -4752,8 +4977,8 @@ def _process_ticker_binance_raw(ticker):
         except Exception:
             pass
         price_usd = current_price
-        oi_change_pct, oi_value = get_oi_change_1h(ticker.upper())
-        ls_ratio = get_long_short_ratio(ticker.upper())
+        oi_change_pct, oi_value = _bn_cached_oi(ticker.upper())   # [2026-11-25] 300코인 — 캐시 BINANCE_OI_TTL
+        ls_ratio = _bn_cached_lsr(ticker.upper())
         oi_notional_usd = (oi_value * price_usd) if (oi_value and price_usd) else None
         try:
             ema_series = df['close'].ewm(span=20, adjust=False).mean()
@@ -4886,6 +5111,8 @@ def _pm_profile(exchange):
     """바이낸스 탭은 바이낸스 전용 모델, 아직 없으면 원화 모델."""
     if exchange != 'binance' or prob_model is None:
         return 'krw'
+    if BINANCE_PROB_PROFILE == 'binance_v3':
+        return 'binance_v3'   # [2026-11-25] V3 모델이 없으면 원화 모델로 대신하지 않음(확률 None → 바이낸스 탭 판정 대기)
     try:
         if getattr(prob_model, 'load_model', None) and prob_model.load_model(BINANCE_PROB_PROFILE):
             return BINANCE_PROB_PROFILE

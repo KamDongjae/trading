@@ -1,0 +1,1 @@
+[prob_model] [바이낸스 V3] 학습 완료 197s rows=1034150 tickers=401 2023-11-27~2026-11-22 {"holdout_days": 60, "holdout_ic": 0.057, "holdout_up_rate_p55": 53.4, "holdout_up_rate_p45": 38.4, "holdout_up_rate_all": 43.1, "holdout_ic_x4": 0.056}

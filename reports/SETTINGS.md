@@ -57,19 +57,24 @@
 | `SHORT_RISK_ATR` | 2.0 | ATR% 이 이상이면 숏 청산위험 플래그(🔥 뱃지) |
 | `SHORT_RISK_EMA_DIST` | 4.0 | 가격이 EMA20보다 이 % 이상 위면 숏 청산위험 플래그 |
 
-## 1-1. 바이낸스 탭 (trading_server.py, 11/23)
+## 1-1. 바이낸스 탭 (trading_server.py, 11/23 · 11/25 개편 V3)
 
-빗썸·업비트와 같은 점수·판정 규칙을 바이낸스 USDT 무기한 선물 캔들로 계산하는 세 번째 탭. 결과는 `server_market_binance.csv`. 모의 체결·손익은 원래대로 바이낸스 USD가.
+바이낸스 USDT 무기한 선물 캔들로 채점하는 세 번째 탭. 결과는 `server_market_binance.csv`. 모의 체결·손익은 원래대로 바이낸스 USD가. **11/25부터 V3**: 대상 = 바이낸스 전체를 필터한 뒤 거래대금 상위 300, 확률모델 = 바이낸스 데이터로 학습한 V3.
 
 | 설정 | 현재값 | 뜻 | 끄기/되돌리기 |
 |---|---|---|---|
 | `BINANCE_ENABLED` | True | 바이낸스 탭 수집·채점 | False면 끔(서버·수집기) |
-| `BINANCE_UNIVERSE` | 'krw' | 대상 코인. 'krw' = 원화 거래소 코인(history/ 폴더 = 빗썸·업비트 감시 코인) 중 바이낸스 선물 있는 것. '30d' = 상장 `BINANCE_MIN_AGE_D`일↑ 중 30일 거래대금 상위 `BINANCE_TOP_N`, '24h' = 24h 거래대금 상위 | 'krw'가 2차 백테스트 통과(아래) |
-| `BINANCE_TOP_N` / `BINANCE_MIN_AGE_D` | 40 / 0 | '30d'·'24h'일 때만 씀 | |
+| `BINANCE_UNIVERSE` | 'v3' | 대상 코인. 'v3' = 매일 09시 필터(밈·스테이블·배수 제외, 상장 `BINANCE_V3_AGE_D`=365일↑, 30일 내 하루 ±`BINANCE_V3_SHOCK_PCT`=30% 이력 없음, 1h ATR(24h 평균) < `BINANCE_V3_UNI_ATR_MAX`=3, 7일 < +`BINANCE_V3_UNI_R7_MAX`=50%) 후 24h 거래대금(08시 1h봉까지) 상위 `BINANCE_TOP_N`. 목록은 `universe_binance.json`(서버·수집기 공유, 하루 한 번 백그라운드 계산 2~4분, 그동안 예전 목록). BTC는 BTC 특성용으로 항상 포함. 'krw' = 원화 거래소 코인 중 바이낸스 선물 있는 것(11/23~11/25) | 'krw'·`BINANCE_TOP_N`=40·`BINANCE_PROB_PROFILE`='krw' 또는 backups\20261125_v3_binance\ |
+| `BINANCE_TOP_N` / `BINANCE_V3_REF_N` | 300 / 200 | 대상 개수 / 시장 4h 평균(숏 반등 대기 `V2_SHORT_BLOCK_MKT_R4`) 계산 기준 묶음(REF = 대상 중 상위 200, V3 학습과 같은 정의) | |
+| `BINANCE_PROB_PROFILE` | 'binance_v3' | 판정 확률모델. 'binance_v3' = `models\prob_model_binance_v3.pkl`/`_lite.json`(아래 4장). 모델이 없으면 원화 모델로 대신하지 않고 판정 대기. 'krw' = 원화 학습 모델 | 'krw' |
+| 판정 가드 `BINANCE_V3_MIN_LISTING_D` / `BINANCE_V3_ATR_MAX` / `BINANCE_V3_R7_MAX` | 730 / 2.5 / 50 | 바이낸스 탭 판정(롱·숏)은 상장 730일↑ · 1h ATR < 2.5% · 7일 < +50%만. 아니면 "상장 N일(730일 미만) 대기" 등. 확률 없으면 "V3 모델 확률 없음 대기". 수동·자동진입·수집기 기록(→ live_trader) 모두 이 판정 기준 | 0/큰 값이면 사실상 끔 |
+| `BINANCE_SCORE_MIN_CYCLE_SEC` | 180 | 바이낸스 탭 채점 사이클 최소 간격(초). 300코인 캔들 요청 — API 한도 보호 | |
+| `BINANCE_OI_TTL` | 1800 | 바이낸스 탭 OI·롱숏비 캐시(초). 심볼별 요청이라 300코인이면 5분 1000회 한도를 넘음(빗썸·업비트 쪽은 `OI_CACHE_TTL`=60 그대로) | |
 | `SERVER_RESTART_EXIT_CODE` | 75 | (11/23) `server_cmds`에 `restart` 명령이 오면 저장 후 이 코드로 종료 → run_server.bat가 30초 뒤 새 코드로 다시 켬(Claude가 원격으로 재시작할 때 씀). `shutdown`은 코드 0으로 종료(bat도 끝) | bat 없이 직접 켠 서버는 둘 다 그냥 꺼짐 |
-| `BINANCE_PROB_PROFILE` | 'krw' | 판정에 쓸 확률모델. 'krw' = 원화 학습 모델(빗썸·업비트와 같음), 'binance' = `models\prob_model_binance.pkl`(`python prob_model.py binance`로 학습) | 바이낸스 모델은 2차 백테스트에서 청산 22~28%로 탈락 |
 
-**2차 백테스트(reports/binance_backtest2_20261123.md, 25/11~26/11, 바이낸스 1h봉, 숏, $30·3배·48h)**: 원화 거래소 코인·원화 모델 239건 승률 72% 건당 +5.4% 청산 5.9% **+$564**(앞/뒤 6개월 +$294/+$269) ← 채택. 24h 거래대금 상위 40은 원화 모델 -$609(청산 21.2%)·바이낸스 모델 +$1,571(청산 28.4%, 최악월 -$692). 상장 1년↑ 30일 거래대금 상위 40·바이낸스 모델 +$953(청산 23.1%).
+**V3 검증(reports/binance_backtest11~13_20261125.md, 25/11~26/11 1년 워크포워드, 숏 $30·3배·48h·강한숏 $60·청산 코인 7일 차단)**: V3 · 필터 후 1-300위 · 상장 2년↑ · ATR<2.5 → **327건 승률 78% 건당 +8.5% +$1,063**, 앞/뒤 6개월 +$477/+$586, 청산 5.5%(앞 4.7% / 뒤 5.9%), 마이너스 달 0/13, 최대 낙폭 -$114. 비교: 원화 모델 · 원화 코인 28개 +$347 / 원화 모델 · 필터 후 81-200위 +$2,354(3,124건, 최대 낙폭 -$898, 1-80위는 손해). 처음 보는 코인(학습에서 뺀 반쪽) 시험도 앞뒤 모두 +. 상장 180일↑이면 청산 9.8%로 탈락 → 상장 2년↑ 가드. 검증에는 `V2_SHORT_RSI_MIN`(RSI≥50) 규칙이 없었음(서버엔 11/25부터 공통 적용).
+
+예전(11/23) 2차 백테스트: 원화 거래소 코인·원화 모델 239건 승률 72% 청산 5.9% +$564.
 
 ## 1-2. 감시 대상 40개 — 안정 유니버스 (trading_server.py, 11/23)
 
@@ -88,7 +93,7 @@
 
 - 업비트 유의종목(market_warning·투자주의 플래그)은 후보에서 뺌. 빗썸은 조회되면 같이 뺌(안 되면 그냥 통과).
 - 갱신 결과는 데이터 폴더 `universe_krw.json`에 저장 → 재시작해도 유지. 첫 계산 전엔 저장된 목록 → 없으면 학습 코인(history/)으로 시작하고 1~3분 뒤 교체. 서버 로그에 `[유니버스] upbit 40개 갱신 … +추가 / -빠짐`.
-- 바이낸스 탭(`BINANCE_UNIVERSE`='krw')은 history/ 기준이라 이 설정과 무관.
+- 바이낸스 탭(`BINANCE_UNIVERSE`='v3')은 바이낸스 전체를 따로 필터하므로 이 설정과 무관.
 
 **백테스트(reports/universe_backtest3_20261123.md, 바이낸스 1h봉 25/11~26/11, 원화 모델, 숏 $30·3배·48h)**: 24h 거래대금 상위 40(매시) 청산 20.5%·$+130·뒤 6개월 -$427·최악월 -$749 → 안정 유니버스 **청산 3.6%·$+340**(앞/뒤 +$199/+$141, 최악월 -$144) ← 채택. 60위 유지 빼면 청산 6.3%, 중앙값→합계 6.7%, 상장 1년→180일 7.6%. ATR<3% 추가는 -$188이라 안 붙임. 업비트·빗썸 전체 과거 데이터가 없어 바이낸스로 대신 검증, 유의종목은 검증 못 함.
 
@@ -103,6 +108,8 @@
 
 바이낸스 전용 모델(11/23, 지금은 안 씀): `BINANCE_HISTORY_DIR`=history_binance, `BINANCE_TRAIN_TOP`=100(매시 24h 거래대금 상위 100만 학습), `BINANCE_TRAIN_DAYS`=1100 → `models\prob_model_binance.pkl`/`_lite.json`. `python prob_model.py binance`로 학습.
 
+**바이낸스 V3 모델(11/25~, 바이낸스 탭이 씀)**: `profile='binance_v3'` → `models\prob_model_binance_v3.pkl`/`_lite.json`. 학습 행 = history_binance 1h봉 중 매일 09시 REF(필터 후 거래대금 상위 `V3_REF_N`=200 — 필터는 바이낸스 탭 대상과 같음, 밈 분류는 `history_binance\_subtypes.json`) 코인, `V3_STEP_H`=4시간마다. 피처 `V3_FEATURES` = 코인 자체 특성(`TICKER_FEATS`) + BTC 24h·72h·168h 등락(시장 평균·순위 특성은 대상 묶음에 따라 값이 바뀌어서 뺌). exp4 목표 = 4h 수익 − 같은 시각 REF 평균. 재학습 `V3_RETRAIN_HOURS`=168(1주, 수집기). 직접 학습: `python prob_model.py binance_v3` 또는 train_binance_v3.bat.
+
 ## 5. 수집기 (data_collector.py)
 
 | 설정 | 현재값 | 뜻 |
@@ -111,6 +118,7 @@
 | `AUTO_PUSH_INTERVAL_MIN` | 30 | GitHub 자동 push 주기(분) |
 | `MODEL_CHECK_INTERVAL_MIN` | 60 | 과거 캔들 다운로드·모델 재학습 필요 여부 확인 주기(분) |
 | `BINANCE_MODEL_JOBS` | False | (11/23) True면 20시간마다 바이낸스 1시간봉 이어받기 + 바이낸스 전용 모델 재학습. 바이낸스 탭 판정은 매 주기 `market_data_log_binance_YYYYMM.csv`·`signal_outcomes_verdict_binance.csv`에 기록(항상) |
+| `BINANCE_V3_MODEL_JOBS` | True | (11/25) 서버 `BINANCE_PROB_PROFILE`='binance_v3'이면 20시간마다 바이낸스 1시간봉 이어받기(history_binance, binance_history_downloader) + V3 모델 1주마다 재학습 |
 | `WATCHDOG_MIN` | 20 | 이 시간(분) 넘게 로그 저장이 없으면 수집기가 스스로 재시작(멈춤 자동 복구). run_collector.bat로 켜면 bat가 다시 띄우고, 직접 켜면 새 창으로 다시 뜸 |
 
 ## 6. 클라이언트 버튼 설정 (기기별)
@@ -163,3 +171,4 @@
 | 11/24 | 클라 `LONG_COND_COLOR_OFF`=True(롱 조건식 색칠 끔), `OBSERVE_LONG_*` 관찰 롱 표시, 조건식 변수 `btc_up` 추가 (사용자 요청, 근거 reports\cond_1y_48h_20261124.md). 숏 조건식 v5(`short_conditions_import_v5.txt`, v4에서 59% 1절 제거) | backups\20261124_long_cond |
 | 11/24 | 강제청산 코인 같은 방향 자동진입 차단 48h → 7일(클라 `AUTO_LIQ_BLOCK_H`·live_trader `LIQ_BLOCK_H` = 168). 백테스트 청산 14→11, $+564→$+613, 최악월 -$69→-$18 (사용자 요청) | backups\20261124_liq_block_7d |
 | 11/25 | `V2_SHORT_RSI_MIN`=50(모델 숏은 RSI≥50만, 서버·수집기·바이낸스 탭 공통), 클라 `AUTO_BEAR_REGIME_EX`="binance"(자동진입 '하락장 롱 제외'를 바이낸스 레짐으로 통일 — 백그라운드 거래소 판단 때 빗썸 레짐이 쓰이던 문제 수정) (사용자 요청) | backups\20261125_short_rsi50_bear_regime |
+| 11/25 | 바이낸스 탭 개편 V3: `BINANCE_UNIVERSE`='v3'(필터 후 거래대금 상위 300)·`BINANCE_PROB_PROFILE`='binance_v3'(바이낸스 학습, 코인+BTC 특성)·판정 가드 상장 730일↑·ATR<2.5·7일<+50%·채점 3분 간격·OI 캐시 30분(서버), V3 모델(prob_model), V3 재학습·1시간봉 이어받기(수집기 `BINANCE_V3_MODEL_JOBS`), 설명 창 문구(클라) (사용자 요청, reports/binance_backtest11~13_20261125.md) | backups\20261125_v3_binance |

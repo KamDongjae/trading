@@ -1,5 +1,18 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-11-26 (수동, 00시 KST, 사용자 요청) — 바이낸스 탭 개편 V3 (대상 필터 후 300개 + 바이낸스 학습 모델)
+
+- 근거: reports/binance_backtest11~13_20261125.md (25/11~26/11 1년 워크포워드, 숏 $30·3배·48h·강한숏 $60·청산 코인 7일 차단)
+  - 원화 모델은 시장·순위 특성이 '대상 코인 묶음' 기준이라 대상을 바꾸면 같은 코인 예측이 달라짐(bt9 vs bt10 같은 조합 +$1,508 vs +$1,252) → 고정 기준 묶음(REF=필터 후 상위 200)으로 계산하고, 시장·순위 특성은 뺀 V3(코인+BTC 특성)가 가장 안정
+  - V3 · 필터 후 1-300위 · 상장 2년↑ · ATR<2.5: 327건 승률 78% +$1,063, 앞/뒤 6개월 +$477/+$586, 청산 5.5%(앞 4.7%/뒤 5.9%), 마이너스 달 0/13, 최대 낙폭 -$114 (원화 모델 81-200위 +$2,354·낙폭 -$898). 처음 보는 코인 교차 시험도 앞뒤 +. 상장 180일↑이면 청산 9.8%로 탈락
+- **prob_model.py**: `profile='binance_v3'` 추가 — `build_dataset_v3`(REF 코인 4시간마다, x4 = REF 평균 대비), `v3_ref_members`(백테스트와 같은 REF 정의, 합성 데이터로 일치 확인), `V3_FEATURES`, 재학습 1주(`V3_RETRAIN_HOURS`), `python prob_model.py binance_v3`
+- **trading_server.py**: `BINANCE_UNIVERSE`='v3'(매일 09시 필터 후 24h 거래대금 상위 `BINANCE_TOP_N`=300, `universe_binance.json` 서버·수집기 공유, 백그라운드 계산), `BINANCE_PROB_PROFILE`='binance_v3'(모델 없으면 원화 모델로 대신하지 않음), 시장 4h 평균은 REF 기준, 판정 가드 `_binance_v3_guard`(상장 730일↑·1h ATR<2.5·7일<+50%, 롱·숏), 채점 최소 간격 180초, OI·롱숏비 캐시 30분(바이낸스 탭만)
+- **data_collector.py**: `BINANCE_V3_MODEL_JOBS`=True — 20시간마다 바이낸스 1시간봉 이어받기 + V3 1주마다 재학습
+- **trading_client.py**: 설명 창 바이낸스 탭 문구만 갱신(자동진입 로직 변경 없음 — 가드는 서버 판정에서)
+- 영향: 수집기의 바이낸스 판정 기록(signal_outcomes_verdict_binance.csv)도 새 대상·모델·가드 기준 → 이 파일을 따라가는 live_trader.py(실전)도 새 기준으로 진입하게 됨(live_trader 코드는 변경 없음)
+- 검증에 없던 것: `V2_SHORT_RSI_MIN`(RSI≥50) 규칙은 서버에 그대로 적용됨, 롱 판정은 V3로 검증 안 함(가드만 같이 적용)
+- 되돌리기: 서버 `BINANCE_UNIVERSE = "krw"`, `BINANCE_TOP_N = 40`, `BINANCE_PROB_PROFILE = "krw"`, 수집기 `BINANCE_V3_MODEL_JOBS = False` 또는 backups\20261125_v3_binance\
+
 ## 2026-11-25 (수동, 15시 KST, 사용자 요청) — 포지션 탭 구분에 따라 투입·수익 금액 표시
 
 - **trading_client.py** `_update_invested_pnl_labels` 추가: 위쪽 '투입'·'수익'이 포지션 탭에서 고른 구분만 합산 — 전체 = 모든 포지션, 자동진입 = "투입(자동)/수익(자동)", 사용자 진입 = "투입(사용자)/수익(사용자)". 탭 누르면 바로 바뀜. 현금·총자산·외부통장은 계좌 전체 그대로

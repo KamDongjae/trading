@@ -28,11 +28,30 @@ BINANCE_MODEL_PATH = os.path.join(MODEL_DIR, "prob_model_binance.pkl")
 BINANCE_LITE_PATH = os.path.join(MODEL_DIR, "prob_model_binance_lite.json")
 BINANCE_TRAIN_TOP = 100      # 학습 행: 매시 24h 거래대금 상위 100(상장 7일↑) — 500종목 전부면 메모리·시간이 너무 큼
 BINANCE_TRAIN_DAYS = 1100    # 최근 이 일수만 학습
+# [2026-11-25 사용자 요청] 바이낸스 V3 모델(profile='binance_v3') — 개편 2단계 검증(reports/binance_backtest11~13_20261125.md):
+#  - 학습 행: 매일 09시 기준 묶음 REF = 필터(밈·스테이블·배수 제외, 상장 1년↑, 30일 내 하루 ±30% 이력 없음, 1h ATR(24h 평균)<3,
+#    7일 상승률<50) 후 24h 거래대금 상위 200 코인, 4시간마다 행
+#  - 피처: 코인 자체 특성 + BTC 특성만(시장 평균·순위 특성은 대상 코인 묶음에 따라 값이 바뀌어서 뺌)
+#  - exp4 목표(x4) = 4h 수익 − 같은 시각 REF 평균 4h 수익
+#  - 1년 워크포워드(25/11~26/11, 대상 필터 후 1-300위, 상장 2년↑·ATR<2.5·3배·48h·숏): 327건 승률 78% +$1,063,
+#    앞/뒤 6개월 +$477/+$586, 청산 5.5%, 마이너스 달 0/13, 최대 낙폭 -$114 (원화 모델 81-200위: 3,124건 +$2,354, 낙폭 -$898)
+BINANCE_V3_MODEL_PATH = os.path.join(MODEL_DIR, "prob_model_binance_v3.pkl")
+BINANCE_V3_LITE_PATH = os.path.join(MODEL_DIR, "prob_model_binance_v3_lite.json")
+V3_REF_N = 200
+V3_ATR_MAX = 3.0
+V3_R7_MAX = 50.0
+V3_AGE_D = 365
+V3_SHOCK_PCT = 30.0
+V3_STEP_H = 4
+V3_RETRAIN_HOURS = 24 * 7    # 1주마다 재학습(검증은 3개월마다 재학습)
+V3_STABLES = {"USDT", "USDC", "FDUSD", "TUSD", "BUSD", "USD1", "USDP", "DAI", "USDE", "RLUSD", "PYUSD", "XUSD", "EUR", "BFUSD"}
 
 
 def _paths(profile='krw'):
     if profile == 'binance':
         return BINANCE_MODEL_PATH, BINANCE_LITE_PATH, BINANCE_HISTORY_DIR
+    if profile == 'binance_v3':
+        return BINANCE_V3_MODEL_PATH, BINANCE_V3_LITE_PATH, BINANCE_HISTORY_DIR
     return MODEL_PATH, LITE_PATH, HISTORY_DIR
 TRAIN_LOG = os.path.join(MODEL_DIR, "train_log.txt")
 HORIZON_H = 24
@@ -46,6 +65,11 @@ TICKER_FEATS = ['rsi', 'rsi_delta', 'bb_percent', 'd_e20', 'd_e60', 'd_e120', 'e
 XS_FEATS = ['mkt_r24', 'mkt_r72', 'breadth', 'btc_r24', 'btc_r72', 'btc_r168', 'reg_c',
             'rk_r24', 'rk_r72', 'rk_r168', 'rk_rsi', 'rk_atr_pct', 'rk_vol_z']
 FEATURES = TICKER_FEATS + XS_FEATS
+V3_FEATURES = TICKER_FEATS + ['btc_r24', 'btc_r72', 'btc_r168']   # [2026-11-25] 바이낸스 V3: 시장·순위 특성 뺌
+
+
+def _features(profile='krw'):
+    return V3_FEATURES if profile == 'binance_v3' else FEATURES
 
 
 def _dwell(b):
@@ -178,6 +202,108 @@ def build_dataset(history_dir=HISTORY_DIR, profile='krw'):
     return X
 
 
+def v3_is_multiplier(c):
+    c = str(c)
+    return c[:1].isdigit() and any(c.startswith(p) for p in ("1000000", "10000", "1000", "100", "1M"))
+
+
+def v3_meta(history_dir=BINANCE_HISTORY_DIR):
+    """history_binance/_symbols.json(상장시각) · _subtypes.json(밈 분류) → (onboard: 코인→KST Timestamp, 밈 코인 집합)."""
+    onboard, meme = {}, set()
+    try:
+        with open(os.path.join(history_dir, '_symbols.json'), encoding='utf-8') as fp:
+            sym = json.load(fp)
+        for m in sym.values():
+            if m.get('onboard'):
+                onboard[m['coin']] = pd.Timestamp(int(m['onboard']), unit='ms') + pd.Timedelta(hours=9)
+    except Exception as e:
+        _log(f"[V3] _symbols.json 읽기 실패: {e}")
+    try:
+        with open(os.path.join(history_dir, '_subtypes.json'), encoding='utf-8') as fp:
+            sub = json.load(fp)
+        meme = {c for c, v in sub.items() if any('meme' in str(x).lower() for x in (v or []))}
+    except Exception as e:
+        _log(f"[V3] _subtypes.json 읽기 실패: {e}")
+    return onboard, meme
+
+
+def v3_ref_members(frames, onboard, meme_set, top_n=V3_REF_N):
+    """매일 09시 REF 목록. 반환: DataFrame(날짜 × 코인, bool). 날짜 d의 목록은 d 09:00 ~ d+1 09:00 에 쓴다.
+    값은 그날 08시 1h봉(09시에 마감)까지의 정보만 사용(binance_backtest4.daily_metrics / backtest8.band_universe 와 같은 정의)."""
+    m24, atr, r7, dc = {}, {}, {}, {}
+    for tk, d in frames.items():
+        c = d['close']
+        tr = pd.concat([d['high'] - d['low'], (d['high'] - c.shift()).abs(), (d['low'] - c.shift()).abs()], axis=1).max(axis=1)
+        a = (tr.rolling(14).mean() / c * 100).rolling(24, min_periods=12).mean()
+        v24 = d['value'].rolling(24, min_periods=12).sum()
+        rr = (c / c.shift(168) - 1) * 100
+        at8 = d.index.hour == 8
+        idx = d.index[at8].normalize()
+        m24[tk] = pd.Series(v24[at8].values, index=idx)
+        atr[tk] = pd.Series(a[at8].values, index=idx)
+        r7[tk] = pd.Series(rr[at8].values, index=idx)
+        dc[tk] = c.resample('1D').last()
+    V24 = pd.DataFrame(m24).sort_index()
+    A = pd.DataFrame(atr).sort_index().reindex(index=V24.index, columns=V24.columns)
+    R7 = pd.DataFrame(r7).sort_index().reindex(index=V24.index, columns=V24.columns)
+    DC = pd.DataFrame(dc).sort_index()
+    days = V24.index
+    shock = (DC.pct_change().abs().mul(100).rolling(30, min_periods=1).max().shift(1) >= V3_SHOCK_PCT)
+    shock = shock.reindex(index=days, columns=V24.columns).fillna(False).astype(bool)
+    age = pd.DataFrame({tk: (days - onboard.get(tk, days[0])).days for tk in V24.columns}, index=days)
+    elig = (age >= V3_AGE_D) & ~shock & V24.notna() & (A < V3_ATR_MAX) & (R7 < V3_R7_MAX)
+    for tk in V24.columns:
+        if tk in V3_STABLES or v3_is_multiplier(tk) or tk in meme_set:
+            elig[tk] = False
+    rank = V24.where(elig).rank(axis=1, ascending=False, method='first')
+    return (rank <= top_n).fillna(False)
+
+
+def build_dataset_v3(history_dir=BINANCE_HISTORY_DIR):
+    """[2026-11-25] V3 학습 데이터: REF 코인 4시간마다 행 + BTC(BTC 특성용). is_ref 열로 학습 행 구분.
+    x4/x24 는 같은 시각 REF 평균 대비. (binance_backtest11.build_ref_table 과 같은 정의)"""
+    frames = _load_history(history_dir, with_value=True)
+    if not frames:
+        return None
+    onboard, meme = v3_meta(history_dir)
+    R = v3_ref_members(frames, onboard, meme)
+    out = []
+    for tk, d in frames.items():
+        mk = np.zeros(len(d), dtype=bool)
+        days = (d.index - pd.Timedelta(hours=9)).normalize()
+        if tk in R.columns:
+            ref_days = R.index[R[tk].values]
+            isref = np.isin(days.values, ref_days.values)
+        else:
+            isref = np.zeros(len(d), dtype=bool)
+        mk = isref | (tk == 'BTC')
+        mk &= (d.index.hour % V3_STEP_H == 0)
+        if not mk.any():
+            continue
+        f = build_features(d)
+        f['ticker'] = tk
+        f['f24'] = (d['close'].shift(-HORIZON_H) / d['close'] - 1) * 100
+        f['f4'] = (d['close'].shift(-4) / d['close'] - 1) * 100
+        f['is_ref'] = isref
+        f = f[mk]
+        for col in TICKER_FEATS + ['p', 'ema60', 'f24', 'f4']:
+            f[col] = f[col].astype('float32')
+        out.append(f)
+    if not out:
+        return None
+    X = pd.concat(out).reset_index()
+    X = X.rename(columns={X.columns[0]: 'ts'})
+    X = X[~X['_stale']]
+    btc = X[X['ticker'] == 'BTC'].set_index('ts')[['r24', 'r72', 'r168']]
+    btc = btc[~btc.index.duplicated()]
+    for col in ['r24', 'r72', 'r168']:
+        X['btc_' + col] = X['ts'].map(btc[col]).astype('float32') if len(btc) else np.nan
+    Rr = X[X['is_ref']]
+    X['x24'] = X['f24'] - X['ts'].map(Rr.groupby('ts')['f24'].mean())
+    X['x4'] = X['f4'] - X['ts'].map(Rr.groupby('ts')['f4'].mean())
+    return X
+
+
 def _new_model():
     from sklearn.ensemble import HistGradientBoostingClassifier
     return HistGradientBoostingClassifier(max_iter=200, learning_rate=0.05, max_leaf_nodes=31,
@@ -211,12 +337,19 @@ def train(history_dir=None, holdout_days=60, profile='krw'):
     except Exception:
         _log("scikit-learn 없음 — 학습 건너뜀")
         return False
-    X = build_dataset(history_dir, profile=profile)
+    FEATURES = _features(profile)  # [2026-11-25] V3는 코인+BTC 특성만(이 함수 안에서만 가림)
+    if profile == 'binance_v3':
+        X = build_dataset_v3(history_dir)
+    else:
+        X = build_dataset(history_dir, profile=profile)
     if X is None or len(X) < 10000:
         _log("history 데이터 부족 — 학습 건너뜀")
         return False
     L = X[X['f24'].notna()]
-    L = L[L['ts'].dt.hour % 2 == 0]
+    if profile == 'binance_v3':
+        L = L[L['is_ref']]   # 학습은 REF 행만(BTC가 REF 밖인 날 행은 BTC 특성용)
+    else:
+        L = L[L['ts'].dt.hour % 2 == 0]
     cut = L['ts'].max() - pd.Timedelta(days=holdout_days)
     tr = L[L['ts'] < cut - pd.Timedelta(days=3)]; te = L[L['ts'] >= cut]
     meta = {}
@@ -258,7 +391,7 @@ def train(history_dir=None, holdout_days=60, profile='krw'):
         export_lite(obj, lite_path)
     except Exception as e:
         _log(f"경량 모델 내보내기 실패: {e}")
-    _log(f"{'[바이낸스] ' if profile == 'binance' else ''}학습 완료 {time.time() - t0:.0f}s rows={len(L)} tickers={obj['tickers']} "
+    _log(f"{ {'binance': '[바이낸스] ', 'binance_v3': '[바이낸스 V3] '}.get(profile, '') }학습 완료 {time.time() - t0:.0f}s rows={len(L)} tickers={obj['tickers']} "
          f"{obj['data_from'][:10]}~{obj['data_to'][:10]} " + json.dumps(meta, ensure_ascii=False))
     return True
 
@@ -272,7 +405,7 @@ def model_age_hours(profile='krw'):
 
 def due(profile='krw'):
     a = model_age_hours(profile)
-    if a is None or a >= RETRAIN_HOURS:
+    if a is None or a >= (V3_RETRAIN_HOURS if profile == 'binance_v3' else RETRAIN_HOURS):
         return True
     try:
         o = load_model(profile)
@@ -470,4 +603,5 @@ def predict(results, key='_pmf', profile='krw'):
 
 if __name__ == '__main__':
     import sys as _sys
-    train(profile='binance' if 'binance' in _sys.argv[1:] else 'krw')
+    _args = _sys.argv[1:]
+    train(profile='binance_v3' if 'binance_v3' in _args else ('binance' if 'binance' in _args else 'krw'))

@@ -404,6 +404,8 @@ def collect_once(tickers):
 # ============================================================
 BINANCE_SIGNAL_LOG_CSV = os.path.join(SCRIPT_DIR, "signal_outcomes_verdict_binance.csv")
 BINANCE_MODEL_JOBS = False   # 바이낸스 1시간봉 이어받기 + 바이낸스 전용 모델 재학습(아래 _maybe_background_jobs)
+# [2026-11-25 사용자 요청] 바이낸스 V3 모델(서버 BINANCE_PROB_PROFILE='binance_v3'): 1시간봉 이어받기(20시간마다) + V3 재학습(1주마다)
+BINANCE_V3_MODEL_JOBS = True
 _bn_state = {"tickers_ref": None, "tracker": None, "regime": {"candidate": None, "since": 0.0}}
 
 
@@ -614,7 +616,8 @@ def _maybe_background_jobs(force=False):
             # 서버 BINANCE_PROB_PROFILE='binance'로 바꿀 때 같이 True로.
             try:
                 import prob_model as pm
-                if BINANCE_MODEL_JOBS and _binance_on() and hasattr(pm, "BINANCE_HISTORY_DIR") and os.path.isdir(pm.BINANCE_HISTORY_DIR):
+                _v3 = BINANCE_V3_MODEL_JOBS and getattr(srv, "BINANCE_PROB_PROFILE", "") == "binance_v3" and hasattr(pm, "build_dataset_v3")
+                if (BINANCE_MODEL_JOBS or _v3) and _binance_on() and hasattr(pm, "BINANCE_HISTORY_DIR") and os.path.isdir(pm.BINANCE_HISTORY_DIR):
                     st_path = os.path.join(pm.BINANCE_HISTORY_DIR, "_status.json")
                     try:
                         age_h = (time.time() - os.path.getmtime(st_path)) / 3600
@@ -624,9 +627,12 @@ def _maybe_background_jobs(force=False):
                         import binance_history_downloader as bhd
                         print("📚 바이낸스 1시간봉 이어받기 시작")
                         bhd.main()
-                    if pm.due('binance') and _ensure_sklearn():
+                    if BINANCE_MODEL_JOBS and pm.due('binance') and _ensure_sklearn():
                         print("🧠 바이낸스 모델 학습 시작")
                         pm.train(profile='binance')
+                    if _v3 and pm.due('binance_v3') and _ensure_sklearn():
+                        print("🧠 바이낸스 V3 모델 학습 시작")
+                        pm.train(profile='binance_v3')
             except Exception as e:
                 print(f"⚠️ 바이낸스 history/모델 작업 실패: {e}")
         finally:
