@@ -80,6 +80,12 @@ import socket as _socket
 AUTO_LIQ_DIR = _fallback_dir   # trading 폴더(git)
 AUTO_LIQ_FILE = os.path.join(AUTO_LIQ_DIR, "liquidations_mock_%s.json" % re.sub(r'[^A-Za-z0-9_-]', '_', _socket.gethostname() or 'pc'))
 AUTO_RESIGNAL_GAP_H = 6
+# [2026-11-25 수동, 사용자 요청] '하락장이면 롱 자동진입 안 함'의 레짐 기준을 바이낸스로 통일.
+#   11/24 12:00 ETH·12:16 HIVE 바이낸스 롱이 '하락장 롱 제외'로 건너뛰어짐 — 그때 서버 바이낸스 레짐은 상승장, 빗썸만 하락장.
+#   원인: 백그라운드 거래소 스냅샷을 읽은 뒤 화면용 레짐(current_regime)을 원래 탭 값으로 되돌린 다음 판단해서 빗썸 레짐을 씀.
+#   "binance" = 모든 거래소 자동진입을 바이낸스 스냅샷 레짐으로 판단, "" = 각 거래소 자기 스냅샷 레짐.
+#   되돌리기: backups\20261125_short_rsi50_bear_regime\trading_client.py
+AUTO_BEAR_REGIME_EX = "binance"
 AUTO_LIQ_BLOCK_H = 168  # [2026-11-24 수동, 사용자 요청] 48h→7일(168h). 바이낸스 백테스트(원화 코인): 청산 14→11, $+564→$+613, 최악월 -$69→-$18. 되돌리기: 48 또는 backups\20261124_liq_block_7d\trading_client.py
 AUTO_POS_FILE = os.path.join(SCRIPT_DIR, "auto_entry_positions.json")  # 자동진입으로 산 포지션(정리 예정 시각)
 # [2026-11-22 수동, 사용자 요청] Claude 보고용 사본 — 1분마다 trading\\claude_view\\ 에 자동진입 기록 복사 + client_status.json
@@ -3142,6 +3148,21 @@ class TradingClient:
             self._auto_bg_mtime[other] = mt
             self._auto_entry_check(res[0], ex=other)
 
+    def _snapshot_regime(self, ex):
+        """[2026-11-25] 그 거래소 스냅샷 CSV의 regime 칸(서버가 쓰는 거래소별 레짐). 못 읽으면 None."""
+        try:
+            path = EXCHANGE_SNAPSHOTS.get(ex)
+            if not path:
+                return None
+            rg = None
+            with open(path, 'r', newline='', encoding='utf-8') as f:
+                for r in csv.DictReader(f):
+                    if r.get('regime'):
+                        rg = r.get('regime')
+            return rg
+        except Exception:
+            return None
+
     def _auto_entry_check(self, data_list, ex=None):
         """판정 롱/숏이 새로 뜬 코인을 $AUTO_ENTRY_USD×AUTO_ENTRY_LEVERAGE로 바로 진입(잔고 무시).
         카드에 보이는 판정(확률필터 ON/OFF 설정 반영)을 기준으로 한다.
@@ -3208,8 +3229,12 @@ class TradingClient:
                 continue
             # [2026-11-22 수동, 사용자 요청] 하락장 롱 제외
             row_t = rows_by_t.get(t, {})
+            # [2026-11-25 수동, 사용자 요청] 레짐은 바이낸스 스냅샷 기준(AUTO_BEAR_REGIME_EX), 못 읽으면 예전처럼
+            bear_rg = None
+            if ptype == 'long':
+                bear_rg = self._snapshot_regime(AUTO_BEAR_REGIME_EX or ex) or row_t.get('regime') or current_regime
             if ptype == 'long' and c.get('skip_bear_long', AUTO_ENTRY_SKIP_BEAR_LONG) \
-                    and (row_t.get('regime') or current_regime) == '하락장':
+                    and bear_rg == '하락장':
                 self._auto_log(ex, t, ptype, "skip", "하락장 롱 제외")
                 continue
             if held.get(t) == ptype:
@@ -3929,7 +3954,7 @@ class TradingClient:
             ("확률필터 ON/OFF 버튼", "ON(기본)이면 서버가 확률모델로 걸러낸 판정을, OFF면 걸러내기 전 원래 판정을 보여줍니다. "
                     "화면 표시만 바뀌고 서버 판정·수집 로그는 그대로입니다. 기기마다 따로 기억됩니다."),
             ("자동진입 버튼", "누르면 설정 창이 뜹니다. '신호 뜨면 자동 구매'를 켜면 판정 롱/숏이 새로 뜰 때마다 "
-                    "정한 증거금·레버리지(기본 $30×3배)로 바로 진입합니다. '하락장이면 롱 자동진입 안 함'(기본 켬)을 켜면 시장 레짐이 하락장일 때 롱은 건너뛰고, '강한 숏 2배'(기본 켬)를 켜면 4h 예상이 -1% 이하인 숏은 금액을 2배로 넣습니다. 켜는 순간 이미 떠 있던 신호는 건너뛰고, "
+                    "정한 증거금·레버리지(기본 $30×3배)로 바로 진입합니다. '하락장이면 롱 자동진입 안 함'(기본 켬)을 켜면 바이낸스 시장 레짐이 하락장일 때 롱은 건너뛰고(빗썸·업비트 판정도 바이낸스 레짐으로 판단), '강한 숏 2배'(기본 켬)를 켜면 4h 예상이 -1% 이하인 숏은 금액을 2배로 넣습니다. 켜는 순간 이미 떠 있던 신호는 건너뛰고, "
                     "같은 코인에 포지션이 있으면 건너뜁니다. 바이낸스 선물에 없는 코인(카드의 '선물 미상장')은 롱·숏 모두 자동진입하지 않습니다. 잔고 제한은 충전된 잔고 안에서만(부족하면 건너뜀), "
                     "잔고 무시는 부족해도 강제로 들어가서 잔고가 마이너스가 될 수 있습니다. 클라이언트가 켜져 있을 때만 "
                     "동작하고, 결과는 버튼 옆과 auto_entry_log.csv에 남습니다. '진입 후 N시간 지나면 자동 정리'(기본 48, 0=안 함)는 "

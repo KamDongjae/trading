@@ -1,6 +1,6 @@
 # Pyramide 설정값 정리
 
-마지막 갱신: 2026-11-24 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
+마지막 갱신: 2026-11-25 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
 
 ## 바꾸는 법
 
@@ -20,6 +20,7 @@
 | `V2_LONG_EXP4_MIN` | 0.2 | 롱 판정에 필요한 최소 4h 예상수익(%) | 높이면 롱 신호 줄고 정확도↑ |
 | `V2_SHORT_EXP4_MAX` | -0.5 | 숏 판정 기준 4h 예상수익(%) 상한 | 더 낮추면(-0.7) 숏 신호 줄고 승률↑ |
 | `V2_SHORT_PUP_MAX` | 0.45 | 숏 판정에 필요한 24h 상승확률 상한 | |
+| `V2_SHORT_RSI_MIN` | 50 | (11/25) 모델 숏은 RSI가 이 값 이상일 때만. 미만이면 "숏후보 RSI xx<50 대기"(이미 많이 빠진 코인 숏 안 함). 14일 학습 12h 승률 86→89%, 10배 청산 14.3→12.7%, 가상 10배·12h +286→+386%(청산 1→0) | 0이면 끔 |
 | `V2_SHORT_BLOCK_MKT_R4` | 1.0 | 40종목 평균 4h 등락이 이 % 이상(반등 중)이면 모델 숏 대기 | 999로 하면 끔 |
 | `USE_SHORT_STOP_BLOCK` | True | 숏 손절 후 차단. 숏 판정이 뜬 뒤 그 코인이 판정 시점 가격보다 일정 % 이상 오르면 그 코인 숏 판정을 일정 시간 막음(같은 코인 반복 손실 방지). 카드엔 "숏 손절차단 ~시각"으로 표시 | False면 끔 |
 | `SHORT_STOP_PCT` / `SHORT_STOP_WATCH_H` / `SHORT_STOP_BLOCK_H` | 3.0 / 24 / 24 | 판정 후 24h 안에 +3% 역행하면 24h 차단. 1년 검증: 12h 승률 62→65%, 10% 이상 역행 9.4→6.6% | 서버·수집기 재시작하면 차단 기록 초기화 |
@@ -122,6 +123,7 @@
 | 순위 탭 | – | 4h 예상수익(exp4) 순 롱/숏 상위 10. 서버가 구버전이면 p_up 순 |
 | 롱 조건식 색칠 끔 (코드 상수) | `trading_client.py` `LONG_COND_COLOR_OFF`=True | 초록 계열(롱) 조건식은 카드 배경을 안 칠함(목록·사용여부는 그대로, 숏 조건식은 그대로). 1년 1h봉 48h 승률 43.7%/49.8% — 끄려면 False (11/24) |
 | 관찰 롱 표시 (코드 상수) | `OBSERVE_LONG_ON`=True, `OBSERVE_LONG_EXPR`="funding < -0.01 && rsi < 35 && btc_up > 0", `OBSERVE_LONG_COLOR`=#a0c4ff | 맞으면 카드 연파랑 배경 + "👀 관찰 롱" 뱃지만(판정·자동진입 무관). 1년 48h 143건 60.1%(앞 57%/뒤 67%) — 검증 중 (11/24) |
+| 하락장 롱 레짐 기준 (코드 상수) | `trading_client.py` `AUTO_BEAR_REGIME_EX`="binance" | 자동진입 "하락장이면 롱 자동진입 안 함"을 바이낸스 스냅샷 레짐으로 판단(빗썸·업비트·바이낸스 판정 모두). ""면 각 거래소 자기 레짐. 바이낸스 스냅샷을 못 읽으면 예전처럼 화면 레짐 (11/25) |
 | 조건식 변수 `btc_up` | – | 업비트 KRW-BTC 1시간봉 종가가 EMA120 위면 1, 아니면 0(클라가 5분마다 갱신). 클라 조건식에서만 씀 — 서버 디스코드 알림 쪽은 이 변수를 몰라서 btc_up 조건은 알림 안 감 (11/24) |
 
 ## 7. 변경 이력(설정 관련)
@@ -160,3 +162,4 @@
 | 11/24 | 안정 유니버스 바이낸스 제외 보강: 1000배수 코인(PEPE·SHIB·BONK·XEC 등) 이름 맞춤 + `UNIVERSE_EXCLUDE_STABLE`=True(USDT·USD1 등 제외) + `UNIVERSE_EX_VER`=2(재시작 직후 재계산) (사용자 요청) | backups\20261124_universe_fix |
 | 11/24 | 클라 `LONG_COND_COLOR_OFF`=True(롱 조건식 색칠 끔), `OBSERVE_LONG_*` 관찰 롱 표시, 조건식 변수 `btc_up` 추가 (사용자 요청, 근거 reports\cond_1y_48h_20261124.md). 숏 조건식 v5(`short_conditions_import_v5.txt`, v4에서 59% 1절 제거) | backups\20261124_long_cond |
 | 11/24 | 강제청산 코인 같은 방향 자동진입 차단 48h → 7일(클라 `AUTO_LIQ_BLOCK_H`·live_trader `LIQ_BLOCK_H` = 168). 백테스트 청산 14→11, $+564→$+613, 최악월 -$69→-$18 (사용자 요청) | backups\20261124_liq_block_7d |
+| 11/25 | `V2_SHORT_RSI_MIN`=50(모델 숏은 RSI≥50만, 서버·수집기·바이낸스 탭 공통), 클라 `AUTO_BEAR_REGIME_EX`="binance"(자동진입 '하락장 롱 제외'를 바이낸스 레짐으로 통일 — 백그라운드 거래소 판단 때 빗썸 레짐이 쓰이던 문제 수정) (사용자 요청) | backups\20261125_short_rsi50_bear_regime |

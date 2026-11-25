@@ -3715,6 +3715,12 @@ VERDICT_V2 = True
 V2_LONG_EXP4_MIN = 0.2
 V2_SHORT_EXP4_MAX = -0.5
 V2_SHORT_PUP_MAX = 0.45
+# [2026-11-25 수동, 사용자 승인] 모델 숏은 RSI ≥ V2_SHORT_RSI_MIN일 때만(미만이면 "숏후보 RSI 낮음 대기").
+#   근거(빗썸 5분 로그 14일 11/11~11/25, 독립 사건 12h 쿨다운): 학습 판정 숏 70→63건, 12h 승률 86→89%,
+#   24h 84→86%(시장대비 +1.60→+2.08), 10배 청산(12h 9% 역행) 14.3→12.7%. 홀드 3일 7건은 전부 RSI≥50(변화 0).
+#   가상 백테스트(바이낸스 코인만, 10일): 10배·12h 38건 +286%·청산 1 → 37건 +386%·청산 0, 3배·48h 17건 +$95.9 그대로.
+#   0이면 끔. 되돌리기: 0 또는 backups\20261125_short_rsi50_bear_regime\trading_server.py
+V2_SHORT_RSI_MIN = 50
 # [2026-10-16 추가] 시장 반등 보정 — 10/16 시장 +3% 반등 중 모델 숏 6건 중 5건 손실(BAT·MEV 최대 -24~26%).
 # 2년 워크포워드(판정 v2, 독립 사건):
 #  - 숏: 40종목 평균 4h 등락 ≥ +1%(반등 중)이면 모델 숏 대기 → 4h 승률 65.9→68.2%(A 61.8→65.1 / B 69.5→70.8),
@@ -3870,6 +3876,10 @@ def apply_prob_filter(results, exchange='bithumb'):
                     r['verdict_reason'] = f"{why} · 4h예상 {e4:+.2f}% · 확률 {p:.2f}"
             elif e4 < V2_SHORT_EXP4_MAX and p < V2_SHORT_PUP_MAX and mkt_r4 is not None and mkt_r4 >= V2_SHORT_BLOCK_MKT_R4:
                 r['verdict'], r['verdict_reason'] = '', f"숏후보 시장 반등 중(4h {mkt_r4:+.1f}%) 대기 · 4h예상 {e4:+.2f}%"
+            elif (e4 < V2_SHORT_EXP4_MAX and p < V2_SHORT_PUP_MAX and V2_SHORT_RSI_MIN
+                  and r.get('rsi') is not None and float(r.get('rsi') or 0) < V2_SHORT_RSI_MIN):
+                # [2026-11-25 수동, 사용자 승인] RSI 낮은(이미 많이 빠진) 코인 모델 숏 대기
+                r['verdict'], r['verdict_reason'] = '', f"숏후보 RSI {float(r.get('rsi') or 0):.0f}<{V2_SHORT_RSI_MIN:g} 대기 · 4h예상 {e4:+.2f}%"
             elif e4 < V2_SHORT_EXP4_MAX and p < V2_SHORT_PUP_MAX:
                 r['verdict'] = 'SHORT'
                 r['verdict_reason'] = f"모델 숏 · 4h예상 {e4:+.2f}% · 확률 {p:.2f}" + (f" ({why})" if v == 'SHORT' else "")
