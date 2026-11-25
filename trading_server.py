@@ -3759,7 +3759,7 @@ def _short_stop_apply(r, exchange='bithumb'):
     if not USE_SHORT_STOP_BLOCK:
         return
     t = r.get('ticker')
-    px = r.get('price') or 0
+    px = r.get('_stop_px') or r.get('price') or 0   # [2026-11-26] 바이낸스 V3는 닫힌 1h봉 종가(백테스트와 같게)
     if not t or px <= 0:
         return
     key, now = (exchange, t), time.time()
@@ -3881,6 +3881,7 @@ def apply_prob_filter(results, exchange='bithumb'):
             elif e4 < V2_SHORT_EXP4_MAX and p < V2_SHORT_PUP_MAX and mkt_r4 is not None and mkt_r4 >= V2_SHORT_BLOCK_MKT_R4:
                 r['verdict'], r['verdict_reason'] = '', f"숏후보 시장 반등 중(4h {mkt_r4:+.1f}%) 대기 · 4h예상 {e4:+.2f}%"
             elif (e4 < V2_SHORT_EXP4_MAX and p < V2_SHORT_PUP_MAX and V2_SHORT_RSI_MIN
+                  and not (exchange == 'binance' and BINANCE_UNIVERSE == 'v3')
                   and r.get('rsi') is not None and float(r.get('rsi') or 0) < V2_SHORT_RSI_MIN):
                 # [2026-11-25 수동, 사용자 승인] RSI 낮은(이미 많이 빠진) 코인 모델 숏 대기
                 r['verdict'], r['verdict_reason'] = '', f"숏후보 RSI {float(r.get('rsi') or 0):.0f}<{V2_SHORT_RSI_MIN:g} 대기 · 4h예상 {e4:+.2f}%"
@@ -4022,7 +4023,9 @@ def _binance_v3_guard(results, feats):
         atr, r7 = feats.get(t, (None, None))
         ld = r.get('listing_days')
         why = None
-        if r.get('p_up') is None:
+        if not BINANCE_V3_LONG and 'LONG' in (v, vr):
+            why = "바이낸스 V3 롱 끔(1년 검증 -$68)"
+        elif r.get('p_up') is None:
             why = "V3 모델 확률 없음"
         elif ld is None or ld < 0 or ld < BINANCE_V3_MIN_LISTING_D:
             why = f"상장 {ld}일({BINANCE_V3_MIN_LISTING_D}일 미만)" if (ld is not None and ld >= 0) else "상장일 확인 안 됨"
@@ -4580,6 +4583,12 @@ BINANCE_V3_UNI_R7_MAX = 50.0      # 대상 필터: 7일 < +50%
 BINANCE_V3_MIN_LISTING_D = 730    # 판정 가드: 상장 2년↑
 BINANCE_V3_ATR_MAX = 2.5          # 판정 가드: 1h ATR < 2.5
 BINANCE_V3_R7_MAX = 50.0          # 판정 가드: 7일 < +50%
+# [2026-11-26 사용자 요청] 숏은 백테스트와 같게 — 확률모델 피처를 '닫힌 1h봉'으로(백테스트는 봉 마감값), 숏 손절 차단 기준가도 닫힌 봉 종가,
+#   RSI≥50 규칙(V2_SHORT_RSI_MIN)은 바이낸스 V3 탭엔 안 씀(백테스트에 없음 — 1년 V3 숏 판정의 99.5%가 이미 RSI≥50이라 결과 같음)
+BINANCE_V3_CLOSED_BAR = True
+# [2026-11-26] 바이낸스 V3 롱 판정: 1년 검증(reports/binance_backtest14_20261125.md) 상한 근사에서도 -$68(앞 -$168 / 뒤 +$100) → 끔(판정 대기)
+#   True로 바꾸면 다시 냄(가드는 똑같이 적용)
+BINANCE_V3_LONG = False
 BINANCE_V3_STABLES = {"USDT", "USDC", "FDUSD", "TUSD", "BUSD", "USD1", "USDP", "DAI", "USDE", "RLUSD", "PYUSD", "XUSD", "EUR", "BFUSD"}
 BINANCE_SCORE_MIN_CYCLE_SEC = 180  # 바이낸스 탭 채점 주기 최소 간격(300코인 × 캔들 요청 — API 한도 보호)
 BINANCE_OI_TTL = 1800             # 바이낸스 탭 OI·롱숏비 캐시(초) — 심볼별 요청이라 300코인이면 한도(5분 1000회) 넘음
@@ -5035,6 +5044,14 @@ def _process_ticker_binance_raw(ticker):
         except Exception:
             rsi_dwell_os_h = rsi_dwell_ob_h = bb_dwell_low_h = bb_dwell_high_h = 0.0
         reg = current_market_regime_binance
+        # [2026-11-26] V3: 확률모델 피처는 닫힌 1h봉까지만(마지막 봉이 진행 중이면 뺌) — 백테스트(봉 마감값)와 같게
+        _closed = BINANCE_UNIVERSE == 'v3' and BINANCE_V3_CLOSED_BAR and CANDLE_INTERVAL == "1h"
+        _dfm = df
+        if _closed and len(df) > 1:
+            _now_kst = pd.Timestamp(time.time(), unit='s') + pd.Timedelta(hours=9)
+            if df.index[-1] + pd.Timedelta(hours=1) > _now_kst:
+                _dfm = df.iloc[:-1]
+        _pmf = _pm_ticker_features(_dfm, ticker, 'binance')
         long_score = calculate_long_score(
             rsi_val, bb_percent, cvd_diff, vol_window_sum, ls_ratio, oi_change_pct, momentum_blend,
             price_chg, extension_pct, vz, rsi_delta, atr_pct, ema20, ema60, oi_notional_usd,
@@ -5093,7 +5110,8 @@ def _process_ticker_binance_raw(ticker):
             "extension_pct": round(extension_pct, 3) if extension_pct is not None else None,
             "components": components, "max_lev": max_lev, "liq_risk": liq_risk,
             "regime": reg,
-            "_pmf": _pm_ticker_features(df, ticker, 'binance'),
+            "_pmf": _pmf,
+            "_stop_px": (_pmf or {}).get('p') if _closed else None,
         }
     except Exception as e:
         print(f"[바이낸스:{ticker}] 데이터 수집 실패: {e}")
