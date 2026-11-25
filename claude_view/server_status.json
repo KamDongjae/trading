@@ -1,26 +1,10 @@
 {
- "ts": "2026-11-25 11:47:23",
+ "ts": "2026-11-25 12:21:48",
  "pid": 20276,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 709.82,
- "n_positions": 6,
+ "balance": 818.54,
+ "n_positions": 4,
  "positions": [
-  {
-   "ticker": "BREV",
-   "type": "short",
-   "amount": 60.0,
-   "leverage": 3,
-   "entry_price": 0.06713673,
-   "entry_time": "2026-11-23 11:53:29"
-  },
-  {
-   "ticker": "ETC",
-   "type": "short",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 5.716701,
-   "entry_time": "2026-11-23 12:13:25"
-  },
   {
    "ticker": "IOST",
    "type": "short",
