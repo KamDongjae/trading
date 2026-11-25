@@ -1,5 +1,5 @@
 {
- "ts": "2026-11-25 12:22:02",
+ "ts": "2026-11-25 12:57:21",
  "pid": 18924,
  "data_dir": "/storage/emulated/0/Documents",
  "auto_entry": {
@@ -15,7 +15,7 @@
   "skip_bear_long": true,
   "strong_x2": true
  },
- "auto_status_text": "12:13 ETC 자동정리",
- "balance": 818.54,
- "n_positions": 4
+ "auto_status_text": "12:42 WAXP SHORT 진입",
+ "balance": 788.5,
+ "n_positions": 5
 }
