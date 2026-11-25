@@ -1,18 +1,10 @@
 {
- "ts": "2026-11-25 09:36:51",
+ "ts": "2026-11-25 10:12:18",
  "pid": 20276,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 615.7,
- "n_positions": 7,
+ "balance": 709.82,
+ "n_positions": 6,
  "positions": [
-  {
-   "ticker": "PIEVERSE",
-   "type": "short",
-   "amount": 60.0,
-   "leverage": 3,
-   "entry_price": 3.7080606,
-   "entry_time": "2026-11-23 10:06:40"
-  },
   {
    "ticker": "BREV",
    "type": "short",
