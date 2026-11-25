@@ -1,26 +1,10 @@
 {
- "ts": "2026-11-26 00:44:40",
- "pid": 9432,
+ "ts": "2026-11-26 01:05:56",
+ "pid": 18188,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 819.24,
- "n_positions": 4,
+ "balance": 888.93,
+ "n_positions": 2,
  "positions": [
-  {
-   "ticker": "SKY",
-   "type": "short",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.039928530000000004,
-   "entry_time": "2026-11-24 01:01:37"
-  },
-  {
-   "ticker": "LSK",
-   "type": "short",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.16211718,
-   "entry_time": "2026-11-24 01:04:38"
-  },
   {
    "ticker": "ZIL",
    "type": "short",

@@ -69,7 +69,7 @@
 | `BINANCE_PROB_PROFILE` | 'binance_v3' | 판정 확률모델. 'binance_v3' = `models\prob_model_binance_v3.pkl`/`_lite.json`(아래 4장). 모델이 없으면 원화 모델로 대신하지 않고 판정 대기. 'krw' = 원화 학습 모델 | 'krw' |
 | 판정 가드 `BINANCE_V3_MIN_LISTING_D` / `BINANCE_V3_ATR_MAX` / `BINANCE_V3_R7_MAX` | 730 / 2.5 / 50 | 바이낸스 탭 판정(롱·숏)은 상장 730일↑ · 1h ATR < 2.5% · 7일 < +50%만. 아니면 "상장 N일(730일 미만) 대기" 등. 확률 없으면 "V3 모델 확률 없음 대기". 수동·자동진입·수집기 기록(→ live_trader) 모두 이 판정 기준 | 0/큰 값이면 사실상 끔 |
 | `BINANCE_V3_CLOSED_BAR` | True | (11/26) 바이낸스 V3 확률모델 피처를 닫힌 1h봉까지만으로 계산(진행 중인 봉 제외), 숏 손절 차단 기준가도 닫힌 봉 종가 — 백테스트(봉 마감값)와 같게. 바이낸스 V3 탭은 `V2_SHORT_RSI_MIN`(RSI≥50) 규칙 안 씀(백테스트에 없음, 1년 V3 숏 판정의 99.5%가 이미 RSI≥50이라 결과 같음) | False면 진행 중인 봉 포함(예전) |
-| `BINANCE_V3_LONG` | False | (11/26) 바이낸스 V3 롱 판정 끔("바이낸스 V3 롱 끔 대기"). 1년 검증 상한 근사(점수 롱 후보 조건 뺌): 67건 -$68(앞 -$168 / 뒤 +$100), 가드 없으면 188건 -$118 | True면 롱 판정 냄(가드 같이) |
+| `BINANCE_V3_LONG` | True | (11/26 01시 사용자 요청으로 다시 켬) 끄면 바이낸스 V3 롱 판정 대기("바이낸스 V3 롱 끔 대기"). 1년 검증 상한 근사(점수 롱 후보 조건 뺌): 67건 -$68(앞 -$168 / 뒤 +$100), 가드 없으면 188건 -$118 | True면 롱 판정 냄(가드 같이) |
 | `BINANCE_SCORE_MIN_CYCLE_SEC` | 180 | 바이낸스 탭 채점 사이클 최소 간격(초). 300코인 캔들 요청 — API 한도 보호 | |
 | `BINANCE_OI_TTL` | 1800 | 바이낸스 탭 OI·롱숏비 캐시(초). 심볼별 요청이라 300코인이면 5분 1000회 한도를 넘음(빗썸·업비트 쪽은 `OI_CACHE_TTL`=60 그대로) | |
 | `SERVER_RESTART_EXIT_CODE` | 75 | (11/23) `server_cmds`에 `restart` 명령이 오면 저장 후 이 코드로 종료 → run_server.bat가 30초 뒤 새 코드로 다시 켬(Claude가 원격으로 재시작할 때 씀). `shutdown`은 코드 0으로 종료(bat도 끝) | bat 없이 직접 켠 서버는 둘 다 그냥 꺼짐 |
@@ -177,3 +177,4 @@
 | 11/25 | `V2_SHORT_RSI_MIN`=50(모델 숏은 RSI≥50만, 서버·수집기·바이낸스 탭 공통), 클라 `AUTO_BEAR_REGIME_EX`="binance"(자동진입 '하락장 롱 제외'를 바이낸스 레짐으로 통일 — 백그라운드 거래소 판단 때 빗썸 레짐이 쓰이던 문제 수정) (사용자 요청) | backups\20261125_short_rsi50_bear_regime |
 | 11/25 | 바이낸스 탭 개편 V3: `BINANCE_UNIVERSE`='v3'(필터 후 거래대금 상위 300)·`BINANCE_PROB_PROFILE`='binance_v3'(바이낸스 학습, 코인+BTC 특성)·판정 가드 상장 730일↑·ATR<2.5·7일<+50%·채점 3분 간격·OI 캐시 30분(서버), V3 모델(prob_model), V3 재학습·1시간봉 이어받기(수집기 `BINANCE_V3_MODEL_JOBS`), 설명 창 문구(클라) (사용자 요청, reports/binance_backtest11~13_20261125.md) | backups\20261125_v3_binance |
 | 11/26 | 바이낸스 V3 백테스트 맞추기: `BINANCE_V3_CLOSED_BAR`=True(닫힌 1h봉 피처·손절 차단 기준가), 바이낸스 V3 탭 RSI≥50 규칙 제외, `BINANCE_V3_LONG`=False(롱 검증 탈락) (사용자 요청, reports/binance_backtest14_20261125.md) | backups\20261126_v3_parity |
+| 11/26 | `BINANCE_V3_LONG`=True (롱 끔 해제, 사용자 요청 — 검증은 -$68이었음) | backups\20261126_v3_long_on |

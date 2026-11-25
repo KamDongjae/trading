@@ -4588,7 +4588,7 @@ BINANCE_V3_R7_MAX = 50.0          # 판정 가드: 7일 < +50%
 BINANCE_V3_CLOSED_BAR = True
 # [2026-11-26] 바이낸스 V3 롱 판정: 1년 검증(reports/binance_backtest14_20261125.md) 상한 근사에서도 -$68(앞 -$168 / 뒤 +$100) → 끔(판정 대기)
 #   True로 바꾸면 다시 냄(가드는 똑같이 적용)
-BINANCE_V3_LONG = False
+BINANCE_V3_LONG = True   # [2026-11-26 01시 수동, 사용자 요청] 롱 끔 해제(시뮬 단계 — 예외 케이스 보면서 개선)
 BINANCE_V3_STABLES = {"USDT", "USDC", "FDUSD", "TUSD", "BUSD", "USD1", "USDP", "DAI", "USDE", "RLUSD", "PYUSD", "XUSD", "EUR", "BFUSD"}
 BINANCE_SCORE_MIN_CYCLE_SEC = 180  # 바이낸스 탭 채점 주기 최소 간격(300코인 × 캔들 요청 — API 한도 보호)
 BINANCE_OI_TTL = 1800             # 바이낸스 탭 OI·롱숏비 캐시(초) — 심볼별 요청이라 300코인이면 한도(5분 1000회) 넘음
