@@ -1,5 +1,11 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-11-26 (수동, 14시 KST, 사용자 요청) — 모델 숏 RSI 필터 삭제 + V3 숏 기준 완화 백테스트
+
+- **trading_server.py** `V2_SHORT_RSI_MIN` 50 → 0(끔). 근거: 빗썸 5분 로그 11/11~11/26 모델 숏 후보(독립 12h) 36건 중 RSI<50은 4건뿐, 11/16 이후 0건 — 기준 없음 36건 48h 승률 78%·+$133 vs RSI≥50 32건 81%·+$118(3배 청산 0). RSI 델타는 후보 35/36이 델타+라 필터로 못 씀. 바이낸스 V3 탭은 원래 미적용. 되돌리기: `V2_SHORT_RSI_MIN = 50` 또는 backups\20261126_rsi_off\trading_server.py
+- **binance_backtest16.py**(신규) + run_binance_backtest16.bat: V3 숏 exp4 상한 -0.5/-0.45/-0.4/-0.35/-0.3/-0.2 비교(비용 -4.2%, 나머지 bt15 E3과 같음, -0.5가 327건 +$837이면 검산 통과 — 통과). Claude 작업 공간에서 같은 코드·history_binance로 실행(학습 573,411행 일치)
+  - 결과(reports/binance_backtest16_20261126.md): -0.5 327건 +$837·청산 18·낙폭 -$122 / -0.45 382건 +$786·21·-$137 / -0.4 461건 +$787·27·-$205 / -0.3 664건 +$768·36·-$232 / -0.2 1,038건 +$650·48·-$328. 풀수록 건수는 늘지만 건당 ROI·총손익·낙폭 모두 악화 → 서버 기준 -0.5 유지(코드 변경 없음)
+
 ## 2026-11-26 (수동, 12~13시 KST, 사용자 요청) — Claude 명령 폴더 · 수익 유지 컷 · 모의 계좌 리셋
 
 - **trading_server.py** `CLAUDE_CMDS = True`, `CLAUDE_CMD_DIR = trading\claude_cmds`: `process_commands`가 Documents\server_cmds 와 함께 trading\claude_cmds 의 cmd_*.csv 도 처리, 결과를 claude_cmds\results.csv 에도 기록. 되돌리기: `CLAUDE_CMDS = False` 또는 backups\20261126_claude_cmds\trading_server.py

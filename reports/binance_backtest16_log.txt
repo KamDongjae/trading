@@ -1,0 +1,10 @@
+[14:22:39] exchangeInfo 조회 실패(HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/exchangeInfo (Caused by ProxyError('Unable to connect to proxy', OSError('Tunnel connection failed: 403 Forbidden (agent proxy: no rule or network setting allows this host)')))) — 저장된 파일 사용
+[14:22:52] 바이낸스 522종목 · 시험 2025-11-01~2026-11-25
+[14:22:56] V3 예측 불러옴: /tmp/w/trading_cache/binance_v3_preds_1-300_v2.pkl (2,391,240행)
+[14:23:02] cut -0.50: 판정 333 · 327건 $+837 (앞 +411 / 뒤 +426) 건당 +6.5% 청산 18 낙폭 $-122
+[14:23:05] cut -0.45: 판정 389 · 382건 $+786 (앞 +412 / 뒤 +374) 건당 +5.2% 청산 21 낙폭 $-137
+[14:23:09] cut -0.40: 판정 481 · 461건 $+787 (앞 +390 / 뒤 +397) 건당 +4.1% 청산 27 낙폭 $-205
+[14:23:13] cut -0.35: 판정 566 · 544건 $+676 (앞 +332 / 뒤 +344) 건당 +2.8% 청산 34 낙폭 $-220
+[14:23:17] cut -0.30: 판정 698 · 664건 $+768 (앞 +415 / 뒤 +353) 건당 +2.8% 청산 36 낙폭 $-232
+[14:23:21] cut -0.20: 판정 1121 · 1038건 $+650 (앞 +381 / 뒤 +270) 건당 +1.5% 청산 48 낙폭 $-328
+[14:23:21] 결과 저장: /tmp/w/T/reports/binance_backtest16_20261126.md
