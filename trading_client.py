@@ -726,8 +726,14 @@ class TradingClient:
         self.btn_view_positions = tk.Label(view_bar, text="포지션 (0)", font=("Arial", self.FONT_SMALL, "bold"),
                                             bg="#eeeeee", fg="black", relief="raised", bd=1, cursor="hand2",
                                             padx=10, pady=3)
-        self.btn_view_positions.pack(side="left", padx=(3, 0), fill="x", expand=True)
+        self.btn_view_positions.pack(side="left", padx=3, fill="x", expand=True)
         self.btn_view_positions.bind("<ButtonRelease-1>", lambda e: self.switch_view('positions'))
+        # [2026-11-26 수동, 사용자 요청] 상황 탭 — 거래소 3곳의 실시간 롱/숏 진입 후보와, 필터에 걸렸으면 무엇에 걸렸는지
+        self.btn_view_status = tk.Label(view_bar, text="상황", font=("Arial", self.FONT_SMALL, "bold"),
+                                        bg="#eeeeee", fg="black", relief="raised", bd=1, cursor="hand2",
+                                        padx=10, pady=3)
+        self.btn_view_status.pack(side="left", padx=(3, 0), fill="x", expand=True)
+        self.btn_view_status.bind("<ButtonRelease-1>", lambda e: self.switch_view('status'))
 
         # 거래소 토글 — 코인탭 전용(빗썸/업비트). 여기서 고른 거래소가 코인 목록/차트/
         # 롱숏진입 명령에 그대로 쓰인다(self.current_exchange).
@@ -844,6 +850,7 @@ class TradingClient:
         self.card_canvas.bind("<MouseWheel>", lambda e: self.card_canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"), add="+")
         self.card_widgets = {}
         self._build_rank_panel()
+        self._build_status_panel()  # [2026-11-26] 상황 탭
         self._latest_rows = {}  # [2026-10-05 추가] 정보 모달용 — 티커별 최신 row dict 캐시
         # [2026-10-12 추가] 롱/숏 진입 테두리(초록/빨강)가 켜진 시작 시각. 키=(거래소, 티커),
         # 값={'dir','since','seen'}. 신호가 꺼지면 지우고, 다시 켜지면 그 시각부터 다시 센다.
@@ -1057,6 +1064,8 @@ class TradingClient:
             return
         self.view_mode = mode
         self.rank_panel.pack_forget()
+        if hasattr(self, 'status_panel'):
+            self.status_panel.pack_forget()  # [2026-11-26] 상황 탭
         if mode == 'coins':
             self._hide_pos_panel()
             self.pos_sort_bar.pack_forget()
@@ -1072,6 +1081,14 @@ class TradingClient:
             self.exchange_bar.pack(side="top", fill="x", padx=4, pady=(4, 0))
             self.rank_panel.pack(fill="both", expand=True, padx=4, pady=2)
             self._render_rank_panel(self._last_render_data)
+        elif mode == 'status':  # [2026-11-26] 상황 탭 — 거래소 3곳을 한 화면에
+            self._hide_pos_panel()
+            self.pos_sort_bar.pack_forget()
+            self.tree_container.pack_forget()
+            self.sortbar.pack_forget()
+            self.exchange_bar.pack_forget()
+            self.status_panel.pack(fill="both", expand=True, padx=4, pady=2)
+            self._render_status_panel(force=True)
         else:
             self.tree_container.pack_forget()
             self.sortbar.pack_forget()
@@ -1156,11 +1173,250 @@ class TradingClient:
 
     def _highlight_view_buttons(self):
         for mode, b in (('coins', self.btn_view_coins), ('rank', self.btn_view_rank),
-                        ('positions', self.btn_view_positions)):
+                        ('positions', self.btn_view_positions), ('status', self.btn_view_status)):
             if self.view_mode == mode:
                 self._cfg(b, bg="#1a7abf", fg="white")
             else:
                 self._cfg(b, bg="#eeeeee", fg="black")
+
+    # ── [2026-11-26 수동, 사용자 요청] 상황 탭 ─────────────────────────
+    # 빗썸·업비트·바이낸스 스냅샷을 모두 읽어서, 지금 롱/숏 판정이 떠 있는 코인(→ 자동진입 가능 여부)과
+    # 후보였는데 필터에 걸린 코인(→ 걸린 필터 이름)을 보여준다. 판정 기준은 자동진입과 같음(확률필터 ON/OFF 설정 반영).
+    # 서버 필터: 판정 사유 문구(verdict_reason)에서 읽음 / 클라 필터: 자동진입 검사와 같은 조건을 부작용 없이 다시 확인.
+    STATUS_REFRESH_SEC = 2.0
+
+    def _build_status_panel(self):
+        self.status_panel = tk.Frame(self.root)
+        top = tk.Frame(self.status_panel)
+        top.pack(side="top", fill="x")
+        self._status_info = tk.Label(top, text="", anchor="w", justify="left",
+                                     font=("Arial", self.FONT_SMALL), fg="#555555")
+        self._status_info.pack(side="left", fill="x", expand=True, padx=4, pady=(2, 2))
+        body = tk.Frame(self.status_panel)
+        body.pack(fill="both", expand=True)
+        self.status_text = tk.Text(body, wrap="word", font=("Arial", self.FONT_SMALL), cursor="arrow",
+                                   relief="flat", padx=6, pady=4)
+        sb = ttk.Scrollbar(body, orient="vertical", command=self.status_text.yview)
+        self.status_text.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.status_text.pack(side="left", fill="both", expand=True)
+        fs = self.FONT_SMALL
+        t = self.status_text
+        t.tag_configure("ex", font=("Arial", fs + 1, "bold"), foreground="#1a5f99", spacing1=8)
+        t.tag_configure("sec", font=("Arial", fs, "bold"), foreground="#444444", spacing1=4)
+        t.tag_configure("tk", font=("Arial", fs, "bold"))
+        t.tag_configure("long", foreground="#2fa84f", font=("Arial", fs, "bold"))
+        t.tag_configure("short", foreground="#e04040", font=("Arial", fs, "bold"))
+        t.tag_configure("ok", foreground="#1f8a3a", font=("Arial", fs, "bold"))
+        t.tag_configure("cli", foreground="#b36b00", font=("Arial", fs, "bold"))
+        t.tag_configure("flt", foreground="#8a2be2", font=("Arial", fs, "bold"))
+        t.tag_configure("dim", foreground="#888888")
+        t.configure(state="disabled")
+        t.bind("<ButtonRelease-1>", self._status_click)
+        self._status_line_tk = {}
+        self._status_cache = {}
+        self._status_last = 0.0
+
+    def _status_click(self, event):
+        """줄을 누르면 그 코인을 아래 티커 칸에 넣음(순위 탭과 같은 동작)."""
+        try:
+            line = int(self.status_text.index(f"@{event.x},{event.y}").split('.')[0])
+        except Exception:
+            return
+        t = self._status_line_tk.get(line)
+        if t:
+            self.ticker_entry.delete(0, tk.END)
+            self.ticker_entry.insert(0, t)
+
+    def _status_rows(self, ex):
+        """그 거래소 스냅샷 행(파일이 바뀌었을 때만 다시 읽음). read_market_snapshot이 바꾸는 화면용 전역값은 되돌림."""
+        global current_min_score, pp_current_min_score, watch_current_min_score, current_interval, current_regime
+        path = EXCHANGE_SNAPSHOTS.get(ex)
+        try:
+            mt = os.path.getmtime(path)
+        except Exception:
+            return [], None
+        c = self._status_cache.get(ex)
+        if c and c[0] == mt:
+            return c[1], mt
+        saved = (current_min_score, pp_current_min_score, watch_current_min_score, current_interval, current_regime)
+        try:
+            res = read_market_snapshot(path)
+        finally:
+            (current_min_score, pp_current_min_score, watch_current_min_score, current_interval, current_regime) = saved
+        rows = res[0] if res else []
+        self._status_cache[ex] = (mt, rows)
+        return rows, mt
+
+    @staticmethod
+    def _status_filter_label(reason):
+        """서버 판정 사유 문구 → 걸린 필터 이름."""
+        r = reason or ""
+        if "손절차단" in r:
+            return "손절차단(판정 후 역행)"
+        if "바이낸스 선물 없음" in r:
+            return "바이낸스 선물 없음"
+        if " 대기(" in r:
+            return r.split(" 대기(")[0].strip()
+        if r.startswith(("롱후보(", "숏후보(")):  # "롱후보(근거) [모델]확률 0.52 미달 · …" → 괄호 뒤 첫 마디
+            depth, k = 0, 3
+            for k in range(3, len(r)):
+                if r[k] == "(":
+                    depth += 1
+                elif r[k] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            rest = r[k + 1:].split(" · ")[0].strip()
+            if rest:
+                return rest
+        if "하락장 대기" in r:
+            return "하락장 롱 대기"
+        if "시장 반등 중" in r:
+            i = r.find("시장 반등 중")
+            j = r.find(")", i)
+            return r[i:j + 1] if j > i else "시장 반등 중"
+        if "RSI" in r and "<" in r:
+            return "RSI 기준 미달"
+        if "확률" in r and "미달" in r:
+            return "상승확률 미달"
+        if "확률" in r and "높음" in r:
+            return "상승확률 높음(숏)"
+        if "4h예상" in r and "부족" in r:
+            return "4h 예상수익 부족"
+        return r[:40]
+
+    @staticmethod
+    def _status_side(v, reason):
+        if v in ("LONG", "SHORT"):
+            return 'long' if v == "LONG" else 'short'
+        r = reason or ""
+        if "대기(LONG)" in r or "롱후보" in r:
+            return 'long'
+        if "대기(SHORT)" in r or "숏후보" in r or "숏 손절차단" in r:
+            return 'short'
+        return None
+
+    def _status_client_check(self, ex, row, ptype, held, regime_cache):
+        """판정이 떠 있는 코인 — 자동진입 검사(_auto_entry_check)와 같은 조건을 부작용 없이 확인. (상태, 사유)"""
+        t = row['ticker']
+        if held.get(t):
+            mine = "자동진입" if self._is_auto_pos(t) else "사용자"
+            same = held.get(t) == ptype
+            return ("held", f"{'같은' if same else '반대'} 방향 보유 중({mine})")
+        if not self.auto_cfg.get('on'):
+            return ("cli", "자동진입 꺼짐")
+        if "NOFUT" in str(row.get('liq_risk', '') or ''):
+            return ("cli", "바이낸스 선물 없음")
+        try:
+            lq = self._liq_block_until(t, ptype)
+        except Exception:
+            lq = None
+        if lq:
+            return ("cli", f"강제청산 후 {AUTO_LIQ_BLOCK_H:g}h 차단(~{time.strftime('%m-%d %H:%M', time.localtime(lq))})")
+        ld = row.get('listing_days')
+        if AUTO_ENTRY_MIN_LISTING_DAYS and (ld is None or ld < AUTO_ENTRY_MIN_LISTING_DAYS):
+            return ("cli", f"상장 {ld}일({AUTO_ENTRY_MIN_LISTING_DAYS}일 미만)" if (ld is not None and ld >= 0) else "상장일 확인 안 됨")
+        if ptype == 'long' and self.auto_cfg.get('skip_bear_long', AUTO_ENTRY_SKIP_BEAR_LONG):
+            k = AUTO_BEAR_REGIME_EX or ex
+            if k not in regime_cache:
+                regime_cache[k] = self._snapshot_regime(k)
+            if (regime_cache[k] or row.get('regime')) == '하락장':
+                return ("cli", "하락장 롱 제외")
+        seen = getattr(self, '_auto_seen', {}).get((ex, t), "")
+        if seen == ("LONG" if ptype == 'long' else "SHORT"):
+            return ("ok", "통과 — 이미 떠 있던 신호(새로 뜰 때 진입, 진입 안 했으면 위 조건·재신호 6h 가드 확인)")
+        return ("ok", "통과 — 다음 확인 때 자동진입")
+
+    def _render_status_panel(self, force=False):
+        if self.view_mode != 'status' or not hasattr(self, 'status_panel'):
+            return
+        now = time.time()
+        if not force and now - self._status_last < self.STATUS_REFRESH_SEC:
+            return
+        self._status_last = now
+        held = {p['ticker']: p.get('position_type', '') for p in (self._account[2] if self._account else [])}
+        use_raw = not getattr(self, 'prob_filter_on', True)
+        regime_cache = {}
+        t = self.status_text
+        y0 = t.yview()[0]
+        t.configure(state="normal")
+        t.delete("1.0", tk.END)
+        self._status_line_tk = {}
+        tot_pass = tot_flt = 0
+
+        def put(text, *tags):
+            t.insert(tk.END, text, tags)
+
+        def line_no():
+            return int(t.index("end-1c").split('.')[0])
+
+        for ex in ("bithumb", "upbit", "binance"):
+            rows, mt = self._status_rows(ex)
+            label = EXCHANGE_LABELS.get(ex, ex)
+            rg = self._snapshot_regime(ex) or "-"
+            when = time.strftime('%H:%M:%S', time.localtime(mt)) if mt else "-"
+            passed, filtered = [], []
+            for r in rows:
+                if use_raw and r.get('verdict_raw') is not None:
+                    v, rs = r.get('verdict_raw') or '', r.get('verdict_reason_raw') or r.get('verdict_reason', '')
+                else:
+                    v, rs = r.get('verdict', ''), r.get('verdict_reason', '')
+                side = self._status_side(v, rs)
+                if not side:
+                    continue
+                if v in ("LONG", "SHORT"):
+                    passed.append((r, side, rs))
+                else:
+                    filtered.append((r, side, rs, self._status_filter_label(rs)))
+            tot_pass += len(passed)
+            tot_flt += len(filtered)
+            put(f"[{label}] ", "ex")
+            put(f"레짐 {rg} · 코인 {len(rows)}개 · 스냅샷 {when}\n", "dim")
+            put(f"  ● 판정 통과 {len(passed)}\n", "sec")
+            if not passed:
+                put("     (없음)\n", "dim")
+            for r, side, rs in sorted(passed, key=lambda x: (x[1], x[0].get('exp4') or 0)):
+                st, why = self._status_client_check(ex, r, side, held, regime_cache)
+                ln = line_no()
+                self._status_line_tk[ln] = r['ticker']
+                put("     ")
+                put(f"{r['ticker']}", "tk")
+                put(f" {'롱' if side == 'long' else '숏'} ", side)
+                e4, p = r.get('exp4'), r.get('p_up')
+                vtag = "V3 " if ex == "binance" else ""
+                put(f"{vtag}4h {e4:+.2f}% · 확률 {p:.2f}  " if (e4 is not None and p is not None) else "", "dim")
+                put(f"→ {why}\n", "ok" if st == 'ok' else ("dim" if st == 'held' else "cli"))
+            put(f"  ● 후보인데 필터에 걸림 {len(filtered)}\n", "sec")
+            if not filtered:
+                put("     (없음)\n", "dim")
+            cnt = {}
+            for _, side, _, lab in filtered:
+                k = (side, "상장 기간 미달" if lab.startswith("상장") else "ATR 높음" if lab.startswith("ATR")
+                     else "7일 급등" if lab.startswith("7일") else "시장 반등 중" if lab.startswith("시장 반등")
+                     else re.sub(r"\s+", " ", re.sub(r"[-+]?\d+(?:\.\d+)?%?(?!h)", "", lab)).strip())
+                cnt[k] = cnt.get(k, 0) + 1
+            if filtered:
+                summ = " · ".join(f"{'롱' if s_ == 'long' else '숏'} {k_} {n}" for (s_, k_), n in
+                                  sorted(cnt.items(), key=lambda kv: -kv[1])[:8])
+                put(f"     필터별: {summ}\n", "dim")
+            for r, side, rs, lab in sorted(filtered, key=lambda x: (x[1], x[3], x[0]['ticker'])):
+                ln = line_no()
+                self._status_line_tk[ln] = r['ticker']
+                put("     ")
+                put(f"{r['ticker']}", "tk")
+                put(f" {'롱' if side == 'long' else '숏'} ", side)
+                put(f"[{lab}]", "flt")
+                e4, p = r.get('exp4'), r.get('p_up')
+                vtag = "V3 " if ex == "binance" else ""  # 바이낸스 스냅샷 확률은 V3 모델 값(롱 판정은 원화모델 — 그 값은 [ ] 안 문구)
+                put(f"  {vtag}4h {e4:+.2f}% · 확률 {p:.2f}" if (e4 is not None and p is not None) else "", "dim")
+                put("\n")
+        t.configure(state="disabled")
+        t.yview_moveto(y0)
+        mode = "확률필터 OFF(필터 전 판정)" if use_raw else "확률필터 ON"
+        self._cfg(self._status_info, text=f"판정 통과 {tot_pass} · 필터에 걸린 후보 {tot_flt} · {mode} · "
+                                         f"자동진입 {'ON' if self.auto_cfg.get('on') else 'OFF'} · {time.strftime('%H:%M:%S')} · 줄 누르면 티커 입력")
+        self._cfg(self.btn_view_status, text=f"상황 ({tot_pass})" if tot_pass else "상황")
 
     # ── [2026-10-14 추가] 순위 탭 ─────────────────────────────────
     # 점수 누적식(롱/숏/매집/분산 점수)과 별개로, 서버 확률모델(prob_model.py)의 24h 상승확률
@@ -1736,6 +1992,10 @@ class TradingClient:
             self._auto_entry_bg_check()
         except Exception as e:
             print(f"자동진입(다른 거래소) 확인 실패: {e}")
+        try:
+            self._render_status_panel()  # [2026-11-26] 상황 탭 — 보고 있는 거래소 스냅샷이 안 바뀌어도 2초마다 다른 거래소 반영
+        except Exception as e:
+            print(f"상황 탭 갱신 실패: {e}")
         acc = read_account_snapshot()
         if acc:
             self._account = acc
@@ -1944,6 +2204,10 @@ class TradingClient:
                 self._render_rank_panel(data_list)
             except Exception as e:
                 print(f"순위 탭 갱신 실패: {e}")
+            try:
+                self._render_status_panel()  # [2026-11-26] 상황 탭(보고 있을 때만, 2초 간격)
+            except Exception as e:
+                print(f"상황 탭 갱신 실패: {e}")
             self._update_score_history(data_list)
             yview_top = self.card_canvas.yview()[0]
             data_list = self._apply_search_filter(data_list)
@@ -3982,7 +4246,11 @@ class TradingClient:
                     "30일 내 하루 ±30% 급변·ATR 3% 이상·7일 +50% 이상을 빼고 24h 거래대금 상위 300개를 바이낸스 캔들로 채점합니다(3분마다). "
                     "확률모델은 바이낸스 데이터로 학습한 V3 모델(코인 자체 특성+BTC 흐름)이고, 판정은 상장 2년 이상 · 1h ATR 2.5% 미만 · "
                     "7일 +50% 미만 코인만 냅니다(1년 검증: 숏 327건 승률 78%, 청산 5.5%). 가격은 달러로 표시됩니다. "
-                    "자동진입은 켜져 있으면 세 거래소 판정을 모두 봅니다(같은 코인을 이미 들고 있으면 건너뜀)."),
+                    "자동진입은 켜져 있으면 세 거래소 판정을 모두 봅니다(같은 코인을 이미 들고 있으면 건너뜀). "
+                    "· 상황 탭(2026-11-26): 빗썸·업비트·바이낸스의 지금 롱/숏 진입 후보를 한 화면에 보여줍니다. "
+                    "'판정 통과'는 판정이 떠 있는 코인과 자동진입 여부(가능 / 보유 중 / 상장 기간·하락장 롱·강제청산 차단 등 클라이언트 조건), "
+                    "'후보인데 필터에 걸림'은 서버가 후보로 봤지만 대기시킨 코인과 걸린 필터 이름([ ] 안: 상장 기간·ATR·확률 미달·시장 반등 대기·손절차단 등)입니다. "
+                    "2초마다 갱신, 줄을 누르면 아래 티커 칸에 들어갑니다."),
             # [2026-10-17] 판정 v2·확률모델·순위 탭 반영해서 앞부분 갱신(세부 설정값은 reports/SETTINGS.pdf)
             ("판정 (✅ 판정 롱/숏)", "카드에서 실제로 볼 신호는 이것 하나입니다. 2026-10-15부터 판정은 점수 누적식이 아니라 "
                     "확률모델 기준(판정 v2)입니다.\n"
