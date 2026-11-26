@@ -32,3 +32,4 @@
 주문용 클라이언트 시작 | 데이터 폴더: /storage/emulated/0/Documents
 [2026-11-26 14:07:30.33] client start 
 주문용 클라이언트 시작 | 데이터 폴더: /storage/emulated/0/Documents
+[2026-11-26 16:37:28.76] client start 
