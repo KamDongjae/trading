@@ -3841,6 +3841,14 @@ def apply_prob_filter(results, exchange='bithumb'):
                 prob_model.predict(results)
             else:
                 prob_model.predict(results, profile=prof)
+            # [2026-11-26 수동, 사용자 요청] 바이낸스 탭 롱은 원화 모델(IC 0.22, V3는 0.06)의 p_up·exp4로 판정 — 숏은 V3 그대로
+            if exchange == 'binance' and BINANCE_LONG_MODEL == 'krw' and prof != 'krw':
+                _tmp = [{'ticker': r.get('ticker'), '_pmf': r.get('_pmf')} for r in results if r.get('_pmf')]
+                if _tmp:
+                    prob_model.predict(_tmp)
+                    _km = {d['ticker']: (d.get('p_up'), d.get('exp4')) for d in _tmp}
+                    for r in results:
+                        r['p_up_krw'], r['exp4_krw'] = _km.get(r.get('ticker'), (None, None))
     except Exception as e:
         print(f"상승확률 계산 실패: {e}")
     # 시장 평균(전 종목 단순평균) 4h/24h 등락 — prob_model 학습 피처(mkt_r24)와 같은 정의
@@ -3874,14 +3882,17 @@ def apply_prob_filter(results, exchange='bithumb'):
             _s_cut = BINANCE_V3_SHORT_EXP4_MAX if (exchange == 'binance' and BINANCE_UNIVERSE == 'v3') else V2_SHORT_EXP4_MAX  # [2026-11-26 수동, 사용자 요청]
             reg = r.get('regime') or _regime_of(exchange)  # [2026-11-23] 거래소별 자기 레짐(업비트도 빗썸 레짐 말고 업비트 레짐)
             if v == 'LONG':
+                _mtag = ''
+                if exchange == 'binance' and BINANCE_LONG_MODEL == 'krw' and r.get('p_up_krw') is not None and r.get('exp4_krw') is not None:
+                    p, e4, _mtag = r['p_up_krw'], r['exp4_krw'], '원화모델 '  # [2026-11-26 수동, 사용자 요청]
                 if p < PROB_LONG_MIN:
-                    r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) 확률 {p:.2f} 미달"
+                    r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) {_mtag}확률 {p:.2f} 미달"
                 elif e4 <= V2_LONG_EXP4_MIN:
-                    r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) 4h예상 {e4:+.2f}% 부족"
+                    r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) {_mtag}4h예상 {e4:+.2f}% 부족"
                 elif BEAR_LONG_BLOCK and reg == '하락장' and not (mkt_r24 is not None and mkt_r24 > BEAR_LONG_UNLOCK_MKT_R24):
-                    r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) 하락장 대기 · 4h예상 {e4:+.2f}%"
+                    r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) 하락장 대기 · {_mtag}4h예상 {e4:+.2f}%"
                 else:
-                    r['verdict_reason'] = f"{why} · 4h예상 {e4:+.2f}% · 확률 {p:.2f}"
+                    r['verdict_reason'] = f"{why} · {_mtag}4h예상 {e4:+.2f}% · 확률 {p:.2f}"
             elif e4 < _s_cut and p < V2_SHORT_PUP_MAX and mkt_r4 is not None and mkt_r4 >= V2_SHORT_BLOCK_MKT_R4:
                 r['verdict'], r['verdict_reason'] = '', f"숏후보 시장 반등 중(4h {mkt_r4:+.1f}%) 대기 · 4h예상 {e4:+.2f}%"
             elif (e4 < _s_cut and p < V2_SHORT_PUP_MAX and V2_SHORT_RSI_MIN
@@ -4594,6 +4605,10 @@ BINANCE_V3_CLOSED_BAR = True
 # [2026-11-26] 바이낸스 V3 롱 판정: 1년 검증(reports/binance_backtest14_20261125.md) 상한 근사에서도 -$68(앞 -$168 / 뒤 +$100) → 끔(판정 대기)
 #   True로 바꾸면 다시 냄(가드는 똑같이 적용)
 BINANCE_V3_LONG = True  # [2026-11-26 19시 수동, 사용자 요청] 다시 켬(되돌리기: False 또는 backups\20261126\trading_server.py) / [이전 17시] 다시 끔 — 1년 백테스트에서 모델 롱 240조합(컷·보유 4~48h·수익컷·시장/BTC 필터)·캔들 눌림목 롱 40조합 모두 통과 0, 비용 전 가격수익 건당 -0.8~+0.5%
+# [2026-11-26 19시 수동, 사용자 요청] 바이낸스 탭 롱 판정에 쓸 모델: 'krw' = 원화 모델(업비트 42종목 2년 학습, holdout IC p_up 0.136·exp4 0.219)
+#   'v3' = 바이낸스 V3 모델(IC 0.057/0.056 — exp4가 0 근처로 쪼그라들어 오늘 00~19시 exp4>0.2가 0.02%뿐). 숏은 항상 V3.
+#   주의: 원화 모델 바이낸스 롱은 백테스트 안 함. 되돌리기: 'v3' 또는 backups\20261126\trading_server.py_1958
+BINANCE_LONG_MODEL = 'krw'
 BINANCE_V3_STABLES = {"USDT", "USDC", "FDUSD", "TUSD", "BUSD", "USD1", "USDP", "DAI", "USDE", "RLUSD", "PYUSD", "XUSD", "EUR", "BFUSD"}
 BINANCE_SCORE_MIN_CYCLE_SEC = 180  # 바이낸스 탭 채점 주기 최소 간격(300코인 × 캔들 요청 — API 한도 보호)
 BINANCE_OI_TTL = 1800             # 바이낸스 탭 OI·롱숏비 캐시(초) — 심볼별 요청이라 300코인이면 한도(5분 1000회) 넘음
