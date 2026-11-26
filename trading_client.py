@@ -60,6 +60,11 @@ AUTO_ENTRY_LOG = os.path.join(SCRIPT_DIR, "auto_entry_log.csv")  # 자동진입 
 AUTO_ENTRY_USD = 30         # 자동진입 증거금($) 기본값 — 설정 창에서 바꿀 수 있음  [2026-11-22 수동] 200→30 (1년 백테스트 3배·48h·$30 추천값)
 AUTO_ENTRY_LEVERAGE = 3     # 자동진입 레버리지 기본값  [2026-11-22 수동] 10→3
 AUTO_ENTRY_HOLD_H = 48      # 자동진입 포지션 자동 정리(시간) 기본값, 0이면 안 함  [2026-11-22 수동] 12→48
+# [2026-11-26 수동, 사용자 요청] 수익 유지 컷: 자동진입 포지션이 가격 기준 이익 ACT% 이상 났다가, 최대 이익에서 GIVE%p 되돌리면 48h 전이라도 정리.
+#   1년 백테스트(reports/exit_study_20261126.md, V3 숏 327건·비용 -4.2%): 48h 고정 +$837 → 15%후 3%p +$848(월 중앙 +$30→+$54, 앞뒤 모두 +). 끄려면 False
+AUTO_TRAIL_ON = True
+AUTO_TRAIL_ACT_PCT = 15.0    # 가격 기준 이익(숏은 하락폭) 이 % 이상 나면 추적 시작
+AUTO_TRAIL_GIVE_PCT = 3.0    # 최대 이익 지점에서 이 %p 되돌리면 정리
 AUTO_ENTRY_AMT_MODE = "usd"   # [2026-11-22 수동, 사용자 요청] 1회 진입 금액 방식: "usd"=고정 $ / "pct"=현금(잔고)의 % / "rule"=사용자 정의(sizing_rule.py)
 AUTO_ENTRY_PCT = 3.0          # "pct"일 때 현금의 몇 %. 진입할 때마다 그 시점 현금 기준으로 다시 계산(정리로 현금 110%가 되면 110을 100으로 봄)
 AUTO_ENTRY_SKIP_BEAR_LONG = True     # [2026-11-22 수동] 레짐 하락장이면 롱 자동진입 안 함(1년 백테스트 하락장 롱 35건 승률 37%·-$40)
@@ -3430,7 +3435,8 @@ class TradingClient:
         포지션이 이미 없어졌으면(수동 정리·청산) 목록에서만 지운다."""
         if not self._auto_pos:
             return
-        held = {p['ticker'] for p in (self._account[2] if self._account else [])}
+        pos_map = {p['ticker']: p for p in (self._account[2] if self._account else [])}
+        held = set(pos_map)
         changed = False
         now = time.time()
         for t, info in list(self._auto_pos.items()):
@@ -3440,7 +3446,25 @@ class TradingClient:
                     changed = True
                 continue
             h = float(info.get('hold_h', 0) or 0)
-            if h <= 0 or t in self._auto_closing or now - info.get('t', now) < h * 3600:
+            if t in self._auto_closing:
+                continue
+            # [2026-11-26 수동, 사용자 요청] 수익 유지 컷 — 최대 이익(best, 가격 %)을 기억했다가 GIVE%p 되돌리면 정리
+            trail_hit = False
+            if AUTO_TRAIL_ON:
+                p = pos_map.get(t)
+                if p and p.get('entry_price', 0) > 0 and p.get('current_price', 0) > 0:
+                    ep, cp = p['entry_price'], p['current_price']
+                    gain = ((ep - cp) / ep if p.get('position_type') == 'short' else (cp - ep) / ep) * 100
+                    best = float(info.get('best', 0) or 0)
+                    if gain > best + 0.1:
+                        info['best'] = round(gain, 2)
+                        if int(gain * 2) != int(best * 2):   # 0.5%p 오를 때마다만 파일 저장
+                            changed = True
+                        best = gain
+                    if best >= AUTO_TRAIL_ACT_PCT and gain <= best - AUTO_TRAIL_GIVE_PCT:
+                        trail_hit = True
+                        info['close_reason'] = f"수익유지(최대 {best:.1f}% → {gain:.1f}%)"
+            if not trail_hit and (h <= 0 or now - info.get('t', now) < h * 3600):
                 continue
             try:
                 cmd_id = send_command('close', t, exchange=info.get('ex', self.current_exchange))
@@ -3448,7 +3472,7 @@ class TradingClient:
                 self._auto_log(info.get('ex', ''), t, info.get('side', ''), "fail", f"정리 명령 실패: {e}", action='close')
                 continue
             self._auto_closing.add(t)
-            self._cfg(self.auto_entry_status, text=f"{t} {h:g}h 경과 — 정리 요청…", fg="#c9a800")
+            self._cfg(self.auto_entry_status, text=(f"{t} 수익유지 컷 — 정리 요청…" if trail_hit else f"{t} {h:g}h 경과 — 정리 요청…"), fg="#c9a800")
             self._auto_close_wait(cmd_id, t, info, tries=16)
         if changed:
             self._save_auto_pos()
@@ -3459,7 +3483,7 @@ class TradingClient:
             status, msg = res if res else ('fail', '서버 응답 없음')
             ok = status == 'ok'
             self._auto_log(info.get('ex', ''), t, info.get('side', ''), "ok" if ok else "fail",
-                           f"{float(info.get('hold_h', 0)):g}h 자동정리: {msg}", action='close')
+                           (f"{info['close_reason']} 자동정리: {msg}" if info.get('close_reason') else f"{float(info.get('hold_h', 0)):g}h 자동정리: {msg}"), action='close')
             self._cfg(self.auto_entry_status,
                       text=f"{time.strftime('%H:%M')} {t} {'자동정리' if ok else '정리 실패'}",
                       fg="#2f7fbf" if ok else "#e04040")
@@ -3467,6 +3491,8 @@ class TradingClient:
             if ok:
                 self._auto_pos.pop(t, None)
                 self._save_auto_pos()
+            else:
+                info.pop('close_reason', None)
             return
         self.root.after(500, lambda: self._auto_close_wait(cmd_id, t, info, tries - 1))
 
@@ -3977,6 +4003,7 @@ class TradingClient:
                     "같은 코인에 포지션이 있으면 건너뜁니다. 바이낸스 선물에 없는 코인(카드의 '선물 미상장')은 롱·숏 모두 자동진입하지 않습니다. 잔고 제한은 충전된 잔고 안에서만(부족하면 건너뜀), "
                     "잔고 무시는 부족해도 강제로 들어가서 잔고가 마이너스가 될 수 있습니다. 클라이언트가 켜져 있을 때만 "
                     "동작하고, 결과는 버튼 옆과 auto_entry_log.csv에 남습니다. '진입 후 N시간 지나면 자동 정리'(기본 48, 0=안 함)는 "
+                    "시간 전이라도 가격 기준 이익이 15% 이상 났다가 최대 이익에서 3%p 되돌리면 먼저 정리합니다(수익 유지 컷, 기록엔 '수익유지'로 남음). "
                     "자동진입으로 산 포지션만 정리하며, 클라이언트가 꺼져 있다가 켜지면 시간이 지난 것부터 바로 정리합니다. "
                     "기기마다 따로 기억됩니다."),
             ("순위 탭", "상단 '코인 | 순위 | 포지션' 중 순위. 점수와 별개로 전 종목을 4h 예상수익 순으로 줄 세워 "
