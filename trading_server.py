@@ -57,6 +57,7 @@ INITIAL_BALANCE = 10000  # USD (달러 기준 계좌)
 DEFAULT_LEVERAGE = 10
 FEE_RATE = 0.0004
 SLIPPAGE_RATE = 0.007  # [2026-07-21 조정] 0.3%→0.7% — 실제 바이낸스 체결과 비교해보니 0.3%는 낮았음
+EXIT_SLIPPAGE_RATE = 0.007  # [2026-11-26 수동, 사용자 요청] 정리(청산 버튼·48h 자동정리·부분청산)할 때도 슬리피지 0.7% — 진입과 같게. 강제청산은 적용 안 함. 0이면 예전처럼 정리 슬리피지 없음
 
 # ============================================================
 # [2026-07-26 추가] 바이낸스 미상장 코인 거래 지원 — 원/달러 환율(전날 종가 기준, 실시간 아님)
@@ -6076,6 +6077,8 @@ def srv_close(ticker):
         if DROP_NO_PRICE_ON_CLOSE:
             return _drop_position_no_price(ticker, pos)
         return False, "가격 없음 (잠시 후 다시 시도)"
+    # [2026-11-26 수동, 사용자 요청] 정리 슬리피지 — 롱은 더 낮게, 숏은 더 높게 체결된 것으로 계산(진입 SLIPPAGE_RATE와 같은 방식)
+    price = price * (1 - EXIT_SLIPPAGE_RATE) if pos['position_type'] == 'long' else price * (1 + EXIT_SLIPPAGE_RATE)
     ptype = pos['position_type']
     is_krw = pos.get('price_currency') == 'krw'
     rate = (price - pos['entry_price']) / pos['entry_price'] if ptype == 'long' else (pos['entry_price'] - price) / pos['entry_price']
@@ -6181,6 +6184,8 @@ def srv_close_partial(ticker, fraction):
         auto_fixed = auto_fixed or auto_fixed2
     if not price or price <= 0:
         return False, "가격 없음 (잠시 후 다시 시도)"
+    # [2026-11-26 수동, 사용자 요청] 정리 슬리피지(부분청산도 같게)
+    price = price * (1 - EXIT_SLIPPAGE_RATE) if pos['position_type'] == 'long' else price * (1 + EXIT_SLIPPAGE_RATE)
     ptype = pos['position_type']
     lev = pos['leverage']
     is_krw = pos.get('price_currency') == 'krw'
