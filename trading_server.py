@@ -4028,7 +4028,7 @@ def _binance_v3_guard(results, feats):
         ld = r.get('listing_days')
         why = None
         if not BINANCE_V3_LONG and 'LONG' in (v, vr):
-            why = "바이낸스 V3 롱 끔(1년 검증 -$68)"
+            why = "바이낸스 V3 롱 끔(1년 검증 통과 0)"
         elif r.get('p_up') is None:
             why = "V3 모델 확률 없음"
         elif ld is None or ld < 0 or ld < BINANCE_V3_MIN_LISTING_D:
@@ -4593,7 +4593,7 @@ BINANCE_V3_R7_MAX = 50.0          # 판정 가드: 7일 < +50%
 BINANCE_V3_CLOSED_BAR = True
 # [2026-11-26] 바이낸스 V3 롱 판정: 1년 검증(reports/binance_backtest14_20261125.md) 상한 근사에서도 -$68(앞 -$168 / 뒤 +$100) → 끔(판정 대기)
 #   True로 바꾸면 다시 냄(가드는 똑같이 적용)
-BINANCE_V3_LONG = True   # [2026-11-26 01시 수동, 사용자 요청] 롱 끔 해제(시뮬 단계 — 예외 케이스 보면서 개선)
+BINANCE_V3_LONG = False  # [2026-11-26 17시 수동, 사용자 요청] 다시 끔 — 1년 백테스트에서 모델 롱 240조합(컷·보유 4~48h·수익컷·시장/BTC 필터)·캔들 눌림목 롱 40조합 모두 통과 0, 비용 전 가격수익 건당 -0.8~+0.5%
 BINANCE_V3_STABLES = {"USDT", "USDC", "FDUSD", "TUSD", "BUSD", "USD1", "USDP", "DAI", "USDE", "RLUSD", "PYUSD", "XUSD", "EUR", "BFUSD"}
 BINANCE_SCORE_MIN_CYCLE_SEC = 180  # 바이낸스 탭 채점 주기 최소 간격(300코인 × 캔들 요청 — API 한도 보호)
 BINANCE_OI_TTL = 1800             # 바이낸스 탭 OI·롱숏비 캐시(초) — 심볼별 요청이라 300코인이면 한도(5분 1000회) 넘음
