@@ -70,7 +70,7 @@ AUTO_ENTRY_PCT = 3.0          # "pct"일 때 현금의 몇 %. 진입할 때마�
 AUTO_ENTRY_SKIP_BEAR_LONG = True     # [2026-11-22 수동] 레짐 하락장이면 롱 자동진입 안 함(1년 백테스트 하락장 롱 35건 승률 37%·-$40)
 AUTO_ENTRY_STRONG_SHORT_EXP4 = -1.0  # [2026-11-22 수동] 숏이고 4h예상(exp4) ≤ 이 값이면 '강한 숏'
 AUTO_ENTRY_STRONG_MULT = 2.0         # 강한 숏 진입 금액 배수(1년 백테스트 +$887→+$1,324)
-AUTO_ENTRY_MIN_LISTING_DAYS = 180    # [2026-11-22 수동, 사용자 요청] 상장 6개월(180일) 미만 코인은 자동진입 안 함(서버 snapshot listing_days 기준, 판정 표시는 서버가 7일 이상만). 0이면 끔
+AUTO_ENTRY_MIN_LISTING_DAYS = 90    # [2026-11-26 19시 수동, 사용자 요청] 180→90(상장 3개월 컷). 되돌리기: 180 또는 backups\20261126\trading_client.py / [2026-11-22 수동, 사용자 요청] 상장 6개월(180일) 미만 코인은 자동진입 안 함(서버 snapshot listing_days 기준, 판정 표시는 서버가 7일 이상만). 0이면 끔
 # [2026-11-23 수동, 사용자 요청] 재진입 가드 — 11/23 10:05 재시작 직후 업비트 첫 스냅샷이 비어 있어(서버 "업비트 0개")
 # 계속 떠 있던 ELSA·PIEVERSE 숏이 '새 신호'로 잡혀 10:06:40에 동시 재진입(둘 다 전날 강제청산된 코인).
 #  1) 판정 기억(_auto_seen)을 파일에 저장해 재시작해도 유지. 같은 코인·같은 방향 판정을 AUTO_RESIGNAL_GAP_H 안에
@@ -3243,11 +3243,11 @@ class TradingClient:
             if lq:
                 self._auto_log(ex, t, ptype, "skip", f"강제청산 후 {AUTO_LIQ_BLOCK_H:g}h 차단(~{time.strftime('%m-%d %H:%M', time.localtime(lq))})")
                 continue
-            # [2026-11-22 수동, 사용자 요청] 상장 6개월 미만 코인은 자동진입 안 함(수동 진입용 판정은 7일 이상이면 표시)
+            # [2026-11-22 수동, 사용자 요청 · 11-26 3개월로] 상장 AUTO_ENTRY_MIN_LISTING_DAYS일 미만 코인은 자동진입 안 함(수동 진입용 판정은 7일 이상이면 표시)
             ld = rows_by_t.get(t, {}).get('listing_days')
             # [2026-11-24 수동, 사용자 요청] 보수적으로: 상장일 열이 없거나(None, 재시작 직후 구버전 스냅샷 등) 조회 실패(-1)여도 건너뜀
             if AUTO_ENTRY_MIN_LISTING_DAYS and (ld is None or ld < AUTO_ENTRY_MIN_LISTING_DAYS):
-                self._auto_log(ex, t, ptype, "skip", f"상장 {ld}일(6개월 미만)" if (ld is not None and ld >= 0) else "상장일 확인 안 됨")
+                self._auto_log(ex, t, ptype, "skip", f"상장 {ld}일({AUTO_ENTRY_MIN_LISTING_DAYS // 30}개월 미만)" if (ld is not None and ld >= 0) else "상장일 확인 안 됨")
                 continue
             # [2026-11-22 수동, 사용자 요청] 하락장 롱 제외
             row_t = rows_by_t.get(t, {})
