@@ -181,3 +181,6 @@
 | 11/26 | 바이낸스 V3 백테스트 맞추기: `BINANCE_V3_CLOSED_BAR`=True(닫힌 1h봉 피처·손절 차단 기준가), 바이낸스 V3 탭 RSI≥50 규칙 제외, `BINANCE_V3_LONG`=False(롱 검증 탈락) (사용자 요청, reports/binance_backtest14_20261125.md) | backups\20261126_v3_parity |
 | 11/26 | `BINANCE_V3_LONG`=True (롱 끔 해제, 사용자 요청 — 검증은 -$68이었음) | backups\20261126_v3_long_on |
 | 11/26 | 정리 슬리피지 추가: 모의 서버 `EXIT_SLIPPAGE_RATE`=0.007(청산 버튼·48h 자동정리·부분청산 때 롱은 0.7% 낮게·숏은 0.7% 높게 체결, 강제청산 제외 — 진입 `SLIPPAGE_RATE` 0.7%와 같게), 바이낸스 백테스트 bt~bt14 비용 `COST` 0.021→0.042(진입 0.7%+정리 0.7%, 3배 증거금 -4.2%), 정리 비용 비교용 binance_backtest15.py 추가 (사용자 요청) | backups\20261126_exit_slippage |
+| 11/26 | 모의 서버 `CLAUDE_CMDS`=True: trading\claude_cmds\ 에 넣은 cmd_*.csv 도 처리(결과 claude_cmds\results.csv) — Claude가 계좌 조작 가능 (사용자 요청) | backups\20261126_claude_cmds |
+| 11/26 | 클라 수익 유지 컷 `AUTO_TRAIL_ON`=True, `AUTO_TRAIL_ACT_PCT`=15, `AUTO_TRAIL_GIVE_PCT`=3: 자동진입 포지션이 가격 기준 이익 15% 이상 났다가 최대 이익에서 3%p 되돌리면 48h 전 정리. 1년 백테스트 +$837→+$848, 월 중앙 +$30→+$54 (reports/exit_study_20261126.md, 사용자 요청) | backups\20261126_trail_cut |
+| 11/26 13:13 | 모의 계좌 리셋(전체 청산 → 잔고·통장 리셋 → 청산 기록 초기화 → 통장입금·충전 $1,000), 사용자 요청. 이전 런 최종 총자산 $944.1·정리 20건·강제청산 4건·실현 -$49.4 | (데이터 백업 없음 — 서버 리셋 명령) |

@@ -1,5 +1,14 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-11-26 (수동, 12~13시 KST, 사용자 요청) — Claude 명령 폴더 · 수익 유지 컷 · 모의 계좌 리셋
+
+- **trading_server.py** `CLAUDE_CMDS = True`, `CLAUDE_CMD_DIR = trading\claude_cmds`: `process_commands`가 Documents\server_cmds 와 함께 trading\claude_cmds 의 cmd_*.csv 도 처리, 결과를 claude_cmds\results.csv 에도 기록. 되돌리기: `CLAUDE_CMDS = False` 또는 backups\20261126_claude_cmds\trading_server.py
+- **trading_client.py** 수익 유지 컷 `AUTO_TRAIL_ON/ACT_PCT/GIVE_PCT` = True/15/3: `_auto_close_check`에서 자동진입 포지션의 최대 이익(가격 %)을 auto_entry_positions.json 'best'에 기억, 15% 이상 났다가 3%p 되돌리면 정리(로그 '수익유지(최대 x% → y%) 자동정리'). 설명 창 문구 추가. 근거: reports/exit_study_20261126.md(V3 숏 327건, 비용 -4.2%: 48h 고정 +$837 → +$848, 월 중앙 +$30→+$54, 앞뒤 모두 +; 손절 컷은 +10~25% 모두 악화라 미적용). 되돌리기: `AUTO_TRAIL_ON = False` 또는 backups\20261126_trail_cut\trading_client.py
+- 13:07 스케줄러 자동 재시작(서버·클라)으로 둘 다 적용
+- **모의 계좌 리셋 13:11~13:13**(claude_cmds 명령): close_all(ZIL·WAXP 정리) → reset → reset_history → bank_deposit $1,000 → charge $1,000. 결과 잔고 $1,000·포지션 0·시드 $1,000. 이전 런(11/22~11/26) 최종: 총자산 $944.1(-5.6%), 정리 20건(승 10)·강제청산 4건·실현 -$49.4
+- 같이 한 분석(코드 변경 없음): reports/filter_study_20261126.md(가드 걸린 후보 — 상장 730일 미만 청산 15.7%, ATR≥2.5 16.7% → 가드 유지), pump_fade_20261126.md(7일 급등 후 꺾이면 숏 — 청산 8~40%, 탈락), random10_12h_20261126.md(랜덤 10개 12h 50번 전부 손실, 현재 규칙 승률 63% vs 랜덤 28%)
+- 발견: 09:07 클라 재시작 뒤 auto_entry_positions.json 이 비어 ZIL(11/24 진입) 48h 자동정리가 안 됨 — 원인 확인 필요
+
 ## 2026-11-26 (수동, 09시 KST, 사용자 요청) — 정리(청산) 슬리피지 0.7% 반영
 
 - 배경: 백테스트·시뮬·모의 서버가 진입 슬리피지 0.7%만 빼고 48h 정리 때 비용은 안 뺐음(서버는 정리 수수료 0.04%만). 사용자: "진입 0.7 수정 필요한 건 다 고쳐, 정리 0.7도 포함"

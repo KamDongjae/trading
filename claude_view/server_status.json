@@ -1,26 +1,9 @@
 {
- "ts": "2026-11-26 12:57:33",
- "pid": 6392,
+ "ts": "2026-11-26 13:32:38",
+ "pid": 6500,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 888.93,
- "n_positions": 2,
- "positions": [
-  {
-   "ticker": "ZIL",
-   "type": "short",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.000836106,
-   "entry_time": "2026-11-24 13:32:23"
-  },
-  {
-   "ticker": "WAXP",
-   "type": "short",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.003370242,
-   "entry_time": "2026-11-25 12:42:16"
-  }
- ],
+ "balance": 1000.0,
+ "n_positions": 0,
+ "positions": [],
  "note": "모의 서버 상태 사본. 실시간 손익은 server_account.csv, 청산 기록은 trade_history_usd.csv"
 }
