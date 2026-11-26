@@ -1,9 +1,9 @@
 {
- "ts": "2026-11-27 06:37:11",
+ "ts": "2026-11-27 06:59:31",
  "pid": 1656,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 699.64,
- "n_positions": 10,
+ "balance": 669.61,
+ "n_positions": 11,
  "positions": [
   {
    "ticker": "PENDLE",
@@ -84,6 +84,14 @@
    "leverage": 3,
    "entry_price": 0.038528400000000004,
    "entry_time": "2026-11-27 01:02:35"
+  },
+  {
+   "ticker": "META",
+   "type": "short",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 609.74172,
+   "entry_time": "2026-11-27 06:56:24"
   }
  ],
  "note": "모의 서버 상태 사본. 실시간 손익은 server_account.csv, 청산 기록은 trade_history_usd.csv"
