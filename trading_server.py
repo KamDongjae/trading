@@ -2218,11 +2218,80 @@ def debounce_regime_value(state, confirmed, candidate, now=None):
         return candidate
     return confirmed
 
-def _debounce_regime(exchange, candidate):
+# [2026-11-27 수동, 사용자 요청] 재시작 직후 레짐 오판 방지.
+#   근거: 11/27 00:07 서버 재시작 → 바이낸스 레짐 normal 3분 → '하락장' 00:10~00:38(같은 시각 PC 수집기 상승장)
+#   → 클라 '하락장 롱 제외'로 ATOM·REZ·ARB 롱 건너뜀(4h +0.92/+3.92/+3.01%). 원인: 확정 레짐이 normal이면
+#   첫 후보를 바로 확정(디바운스 없음) + 재시작 직후 캔들 조회 실패로 일부 코인만 계산된 사이클.
+#   ① 마지막 확정 레짐을 regime_state.json에 저장 → 재시작 때 30분 이내 값이면 그대로 이어받음
+#   ② 이어받을 값이 없으면 새 후보도 15분(REGIME_CONFIRM_SECONDS) 유지돼야 확정(그동안 normal = 하락장 대기 안 함)
+#   ③ 계산된 코인이 대상의 80% 미만인 사이클은 레짐을 안 바꿈
+#   끄기: REGIME_RESTART_GUARD = False (예전 동작)
+REGIME_RESTART_GUARD = True
+REGIME_RESTORE_MAX_AGE_S = 1800   # 저장된 레짐을 이어받는 최대 경과 시간(초)
+REGIME_MIN_RESULT_RATIO = 0.8     # 계산 성공 코인 비율이 이보다 낮은 사이클은 레짐 갱신 안 함
+REGIME_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'regime_state.json')
+_regime_restore_done = set()
+_regime_state_lock = threading.Lock()
+
+def _regime_state_load():
+    try:
+        with open(REGIME_STATE_FILE, 'r', encoding='utf-8') as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+def _regime_state_save(exchange, regime):
+    if regime in (None, 'normal'):
+        return
+    try:
+        with _regime_state_lock:
+            d = _regime_state_load()
+            d[exchange] = {'regime': regime, 't': time.time()}
+            tmp = REGIME_STATE_FILE + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(d, f, ensure_ascii=False)
+            os.replace(tmp, REGIME_STATE_FILE)
+    except Exception as e:
+        print(f"레짐 저장 실패({exchange}): {e}")
+
+def _debounce_regime(exchange, candidate, n_results=None, n_tickers=None):
     """candidate가 REGIME_CONFIRM_SECONDS 동안 계속 나와야 확정 레짐을 바꾼다."""
     confirmed = {'bithumb': current_market_regime, 'upbit': current_market_regime_upbit,
                  'binance': current_market_regime_binance}.get(exchange, current_market_regime)  # [2026-11-23] 바이낸스 탭
-    return debounce_regime_value(_regime_streak.setdefault(exchange, {'candidate': None, 'since': 0.0}), confirmed, candidate)
+    state = _regime_streak.setdefault(exchange, {'candidate': None, 'since': 0.0})
+    if not REGIME_RESTART_GUARD:
+        return debounce_regime_value(state, confirmed, candidate)
+    now = time.time()
+    if exchange not in _regime_restore_done:  # 재시작 후 첫 호출: 저장된 확정 레짐 이어받기
+        _regime_restore_done.add(exchange)
+        if confirmed in (None, 'normal'):
+            st = _regime_state_load().get(exchange) or {}
+            try:
+                age = now - float(st.get('t', 0))
+            except Exception:
+                age = 1e18
+            if st.get('regime') not in (None, 'normal') and age <= REGIME_RESTORE_MAX_AGE_S:
+                confirmed = st['regime']
+                print(f"🧭 레짐 이어받음({exchange}): {confirmed} ({age/60:.0f}분 전 저장)")
+    if n_tickers and n_results is not None and n_results < REGIME_MIN_RESULT_RATIO * n_tickers:
+        return confirmed  # 일부 코인만 계산된 사이클 — 레짐 그대로
+    if confirmed in (None, 'normal'):  # 이어받을 값 없음 → 새 후보도 15분 유지돼야 확정
+        if candidate in (None, 'normal'):
+            state['candidate'] = None
+            return 'normal'
+        if candidate != state.get('candidate'):
+            state['candidate'] = candidate
+            state['since'] = now
+            return 'normal'
+        if now - state.get('since', now) < REGIME_CONFIRM_SECONDS:
+            return 'normal'
+        state['candidate'] = None
+        new = candidate
+    else:
+        new = debounce_regime_value(state, confirmed, candidate, now)
+    _regime_state_save(exchange, new)
+    return new
 
 def detect_market_regime(results):
     """
@@ -4180,7 +4249,7 @@ def score_updater(tickers_ref, exchange='bithumb'):
             if exchange == 'bithumb':
                 global current_min_score, current_market_regime
                 current_min_score = compute_dynamic_min_score(results)
-                current_market_regime = _debounce_regime('bithumb', detect_market_regime(results))
+                current_market_regime = _debounce_regime('bithumb', detect_market_regime(results), len(results), len(tickers))  # [2026-11-27 수동] 부분 사이클 가드
                 with score_lock:
                     score_cache.clear()
                     for r in results:
@@ -4193,7 +4262,7 @@ def score_updater(tickers_ref, exchange='bithumb'):
             elif exchange == 'binance':  # [2026-11-23] 바이낸스 탭
                 global current_min_score_binance, current_market_regime_binance
                 current_min_score_binance = compute_dynamic_min_score(results)
-                current_market_regime_binance = _debounce_regime('binance', detect_market_regime(results))
+                current_market_regime_binance = _debounce_regime('binance', detect_market_regime(results), len(results), len(tickers))  # [2026-11-27 수동] 부분 사이클 가드
                 with score_lock:
                     score_cache_binance.clear()
                     for r in results:
@@ -4206,7 +4275,7 @@ def score_updater(tickers_ref, exchange='bithumb'):
             else:
                 global current_min_score_upbit, current_market_regime_upbit
                 current_min_score_upbit = compute_dynamic_min_score(results)
-                current_market_regime_upbit = _debounce_regime('upbit', detect_market_regime(results))
+                current_market_regime_upbit = _debounce_regime('upbit', detect_market_regime(results), len(results), len(tickers))  # [2026-11-27 수동] 부분 사이클 가드
                 with score_lock:
                     score_cache_upbit.clear()
                     for r in results:

@@ -1,5 +1,16 @@
 # Pyramide 자동 적용 변경 기록 (최신이 위)
 
+## 2026-11-27 (수동, 08시 KST, 사용자 요청) — 서버 재시작 직후 레짐 오판 방지
+
+- 계기: 11/27 00:07 서버 재시작(restart_all) → 바이낸스 레짐 normal 3분 → **'하락장' 00:10~00:38**(같은 시각 PC 수집기 상승장) → 클라 '하락장 롱 제외'로 ATOM·REZ·ARB 롱 건너뜀(4h +0.92/+3.92/+3.01%). 빗썸·업비트도 재시작마다 1~3분 normal 뒤 첫 후보가 바로 확정됨
+- 원인: `debounce_regime_value`는 확정 레짐이 normal이면 첫 후보를 디바운스 없이 바로 확정 + 재시작 직후엔 캔들 조회 실패로 일부 코인만 계산된 사이클이 나옴
+- **trading_server.py** `_debounce_regime`(+ 호출 3곳에 계산 코인 수 전달), 새 설정 `REGIME_RESTART_GUARD`=True · `REGIME_RESTORE_MAX_AGE_S`=1800 · `REGIME_MIN_RESULT_RATIO`=0.8:
+  ① 확정 레짐을 trading\regime_state.json에 저장, 재시작 때 30분 안 값이면 이어받음 ② 이어받을 값이 없으면 새 레짐도 15분 유지돼야 확정(그동안 normal — 하락장 대기·하락장 롱 제외 안 걸림) ③ 계산된 코인이 대상의 80% 미만인 사이클은 레짐 안 바꿈
+- 수집기는 `debounce_regime_value`를 직접 써서 영향 없음(그 함수는 그대로)
+- 테스트: py_compile, 스텁 import로 새 시작 → 15분 전엔 normal·뒤엔 확정, 저장 파일 1분 전 상승장 → 하락장 후보가 와도 상승장 유지, 1시간 지난 파일 → 무시, 100/300 부분 사이클 → 레짐 유지, 가드 끔 → 예전 동작. apply_prob_filter·calc_verdict·process_ticker 예외 없음
+- SETTINGS.md·SETTINGS.pdf 갱신. 서버 원격 restart 명령으로 반영(이번 재시작은 저장 파일이 없어 15분 워밍업)
+- 되돌리기: `REGIME_RESTART_GUARD = False` 또는 backups\20261127_regime_restart\trading_server.py
+
 ## 2026-11-27 (자동, 06:00 KST) — 변경 없음
 
 - 자동 적용 기준 통과 후보 0. 판정 숏 + RSI≥60은 학습 12h 91→94%·홀드 43→57%로 방향은 맞지만 홀드 12h 결과 7건(<10)·24h 학습 초과 악화라 보류. 숏−롱>20 대기는 학습 개선 없음

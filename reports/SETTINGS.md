@@ -1,6 +1,6 @@
 # Pyramide 설정값 정리
 
-마지막 갱신: 2026-11-26 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
+마지막 갱신: 2026-11-27 · 새 설정이 생기거나 값이 바뀌면 이 문서(reports/SETTINGS.md)와 PDF(reports/SETTINGS.pdf)를 같이 갱신한다.
 
 ## 바꾸는 법
 
@@ -46,6 +46,7 @@
 | `USE_RUNUP_SHORT_BONUS` | False | 3일 급등 숏 보너스(홀드아웃 실패로 꺼둠) |
 | `USE_SHORT_RISK_CAP` / `SHORT_RISK_CAP_SCORE` | True / 49 | 청산위험(ATR≥2% 또는 EMA20+4% 이상) 종목은 숏점수 최대 49 (10/17 자동 적용) |
 | `REGIME_CONFIRM_SECONDS` | 900 | 레짐(상승/하락/횡보/고변동)이 15분 유지돼야 전환 확정 |
+| `REGIME_RESTART_GUARD` / `REGIME_RESTORE_MAX_AGE_S` / `REGIME_MIN_RESULT_RATIO` | True / 1800 / 0.8 | (11/27) 서버 재시작 직후 레짐 오판 방지. 마지막 확정 레짐을 `regime_state.json`(trading 폴더)에 저장해 재시작 때 30분 안 값이면 이어받음, 이어받을 값이 없으면 새 레짐도 15분 유지돼야 확정(그동안 normal — 하락장 대기·하락장 롱 제외 안 걸림), 계산된 코인이 대상의 80% 미만인 사이클은 레짐을 안 바꿈. 계기: 11/27 00:07 재시작 뒤 바이낸스 레짐 28분 하락장(수집기 상승장) → 롱 3건 자동진입 건너뜀. False면 예전 동작 |
 | `USE_LOGISTIC_SCORE_MODEL` / `USE_SCORE_CALIBRATION` / `USE_CONDITION_MATCH_BONUS` | False | 예전 실험 기능(꺼짐 유지) |
 
 ## 3. 청산 위험 / 권장 레버리지 (trading_server.py)
@@ -191,3 +192,4 @@
 | 11/26 16시 | 바이낸스 V3 판정 가드 `BINANCE_V3_ATR_MAX` 2.5→3.0, 새 설정 `BINANCE_V3_SHORT_EXP4_MAX`=-0.3(바이낸스 V3 탭 모델 숏 컷만, 다른 탭 -0.5 그대로). 1년 백테스트(25/11~26/11, $30·3배·48h·비용 4.2%): 832건 청산 51(6.1%) +$1,076(앞/뒤 +$548/+$528, 낙폭 -$263) vs 이전 327건 18(5.5%) +$837 (사용자 요청) | backups\20261126_v3_atr3_exp4 |
 | 11/26 17시 | `BINANCE_V3_LONG`=False (다시 끔). 1년 백테스트(바이낸스 300개·가드 같음·$30·3배·비용 4.2%): 모델 롱 상승확률 0.55~0.65 × 4h예상 +0.1~+0.4 × 보유 4~48h·수익컷 × 시장/BTC 필터 240조합, 캔들 눌림목(매집 v7) 롱 40조합 모두 앞뒤 6개월 동시 + 없음. 비용 전 가격수익 건당 -0.8~+0.5% (사용자 요청, reports/binance_long_grid_20261126.csv · binance_pullback_long_20261126.csv) | backups\20261126_v3_long_off |
 | 11/26 22시 | 바이낸스 V3 판정 가드 `BINANCE_V3_MIN_LISTING_D` 730→600. 1년 백테스트(ATR<3·exp4<-0.3 숏, $30·3배·48h·비용 4.2%·청산 -90%): 1,014건 청산 64(6.3%) +$1,392(앞/뒤 +$602/+$790, 낙폭 -$302) vs 730일 832건 51(6.1%) +$1,076. 540일은 1,128건 6.7% +$1,178 (사용자 요청) | backups\20261126_v3_age600 |
+| 11/27 | 새 설정 `REGIME_RESTART_GUARD`=True·`REGIME_RESTORE_MAX_AGE_S`=1800·`REGIME_MIN_RESULT_RATIO`=0.8 — 재시작 직후 레짐 이어받기·워밍업 15분·부분 사이클 무시(사용자 요청, 11/27 00:07 재시작 뒤 바이낸스 레짐 28분 하락장 오판 → ATOM·REZ·ARB 롱 건너뜀) | backups\20261127_regime_restart |
