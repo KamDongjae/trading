@@ -3871,6 +3871,7 @@ def apply_prob_filter(results, exchange='bithumb'):
             r['verdict_raw'], r['verdict_reason_raw'] = '', ''  # [2026-11-22 복구]
         e4 = r.get('exp4')
         if VERDICT_V2 and e4 is not None:
+            _s_cut = BINANCE_V3_SHORT_EXP4_MAX if (exchange == 'binance' and BINANCE_UNIVERSE == 'v3') else V2_SHORT_EXP4_MAX  # [2026-11-26 수동, 사용자 요청]
             reg = r.get('regime') or _regime_of(exchange)  # [2026-11-23] 거래소별 자기 레짐(업비트도 빗썸 레짐 말고 업비트 레짐)
             if v == 'LONG':
                 if p < PROB_LONG_MIN:
@@ -3881,14 +3882,14 @@ def apply_prob_filter(results, exchange='bithumb'):
                     r['verdict'], r['verdict_reason'] = '', f"롱후보({why}) 하락장 대기 · 4h예상 {e4:+.2f}%"
                 else:
                     r['verdict_reason'] = f"{why} · 4h예상 {e4:+.2f}% · 확률 {p:.2f}"
-            elif e4 < V2_SHORT_EXP4_MAX and p < V2_SHORT_PUP_MAX and mkt_r4 is not None and mkt_r4 >= V2_SHORT_BLOCK_MKT_R4:
+            elif e4 < _s_cut and p < V2_SHORT_PUP_MAX and mkt_r4 is not None and mkt_r4 >= V2_SHORT_BLOCK_MKT_R4:
                 r['verdict'], r['verdict_reason'] = '', f"숏후보 시장 반등 중(4h {mkt_r4:+.1f}%) 대기 · 4h예상 {e4:+.2f}%"
-            elif (e4 < V2_SHORT_EXP4_MAX and p < V2_SHORT_PUP_MAX and V2_SHORT_RSI_MIN
+            elif (e4 < _s_cut and p < V2_SHORT_PUP_MAX and V2_SHORT_RSI_MIN
                   and not (exchange == 'binance' and BINANCE_UNIVERSE == 'v3')
                   and r.get('rsi') is not None and float(r.get('rsi') or 0) < V2_SHORT_RSI_MIN):
                 # [2026-11-25 수동, 사용자 승인] RSI 낮은(이미 많이 빠진) 코인 모델 숏 대기
                 r['verdict'], r['verdict_reason'] = '', f"숏후보 RSI {float(r.get('rsi') or 0):.0f}<{V2_SHORT_RSI_MIN:g} 대기 · 4h예상 {e4:+.2f}%"
-            elif e4 < V2_SHORT_EXP4_MAX and p < V2_SHORT_PUP_MAX:
+            elif e4 < _s_cut and p < V2_SHORT_PUP_MAX:
                 r['verdict'] = 'SHORT'
                 r['verdict_reason'] = f"모델 숏 · 4h예상 {e4:+.2f}% · 확률 {p:.2f}" + (f" ({why})" if v == 'SHORT' else "")
             elif v == 'SHORT':
@@ -4017,7 +4018,7 @@ _apply_prob_filter_unguarded = apply_prob_filter
 
 
 def _binance_v3_guard(results, feats):
-    """[2026-11-25 사용자 요청] 바이낸스 V3 판정 가드(검증 조건과 같게): 상장 2년 미만 · 1h ATR ≥ 2.5 · 7일 ≥ +50% · 확률 없음 → 판정 대기."""
+    """[2026-11-25 사용자 요청] 바이낸스 V3 판정 가드(검증 조건과 같게): 상장 2년 미만 · 1h ATR ≥ BINANCE_V3_ATR_MAX(3.0) · 7일 ≥ +50% · 확률 없음 → 판정 대기."""
     for r in results:
         v, vr = r.get('verdict', ''), r.get('verdict_raw', '')
         if v not in ('LONG', 'SHORT') and vr not in ('LONG', 'SHORT'):
@@ -4584,7 +4585,8 @@ BINANCE_V3_SHOCK_PCT = 30.0       # 대상 필터: 30일 내 하루 ±30% 이력
 BINANCE_V3_UNI_ATR_MAX = 3.0      # 대상 필터: 1h ATR(24h 평균) < 3
 BINANCE_V3_UNI_R7_MAX = 50.0      # 대상 필터: 7일 < +50%
 BINANCE_V3_MIN_LISTING_D = 730    # 판정 가드: 상장 2년↑
-BINANCE_V3_ATR_MAX = 2.5          # 판정 가드: 1h ATR < 2.5
+BINANCE_V3_ATR_MAX = 3.0          # 판정 가드: 1h ATR < 3 — [2026-11-26 수동, 사용자 요청] 2.5→3.0 (1년 백테스트 2년↑·ATR<3·exp4<-0.3: 832건 청산 6.1% +$1,076 / 현행 327건 5.5% +$837)
+BINANCE_V3_SHORT_EXP4_MAX = -0.3  # [2026-11-26 수동, 사용자 요청] 바이낸스 V3 탭 모델 숏 4h예상 컷(다른 탭은 V2_SHORT_EXP4_MAX -0.5 그대로)
 BINANCE_V3_R7_MAX = 50.0          # 판정 가드: 7일 < +50%
 # [2026-11-26 사용자 요청] 숏은 백테스트와 같게 — 확률모델 피처를 '닫힌 1h봉'으로(백테스트는 봉 마감값), 숏 손절 차단 기준가도 닫힌 봉 종가,
 #   RSI≥50 규칙(V2_SHORT_RSI_MIN)은 바이낸스 V3 탭엔 안 씀(백테스트에 없음 — 1년 V3 숏 판정의 99.5%가 이미 RSI≥50이라 결과 같음)
