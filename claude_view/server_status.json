@@ -1,9 +1,66 @@
 {
- "ts": "2026-11-26 23:32:34",
- "pid": 3832,
+ "ts": "2026-11-27 00:07:22",
+ "pid": 1656,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 1000.0,
- "n_positions": 0,
- "positions": [],
+ "balance": 789.75,
+ "n_positions": 7,
+ "positions": [
+  {
+   "ticker": "PENDLE",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 1.2051776,
+   "entry_time": "2026-11-27 00:05:12"
+  },
+  {
+   "ticker": "SUI",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.6602898999999999,
+   "entry_time": "2026-11-27 00:05:12"
+  },
+  {
+   "ticker": "PYTH",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.048144669999999994,
+   "entry_time": "2026-11-27 00:05:12"
+  },
+  {
+   "ticker": "AAVE",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 93.651,
+   "entry_time": "2026-11-27 00:05:12"
+  },
+  {
+   "ticker": "AR",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 2.2788409999999995,
+   "entry_time": "2026-11-27 00:05:12"
+  },
+  {
+   "ticker": "COOKIE",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.007673339999999999,
+   "entry_time": "2026-11-27 00:05:12"
+  },
+  {
+   "ticker": "UNI",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 4.6181019999999995,
+   "entry_time": "2026-11-27 00:05:12"
+  }
+ ],
  "note": "모의 서버 상태 사본. 실시간 손익은 server_account.csv, 청산 기록은 trade_history_usd.csv"
 }

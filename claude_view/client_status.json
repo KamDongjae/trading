@@ -1,6 +1,6 @@
 {
- "ts": "2026-11-26 23:33:04",
- "pid": 23196,
+ "ts": "2026-11-27 00:07:42",
+ "pid": 15248,
  "data_dir": "/storage/emulated/0/Documents",
  "auto_entry": {
   "on": true,
@@ -16,6 +16,6 @@
   "strong_x2": true
  },
  "auto_status_text": "",
- "balance": 1000.0,
- "n_positions": 0
+ "balance": 789.75,
+ "n_positions": 7
 }
