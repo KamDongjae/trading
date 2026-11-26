@@ -6399,19 +6399,44 @@ def _check_isolated_liquidation():
             save_to_csv()
             print(f"⚠️ 강제청산({int(LIQ_RATIO*100)}%): {t} ${pnl_after_fee:+,.2f}")
 
+# [2026-11-26 수동, 사용자 요청] Claude 명령 폴더: trading\claude_cmds\ 에 넣은 cmd_*.csv 도 server_cmds 와 똑같이 처리.
+#   (원래 명령 폴더 Documents\server_cmds 는 Claude가 접근 못 해서 추가.) 결과는 claude_cmds\results.csv 에도 남긴다.
+#   끄려면 CLAUDE_CMDS = False
+CLAUDE_CMDS = True
+CLAUDE_CMD_DIR = os.path.join(_fallback_dir, "claude_cmds")
+
+def _claude_cmd_result(cmd_id, status, message):
+    try:
+        p = os.path.join(CLAUDE_CMD_DIR, "results.csv")
+        exists = os.path.exists(p)
+        with open(p, 'a', newline='', encoding='utf-8') as f:
+            w = csv.writer(f)
+            if not exists:
+                w.writerow(['cmd_id', 'status', 'message', 'ts'])
+            w.writerow([cmd_id, status, message, datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
+    except Exception as e:
+        print(f"claude_cmds 결과 기록 실패: {e}")
+
 def process_commands():
     """server_cmds/ 폴더의 명령 파일을 처리하고 삭제한다.
     명령 형식(1행): cmd_id,action,ticker,amount_won,leverage,position_type,exchange,entry_price
     (exchange는 [2026-07-19 추가], entry_price는 [2026-07-21 추가, open_manual 전용] —
     둘 다 없는(구버전) 명령 파일은 각각 'bithumb'/0으로 취급해 하위호환.)"""
+    items = []
     try:
-        files = sorted(os.listdir(CMD_DIR))
+        items += [(CMD_DIR, f) for f in sorted(os.listdir(CMD_DIR))]
     except Exception:
-        return
-    for fname in files:
+        pass
+    if CLAUDE_CMDS:  # [2026-11-26] Claude 명령 폴더도 같이
+        try:
+            os.makedirs(CLAUDE_CMD_DIR, exist_ok=True)
+            items += [(CLAUDE_CMD_DIR, f) for f in sorted(os.listdir(CLAUDE_CMD_DIR))]
+        except Exception:
+            pass
+    for cdir, fname in items:
         if not fname.startswith('cmd_') or not fname.endswith('.csv'):
             continue
-        path = os.path.join(CMD_DIR, fname)
+        path = os.path.join(cdir, fname)
         try:
             with open(path, 'r', newline='', encoding='utf-8') as f:
                 row = next(csv.reader(f), None)
@@ -6466,11 +6491,15 @@ def process_commands():
             else:
                 ok, msg = False, f"알 수 없는 명령: {action}"
             append_result(cmd_id, 'ok' if ok else 'fail', msg)
+            if cdir == CLAUDE_CMD_DIR:
+                _claude_cmd_result(cmd_id, 'ok' if ok else 'fail', f"{action} {ticker} {amount}: {msg}")
             print(f"[명령] {action} {ticker} → {'OK' if ok else 'FAIL'}: {msg}")
             if ok and action in ('open', 'open_force', 'open_manual'):  # [2026-11-24] 진입 순간 지표 기록(claude_view)
                 log_entry_snapshot(ticker, ptype, exchange, amount, lev, action, msg)
         except Exception as e:
             append_result(fname, 'fail', f"처리 오류: {e}")
+            if cdir == CLAUDE_CMD_DIR:
+                _claude_cmd_result(fname, 'fail', f"처리 오류: {e}")
         finally:
             try: os.remove(path)
             except Exception: pass
