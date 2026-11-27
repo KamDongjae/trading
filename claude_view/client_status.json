@@ -1,5 +1,5 @@
 {
- "ts": "2026-11-27 23:53:30",
+ "ts": "2026-11-28 00:27:51",
  "pid": 12100,
  "data_dir": "/storage/emulated/0/Documents",
  "auto_entry": {
@@ -15,7 +15,7 @@
   "skip_bear_long": true,
   "strong_x2": true
  },
- "auto_status_text": "22:02 XAI SHORT 진입",
- "balance": 579.5,
- "n_positions": 14
+ "auto_status_text": "00:02 ENS LONG 진입",
+ "balance": 159.0,
+ "n_positions": 28
 }

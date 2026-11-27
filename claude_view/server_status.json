@@ -1,9 +1,9 @@
 {
- "ts": "2026-11-27 23:53:28",
+ "ts": "2026-11-28 00:27:59",
  "pid": 7892,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 579.5,
- "n_positions": 14,
+ "balance": 159.0,
+ "n_positions": 28,
  "positions": [
   {
    "ticker": "PENDLE",
@@ -116,6 +116,118 @@
    "leverage": 3,
    "entry_price": 0.005574702,
    "entry_time": "2026-11-27 22:02:17"
+  },
+  {
+   "ticker": "ANIME",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.0021680709999999997,
+   "entry_time": "2026-11-28 00:02:13"
+  },
+  {
+   "ticker": "ATH",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.0036272139999999997,
+   "entry_time": "2026-11-28 00:02:13"
+  },
+  {
+   "ticker": "XMR",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 424.01748999999995,
+   "entry_time": "2026-11-28 00:02:13"
+  },
+  {
+   "ticker": "BAT",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.07460863,
+   "entry_time": "2026-11-28 00:02:13"
+  },
+  {
+   "ticker": "CRV",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.16988089999999997,
+   "entry_time": "2026-11-28 00:02:13"
+  },
+  {
+   "ticker": "EIGEN",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.10996439999999999,
+   "entry_time": "2026-11-28 00:02:13"
+  },
+  {
+   "ticker": "ETHFI",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.4229399999999999,
+   "entry_time": "2026-11-28 00:02:13"
+  },
+  {
+   "ticker": "JTO",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.22717919999999997,
+   "entry_time": "2026-11-28 00:02:13"
+  },
+  {
+   "ticker": "QNT",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 144.36352,
+   "entry_time": "2026-11-28 00:02:13"
+  },
+  {
+   "ticker": "S",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.0276925,
+   "entry_time": "2026-11-28 00:02:13"
+  },
+  {
+   "ticker": "PLUME",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.010452659999999999,
+   "entry_time": "2026-11-28 00:02:13"
+  },
+  {
+   "ticker": "RVN",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.0008448729999999999,
+   "entry_time": "2026-11-28 00:02:13"
+  },
+  {
+   "ticker": "AERO",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.3892055,
+   "entry_time": "2026-11-28 00:02:13"
+  },
+  {
+   "ticker": "ENS",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 3.4519959999999994,
+   "entry_time": "2026-11-28 00:02:13"
   }
  ],
  "note": "모의 서버 상태 사본. 실시간 손익은 server_account.csv, 청산 기록은 trade_history_usd.csv"
