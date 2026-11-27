@@ -67377,3 +67377,73 @@ It failed TypeError
 [PROMPT] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)[BEAM] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
 
 공포탐욕지수 갱신 실패: HTTPSConnectionPool(host='api.alternative.me', port=443): Read timed out. (read timeout=10)
+✅ 공포탐욕지수 갱신: 12 (Extreme Fear)
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+[신호해소] 대상쌍 45개(캔들실패 7) | 대상행 210개 | 해결 0 / 보류 161 (가격오류 0 / 시간대안겹침 155 / 아직결과없음 6 / 예외 0)
+[신호해소] 캔들실패 목록(최대20개): ['upbit/ICX', 'upbit/ARB', 'upbit/AXL', 'upbit/TIA', 'upbit/ELSA', 'upbit/BLAST', 'upbit/SOPH']
+[자동학습] 전체신호 36411건 (해결 36190 / 대기 221, 이번 주기 신규해결 0) — 재학습 최소기준 300건
+C:\Users\K\AppData\Local\Programs\Python\Python313\Lib\site-packages\numpy\lib\_function_base_impl.py:3023: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[:, None]
+C:\Users\K\AppData\Local\Programs\Python\Python313\Lib\site-packages\numpy\lib\_function_base_impl.py:3024: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[None, :]
+✅ 펀딩레이트/가격 907개 갱신
+[자동 재학습] 로지스틱 점수모델 갱신 완료
+[자동 재학습] 해결신호 36190건 기준 배수 갱신 완료: {'bithumb': {'long': {'ema': 0.5, 'pp': 0.5, 'cvd': 0.5, 'volz': 0.5, 'm30': 1.6, 'liq': 1.6}, 'short': {'ema': 1.6, 'pp': 0.5, 'cvd': 0.5, 'oi': 0.5, 'volz': 1.6, 'm30': 0.5, 'liq': np.float64(0.827)}}, 'upbit': {'long': {'ema': 0.5, 'pp': 1.6, 'cvd': 0.5, 'volz': 0.5, 'm30': 0.5, 'liq': 0.5}, 'short': {'ema': 1.6, 'pp': 0.5, 'cvd': 0.5, 'oi': 0.5, 'volz': 0.5, 'm30': 0.5, 'liq': 0.5}}}
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+[07:30:19] 서버 가동 | 빗썸 0개(컷50/normal) | 업비트 0개(컷50/normal) | 바이낸스 0개(normal) | 잔고 $81.74 | 포지션 30개
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+🧭 레짐 이어받음(bithumb): 횡보장 (4분 전 저장)
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+[07:31:20] 서버 가동 | 빗썸 32개(컷50/횡보장) | 업비트 0개(컷50/normal) | 바이낸스 0개(normal) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+🧭 레짐 이어받음(upbit): 상승장 (5분 전 저장)
+✅ 펀딩레이트/가격 907개 갱신
+[2026-11-28  7:31:57.04] server start 
+✅ DNS 우회 설정 완료
+✅ 데이터 저장 위치: /storage/emulated/0/Documents (공용 저장소)
+⚠️ DISCORD_WEBHOOK.txt를 못 찾음 — 디스코드 알림 기능 꺼짐
+⚠️ upbit/long 로지스틱 모델이 사실상 상수 출력(극단값 차이 3.5점) — 로드 거부, 가산식 사용
+==================================================
+트레이딩 서버 시작 (계산/계좌 엔진 — 마켓 로깅 없음, 수집은 별도 기기)
+데이터 폴더: /storage/emulated/0/Documents
+마켓 스냅샷(빗썸): /storage/emulated/0/Documents\server_market.csv
+마켓 스냅샷(업비트): /storage/emulated/0/Documents\server_market_upbit.csv
+명령 폴더: /storage/emulated/0/Documents\server_cmds
+중지: Ctrl+C  (포지션은 서버가 계속 감시하므로 GUI는 꺼도 됨)
+==================================================
+✅ 로드 완료 | 포지션 30개
+✅ 거래기록 1건 로드
+빗썸 티커 40개 로드(안정 유니버스 2026-11-27 09:13)
+업비트 티커 27개 로드(안정 유니버스 2026-11-27 09:12)
+✅ 펀딩레이트/가격 907개 갱신
+바이낸스 티커 300개 로드 (대상 v3, 확률모델 binance_v3)
+✅ 공포탐욕지수 갱신: 12 (Extreme Fear)
+[07:32:09] 서버 가동 | 빗썸 0개(컷50/normal) | 업비트 0개(컷50/normal) | 바이낸스 0개(normal) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신

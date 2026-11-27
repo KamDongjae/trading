@@ -373,7 +373,8 @@ def collect_once(tickers):
     # 이번 결과로 레짐을 판정하고, 점수 계산 때 쓴 레짐과 다르면(첫 사이클/레짐 전환 시점)
     # 바뀐 레짐으로 한 번 더 계산해서 서버와 같은 로직의 점수가 로그에 남게 한다.
     try:
-        if _can_update_regime(ts, "빗썸", results, len(tickers)):
+        # 첫 조회가 실패하면 10개 기본 목록으로 수집해도 전체 시장 레짐은 갱신하지 않는다.
+        if _can_update_regime(ts, "빗썸", results, max(len(tickers), srv.TOP_COIN_COUNT)):
             raw_regime = srv.detect_market_regime(results)
             # [2026-10-12] 서버와 같은 시간 기준 디바운스(REGIME_CONFIRM_SECONDS, 15분) — 5~10분마다
             # 상승장↔횡보장이 뒤집히던 문제 완화. 구버전 서버면 디바운스 없이 그대로 사용.

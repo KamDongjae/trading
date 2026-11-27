@@ -1,13 +1,13 @@
-[2026-11-28 07:28:05] restart_all start
+[2026-11-28 07:31:52] restart_all start
 백업 C:\Users\K\Desktop\trading\backups\20261124_restart_all\simulation_data_usd_before_restart.csv (35 줄)
-서버 창 : 실행 중인 것 없음
+서버 창 : pid 10336 종료 (cmd.exe)
 서버 python : 실행 중인 것 없음
-클라 창 : 실행 중인 것 없음
+클라 창 : pid 18972 종료 (cmd.exe)
 클라 python : 실행 중인 것 없음
-수집기 창 : 실행 중인 것 없음
+수집기 창 : pid 16684 종료 (cmd.exe)
 수집기 python : 실행 중인 것 없음
 데이터 파일 정상 (35 줄)
 서버 시작 (클라는 20초 뒤)
 클라 시작
 수집기 시작
-[2026-11-28 07:28:29] restart_all done
+[2026-11-28 07:32:17] restart_all done
