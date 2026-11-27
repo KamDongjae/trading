@@ -1,9 +1,9 @@
 {
- "ts": "2026-11-28 00:27:59",
+ "ts": "2026-11-28 01:03:30",
  "pid": 7892,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 159.0,
- "n_positions": 28,
+ "balance": 68.89,
+ "n_positions": 30,
  "positions": [
   {
    "ticker": "PENDLE",
@@ -228,6 +228,22 @@
    "leverage": 3,
    "entry_price": 3.4519959999999994,
    "entry_time": "2026-11-28 00:02:13"
+  },
+  {
+   "ticker": "STX",
+   "type": "long",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.25416679999999997,
+   "entry_time": "2026-11-28 00:57:12"
+  },
+  {
+   "ticker": "HEI",
+   "type": "short",
+   "amount": 60.0,
+   "leverage": 3,
+   "entry_price": 0.08784078,
+   "entry_time": "2026-11-28 01:01:09"
   }
  ],
  "note": "모의 서버 상태 사본. 실시간 손익은 server_account.csv, 청산 기록은 trade_history_usd.csv"
