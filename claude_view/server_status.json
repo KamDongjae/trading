@@ -1,9 +1,9 @@
 {
- "ts": "2026-11-28 01:38:00",
+ "ts": "2026-11-28 02:08:34",
  "pid": 7892,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 68.89,
- "n_positions": 30,
+ "balance": 112.78,
+ "n_positions": 29,
  "positions": [
   {
    "ticker": "PENDLE",
@@ -43,14 +43,6 @@
    "amount": 30.0,
    "leverage": 3,
    "entry_price": 2.2788409999999995,
-   "entry_time": "2026-11-27 00:05:12"
-  },
-  {
-   "ticker": "COOKIE",
-   "type": "long",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.007673339999999999,
    "entry_time": "2026-11-27 00:05:12"
   },
   {
