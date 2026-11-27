@@ -12,3 +12,59 @@
 It failed TypeError
 ⚠️ 티커 로드 실패, 기본 목록 사용: 'NoneType' object has no attribute 'keys'
 시세 캐시 준비 중... (5초 대기)
+It failedIt failed  TypeErrorTypeError
+
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 펀딩레이트/가격 907개 갱신
+🐶 워치독 켜짐: 20분 넘게 로그 저장이 없으면 자동 재시작
+⬆️ GitHub 자동 push 실행(결과: git_push_log.txt)
+✅ 펀딩레이트/가격 907개 갱신
+✅ 바이낸스 티커 300개 로드
+[2026-11-28 07:42:58] 빗썸 레짐 유지: 채점 10/40, 최소 80%
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+[AVAX] 캔들 조회 실패(재시도 1회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=5)
+It failed TypeError
+[2026-11-28 07:42:58] 10개 티커 로그 저장 (레짐 normal) → C:\Users\K\Desktop\trading\market_data_log_v3_20261126_20261128.csv
+✅ 펀딩레이트/가격 907개 갱신
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+It failed ConnectionError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 펀딩레이트/가격 907개 갱신
