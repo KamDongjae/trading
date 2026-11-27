@@ -8,7 +8,7 @@ cd /d C:\Users\K\Desktop\trading
 echo [%date% %time%] auto push start >> git_push_log.txt
 git pull --rebase --autostash >> git_push_log.txt 2>&1
 
-git add *.py *.txt *.md *.bat *.json reports analysis backups >> git_push_log.txt 2>&1
+git add *.py *.txt *.md *.bat *.json restart_all.ps1 restart_if_changed.ps1 watch_trading_services.ps1 reports analysis backups ":(exclude)reports/service_watchdog.log" >> git_push_log.txt 2>&1
 git reset -q -- collector_log.txt git_push_log.txt >> git_push_log.txt 2>&1
 
 git diff --cached --quiet
