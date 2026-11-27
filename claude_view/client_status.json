@@ -1,6 +1,6 @@
 {
- "ts": "2026-11-28 07:06:49",
- "pid": 3556,
+ "ts": "2026-11-28 07:29:38",
+ "pid": 15588,
  "data_dir": "/storage/emulated/0/Documents",
  "auto_entry": {
   "on": true,
@@ -15,7 +15,7 @@
   "skip_bear_long": true,
   "strong_x2": true
  },
- "auto_status_text": "05:35 AVA SHORT 진입",
+ "auto_status_text": "",
  "balance": 81.74,
  "n_positions": 30
 }
