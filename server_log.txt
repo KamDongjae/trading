@@ -66040,3 +66040,362 @@ It failed TypeError
 ✅ 펀딩레이트/가격 907개 갱신
 ✅ 펀딩레이트/가격 907개 갱신
 ✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:32:39] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 22개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:33:40] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:34:41] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 26개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+[신호해소] 대상쌍 45개(캔들실패 5) | 대상행 210개 | 해결 0 / 보류 192 (가격오류 0 / 시간대안겹침 186 / 아직결과없음 6 / 예외 0)
+[신호해소] 캔들실패 목록(최대20개): ['upbit/ICX', 'upbit/BLAST', 'upbit/HBAR', 'upbit/NMR', 'upbit/SOPH']
+[자동학습] 전체신호 36405건 (해결 36190 / 대기 215, 이번 주기 신규해결 0) — 재학습 최소기준 300건
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:35:41] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 25개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:36:42] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 26개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:37:42] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 26개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:38:43] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 23개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:39:43] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+업비트 현재가 일괄조회 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+[06:40:43] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 26개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+체결가 갱신 실패(markPrice 사용): HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+It failed TypeError
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+[06:41:43] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 26개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+It failed TypeError
+펀딩레이트 갱신 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+업비트 현재가 일괄조회 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:42:43] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 26개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+✅ 펀딩레이트/가격 907개 갱신
+[06:43:43] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:44:44] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:45:44] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+[06:46:44] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:47:44] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 24개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:48:44] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+It failed TypeError
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:49:45] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+[신호해소] 대상쌍 45개(캔들실패 5) | 대상행 210개 | 해결 0 / 보류 188 (가격오류 0 / 시간대안겹침 182 / 아직결과없음 6 / 예외 0)
+[신호해소] 캔들실패 목록(최대20개): ['upbit/ICX', 'upbit/ENA', 'upbit/BLAST', 'upbit/WLD', 'upbit/SOPH']
+✅ 펀딩레이트/가격 907개 갱신
+[자동학습] 전체신호 36405건 (해결 36190 / 대기 215, 이번 주기 신규해결 0) — 재학습 최소기준 300건
+✅ 펀딩레이트/가격 907개 갱신
+It failed ConnectionError
+✅ 펀딩레이트/가격 907개 갱신
+[06:50:45] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 24개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:51:45] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 25개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:52:45] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:53:46] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 23개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:54:47] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:55:47] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 23개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+펀딩레이트 갱신 실패: ('Connection aborted.', ConnectionResetError(10054, '현재 연결은 원격 호스트에 의해 강제로 끊겼습니다', None, 10054, None))
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+[06:56:47] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+업비트 현재가 일괄조회 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+It failed TypeError
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+펀딩레이트 갱신 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+It failed TypeError
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+It failed TypeError
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+체결가 갱신 실패(markPrice 사용): HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+업비트 현재가 일괄조회 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+펀딩레이트 갱신 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+[06:57:47] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+[바이낸스] /fapi/v1/ticker/price 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+업비트 현재가 일괄조회 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+펀딩레이트 갱신 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+[REQ] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+[CPOOL] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=PENDLEUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=ANIMEUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=ENSOUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=ERAUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=SAHARAUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=KITEUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=GALAUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+
+
+
+
+[바이낸스] /fapi/v1/ticker/price 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/ticker/price (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=WUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=RIVERUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=LABUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=STXUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=POLUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=SENTUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=EIGENUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=ZETAUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=RUNEUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=CKBUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=BEATUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=JSTUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+
+
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=CAKEUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=B2USDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[바이낸스] /fapi/v1/ticker/price 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/ticker/price (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[업비트:KRW-POKT] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[업비트:KRW-BTT] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[업비트:KRW-CPOOL] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[업비트:KRW-ELF] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=MOCAUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=METUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=GRASSUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=CCUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=THETAUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=BATUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=WAXPUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[업비트:KRW-SC] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[업비트:KRW-STRAX] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[업비트:KRW-BEAM] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+업비트 현재가 일괄조회 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)[업비트:KRW-DATA] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+
+[업비트:KRW-RAY] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Max retries exceeded with url: /v1/candles/minutes/60?market=KRW-RAY&count=200 (Caused by NameResolutionError("HTTPSConnection(host='api.upbit.com', port=443): Failed to resolve 'api.upbit.com' ([Errno 11001] getaddrinfo failed)"))
+[업비트:KRW-CTC] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Max retries exceeded with url: /v1/candles/minutes/60?market=KRW-CTC&count=200 (Caused by NameResolutionError("HTTPSConnection(host='api.upbit.com', port=443): Failed to resolve 'api.upbit.com' ([Errno 11001] getaddrinfo failed)"))
+[업비트:KRW-ORBS] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Max retries exceeded with url: /v1/candles/minutes/60?market=KRW-ORBS&count=200 (Caused by NameResolutionError("HTTPSConnection(host='api.upbit.com', port=443): Failed to resolve 'api.upbit.com' ([Errno 11001] getaddrinfo failed)"))
+[업비트:KRW-CRO] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Max retries exceeded with url: /v1/candles/minutes/60?market=KRW-CRO&count=200 (Caused by NameResolutionError("HTTPSConnection(host='api.upbit.com', port=443): Failed to resolve 'api.upbit.com' ([Errno 11001] getaddrinfo failed)"))
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=CFXUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=VETUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=SYNUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=ARUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=ZKUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=BMTUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+
+[업비트:KRW-SNT] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Max retries exceeded with url: /v1/candles/minutes/60?market=KRW-SNT&count=200 (Caused by NameResolutionError("HTTPSConnection(host='api.upbit.com', port=443): Failed to resolve 'api.upbit.com' ([Errno 11001] getaddrinfo failed)"))
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/klines?symbol=MORPHOUSDT&interval=1h&limit=210 (Caused by NameResolutionError("HTTPSConnection(host='fapi.binance.com', port=443): Failed to resolve 'fapi.binance.com' ([Errno 11001] getaddrinfo failed)"))
+[업비트:KRW-MNT] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Max retries exceeded with url: /v1/candles/minutes/60?market=KRW-MNT&count=200 (Caused by NameResolutionError("HTTPSConnection(host='api.upbit.com', port=443): Failed to resolve 'api.upbit.com' ([Errno 11001] getaddrinfo failed)"))[업비트:KRW-MET2] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Max retries exceeded with url: /v1/candles/minutes/60?market=KRW-MET2&count=200 (Caused by NameResolutionError("HTTPSConnection(host='api.upbit.com', port=443): Failed to resolve 'api.upbit.com' ([Errno 11001] getaddrinfo failed)"))
+
+[업비트:KRW-TFUEL] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Max retries exceeded with url: /v1/candles/minutes/60?market=KRW-TFUEL&count=200 (Caused by NameResolutionError("HTTPSConnection(host='api.upbit.com', port=443): Failed to resolve 'api.upbit.com' ([Errno 11001] getaddrinfo failed)"))
+[업비트:KRW-IQ] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Max retries exceeded with url: /v1/candles/minutes/60?market=KRW-IQ&count=200 (Caused by NameResolutionError("HTTPSConnection(host='api.upbit.com', port=443): Failed to resolve 'api.upbit.com' ([Errno 11001] getaddrinfo failed)"))
+[업비트:KRW-BORA] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Max retries exceeded with url: /v1/candles/minutes/60?market=KRW-BORA&count=200 (Caused by NameResolutionError("HTTPSConnection(host='api.upbit.com', port=443): Failed to resolve 'api.upbit.com' ([Errno 11001] getaddrinfo failed)"))
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[06:58:47] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+It failed TypeError
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+✅ 펀딩레이트/가격 907개 갱신
+[06:59:47] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 9개(컷45/상승장) | 바이낸스 300개(상승장) | 잔고 $81.74 | 포지션 30개
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+업비트 현재가 일괄조회 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+It failedIt failed TypeError 
+TypeError가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
