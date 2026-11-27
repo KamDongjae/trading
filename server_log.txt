@@ -65475,3 +65475,4 @@ It failed TypeError
 체결가 갱신 실패(markPrice 사용): HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/ticker/price (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1028)')))
 ✅ 펀딩레이트/가격 907개 갱신
 [03:05:15] 서버 가동 | 빗썸 40개(컷45/하락장) | 업비트 27개(컷45/하락장) | 바이낸스 300개(횡보장) | 잔고 $112.78 | 포지션 29개[2026-11-28  3:05:18.93] server crashed (code 1073807364), restart in 30s 
+[2026-11-28  5:30:56.45] server start 
