@@ -1,0 +1,14 @@
+✅ DNS 우회 설정 완료
+✅ 데이터 저장 위치: /storage/emulated/0/Documents (공용 저장소)
+⚠️ DISCORD_WEBHOOK.txt를 못 찾음 — 디스코드 알림 기능 꺼짐
+⚠️ upbit/long 로지스틱 모델이 사실상 상수 출력(극단값 차이 3.5점) — 로드 거부, 가산식 사용
+==================================================
+트레이딩 서버 시작 (계산/계좌 엔진 — 마켓 로깅 없음, 수집은 별도 기기)
+데이터 폴더: /storage/emulated/0/Documents
+마켓 스냅샷(빗썸): /storage/emulated/0/Documents\server_market.csv
+마켓 스냅샷(업비트): /storage/emulated/0/Documents\server_market_upbit.csv
+명령 폴더: /storage/emulated/0/Documents\server_cmds
+중지: Ctrl+C  (포지션은 서버가 계속 감시하므로 GUI는 꺼도 됨)
+==================================================
+✅ 로드 완료 | 포지션 30개
+✅ 거래기록 1건 로드

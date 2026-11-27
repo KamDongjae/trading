@@ -29,3 +29,7 @@
 [2026-11-27 00:07:30] restart_all 완료
 [2026-11-27 08:37:03] 코드 변경 감지 → restart_all 실행
 [2026-11-27 08:37:29] restart_all 완료
+[2026-11-28 07:40:57] 코드 변경 감지 → restart_all 실행
+[2026-11-28 07:41:01] restart_all 실패: Cannot convert 'System.Object[]' to the type 'System.String' required by parameter 'FilePath'. Specified method is not supported.
+[2026-11-28 07:41:52] 코드 변경 감지 → restart_all 실행
+[2026-11-28 07:42:19] restart_all 완료

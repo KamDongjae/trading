@@ -67,3 +67,5 @@ BTC 추세 갱신 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): R
 BTC 추세 갱신 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=8)
 [2026-11-28  7:32:18.12] client start 
 주문용 클라이언트 시작 | 데이터 폴더: /storage/emulated/0/Documents
+BTC 추세 갱신 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=8)
+BTC 추세 갱신 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=8)

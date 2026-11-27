@@ -67447,3 +67447,145 @@ It failed TypeError
 💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
 ✅ 펀딩레이트/가격 907개 갱신
 ✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+[신호해소] 대상쌍 45개(캔들실패 5) | 대상행 210개 | 해결 0 / 보류 186 (가격오류 0 / 시간대안겹침 180 / 아직결과없음 6 / 예외 0)
+[신호해소] 캔들실패 목록(최대20개): ['upbit/WAL', 'upbit/ICX', 'upbit/DATA', 'upbit/BLAST', 'upbit/SOPH']
+✅ 펀딩레이트/가격 907개 갱신
+[자동학습] 전체신호 36411건 (해결 36190 / 대기 221, 이번 주기 신규해결 0) — 재학습 최소기준 300건
+C:\Users\K\AppData\Local\Programs\Python\Python313\Lib\site-packages\numpy\lib\_function_base_impl.py:3023: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[:, None]
+C:\Users\K\AppData\Local\Programs\Python\Python313\Lib\site-packages\numpy\lib\_function_base_impl.py:3024: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[None, :]
+[자동 재학습] 로지스틱 점수모델 갱신 완료
+[자동 재학습] 해결신호 36190건 기준 배수 갱신 완료: {'bithumb': {'long': {'ema': 0.5, 'pp': 0.5, 'cvd': 0.5, 'volz': 0.5, 'm30': 1.6, 'liq': 1.6}, 'short': {'ema': 1.6, 'pp': 0.5, 'cvd': 0.5, 'oi': 0.5, 'volz': 1.6, 'm30': 0.5, 'liq': np.float64(0.827)}}, 'upbit': {'long': {'ema': 0.5, 'pp': 1.6, 'cvd': 0.5, 'volz': 0.5, 'm30': 0.5, 'liq': 0.5}, 'short': {'ema': 1.6, 'pp': 0.5, 'cvd': 0.5, 'oi': 0.5, 'volz': 0.5, 'm30': 0.5, 'liq': 0.5}}}
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+[07:33:10] 서버 가동 | 빗썸 0개(컷50/normal) | 업비트 0개(컷50/normal) | 바이낸스 0개(normal) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+🧭 레짐 이어받음(bithumb): 횡보장 (3분 전 저장)
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+[07:34:10] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 0개(컷50/normal) | 바이낸스 0개(normal) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+✅ 펀딩레이트/가격 907개 갱신
+[07:35:11] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 0개(컷50/normal) | 바이낸스 0개(normal) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+🧭 레짐 이어받음(upbit): 상승장 (8분 전 저장)
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+업비트 현재가 일괄조회 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+펀딩레이트 갱신 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+[07:36:11] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 0개(normal) | 잔고 $81.74 | 포지션 30개
+[바이낸스] /fapi/v1/ticker/price 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+업비트 현재가 일괄조회 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+[MEV] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+[OSMO] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)[DATA] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)[HFT] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+
+
+[BIOT] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+[PROMPT] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+[BEAM] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)[FORT] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+업비트 현재가 일괄조회 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+[07:37:11] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 0개(normal) | 잔고 $81.74 | 포지션 30개
+[바이낸스] /fapi/v1/ticker/price 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Max retries exceeded with url: /fapi/v1/ticker/price (Caused by ConnectTimeoutError(<HTTPSConnection(host='fapi.binance.com', port=443) at 0x2cbd4cf4910>, 'Connection to fapi.binance.com timed out. (connect timeout=10)'))
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+[업비트:KRW-BTT] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[업비트:KRW-CPOOL] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[업비트:KRW-ELF] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)[업비트:KRW-SC] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+[업비트:KRW-STRAX] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[업비트:KRW-DATA] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[업비트:KRW-BEAM] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[업비트:KRW-POKT] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+업비트 현재가 일괄조회 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+[AGI] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+[PUFFER] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+[A8] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)[NCT] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+
+[GRND] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)[PEAQ] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+[07:38:11] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 0개(normal) | 잔고 $81.74 | 포지션 30개
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+[바이낸스] /fapi/v1/ticker/price 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+[GHX] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+[B3] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+업비트 현재가 일괄조회 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+[업비트:KRW-CTC] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[CSPR] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+[XCN] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)[SWELL] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)[ELF] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+[CPOOL] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+
+
+[REQ] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=10)
+[07:39:12] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 0개(normal) | 잔고 $81.74 | 포지션 30개
+업비트 현재가 일괄조회 실패: HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[업비트:KRW-RAY] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[업비트:KRW-CRO] 캔들 조회 실패(재시도 2회 소진): HTTPSConnectionPool(host='api.upbit.com', port=443): Read timed out. (read timeout=10)
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+[바이낸스] /fapi/v1/klines 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+[바이낸스] /fapi/v1/ticker/price 조회 실패: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=10)
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 저장 완료: /storage/emulated/0/Documents\simulation_data_usd.csv
+[07:40:12] 서버 가동 | 빗썸 40개(컷45/횡보장) | 업비트 27개(컷50/상승장) | 바이낸스 0개(normal) | 잔고 $81.74 | 포지션 30개
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
