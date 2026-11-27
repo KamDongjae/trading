@@ -47,3 +47,4 @@
 주문용 클라이언트 시작 | 데이터 폴더: /storage/emulated/0/Documents
 [2026-11-28  3:05:18.93] client crashed (code 1073807364), restart in 30s 
 [2026-11-28  5:30:50.98] client start 
+주문용 클라이언트 시작 | 데이터 폴더: /storage/emulated/0/Documents
