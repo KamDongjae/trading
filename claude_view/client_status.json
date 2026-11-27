@@ -1,5 +1,5 @@
 {
- "ts": "2026-11-27 09:58:34",
+ "ts": "2026-11-27 10:27:49",
  "pid": 12100,
  "data_dir": "/storage/emulated/0/Documents",
  "auto_entry": {
@@ -15,7 +15,7 @@
   "skip_bear_long": true,
   "strong_x2": true
  },
- "auto_status_text": "",
- "balance": 669.61,
- "n_positions": 11
+ "auto_status_text": "10:02 MOCA SHORT 진입",
+ "balance": 639.57,
+ "n_positions": 12
 }
