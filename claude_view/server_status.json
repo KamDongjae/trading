@@ -1,9 +1,9 @@
 {
- "ts": "2026-11-28 10:06:58",
+ "ts": "2026-11-28 10:37:17",
  "pid": 8060,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 49.7,
- "n_positions": 31,
+ "balance": 222.11,
+ "n_positions": 26,
  "positions": [
   {
    "ticker": "PENDLE",
@@ -44,22 +44,6 @@
    "leverage": 3,
    "entry_price": 2.2788409999999995,
    "entry_time": "2026-11-27 00:05:12"
-  },
-  {
-   "ticker": "UNI",
-   "type": "long",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 4.6181019999999995,
-   "entry_time": "2026-11-27 00:05:12"
-  },
-  {
-   "ticker": "ENA",
-   "type": "long",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.10065971999999998,
-   "entry_time": "2026-11-27 01:00:35"
   },
   {
    "ticker": "BR",
@@ -142,14 +126,6 @@
    "entry_time": "2026-11-28 00:02:13"
   },
   {
-   "ticker": "CRV",
-   "type": "long",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.16988089999999997,
-   "entry_time": "2026-11-28 00:02:13"
-  },
-  {
    "ticker": "EIGEN",
    "type": "long",
    "amount": 30.0,
@@ -166,27 +142,11 @@
    "entry_time": "2026-11-28 00:02:13"
   },
   {
-   "ticker": "JTO",
-   "type": "long",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.22717919999999997,
-   "entry_time": "2026-11-28 00:02:13"
-  },
-  {
    "ticker": "QNT",
    "type": "long",
    "amount": 30.0,
    "leverage": 3,
    "entry_price": 144.36352,
-   "entry_time": "2026-11-28 00:02:13"
-  },
-  {
-   "ticker": "S",
-   "type": "long",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.0276925,
    "entry_time": "2026-11-28 00:02:13"
   },
   {
@@ -222,22 +182,6 @@
    "entry_time": "2026-11-28 00:02:13"
   },
   {
-   "ticker": "STX",
-   "type": "long",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.25416679999999997,
-   "entry_time": "2026-11-28 00:57:12"
-  },
-  {
-   "ticker": "HEI",
-   "type": "short",
-   "amount": 60.0,
-   "leverage": 3,
-   "entry_price": 0.08784078,
-   "entry_time": "2026-11-28 01:01:09"
-  },
-  {
    "ticker": "AVA",
    "type": "short",
    "amount": 31.0,
@@ -252,6 +196,22 @@
    "leverage": 3,
    "entry_price": 0.0823197,
    "entry_time": "2026-11-28 08:02:06"
+  },
+  {
+   "ticker": "VERONA",
+   "type": "long",
+   "amount": 50.0,
+   "leverage": 10,
+   "entry_price": 115.80499999999999,
+   "entry_time": "2026-11-28 10:12:59"
+  },
+  {
+   "ticker": "ELF",
+   "type": "short",
+   "amount": 50.0,
+   "leverage": 10,
+   "entry_price": 70.13559,
+   "entry_time": "2026-11-28 10:13:35"
   }
  ],
  "note": "모의 서버 상태 사본. 실시간 손익은 server_account.csv, 청산 기록은 trade_history_usd.csv"
