@@ -357,6 +357,14 @@ def _track_signals(ts, results):
         print(f"⚠️ 신호 추적 실패: {e}")
 
 
+def _can_update_regime(ts, exchange, results, total):
+    minimum = getattr(srv, "REGIME_MIN_RESULT_RATIO", 0.8)
+    if total and len(results) >= minimum * total:
+        return True
+    print(f"[{ts}] {exchange} 레짐 유지: 채점 {len(results)}/{total}, 최소 {minimum:.0%}")
+    return False
+
+
 def collect_once(tickers):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     results = _score_all(tickers)
@@ -365,7 +373,8 @@ def collect_once(tickers):
     # 이번 결과로 레짐을 판정하고, 점수 계산 때 쓴 레짐과 다르면(첫 사이클/레짐 전환 시점)
     # 바뀐 레짐으로 한 번 더 계산해서 서버와 같은 로직의 점수가 로그에 남게 한다.
     try:
-        if results:
+        # 첫 조회가 실패하면 10개 기본 목록으로 수집해도 전체 시장 레짐은 갱신하지 않는다.
+        if _can_update_regime(ts, "빗썸", results, max(len(tickers), srv.TOP_COIN_COUNT)):
             raw_regime = srv.detect_market_regime(results)
             # [2026-10-12] 서버와 같은 시간 기준 디바운스(REGIME_CONFIRM_SECONDS, 15분) — 5~10분마다
             # 상승장↔횡보장이 뒤집히던 문제 완화. 구버전 서버면 디바운스 없이 그대로 사용.
@@ -431,9 +440,10 @@ def collect_binance_once():
     if not _binance_on() or not _bn_state["tickers_ref"] or not _bn_state["tickers_ref"][0]:
         return 0
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    tickers = tuple(_bn_state["tickers_ref"][0])
     results = []
     with ThreadPoolExecutor(max_workers=srv.MAX_WORKERS) as pool:
-        futs = {pool.submit(srv.process_ticker_binance, t): t for t in _bn_state["tickers_ref"][0]}
+        futs = {pool.submit(srv.process_ticker_binance, t): t for t in tickers}
         for fut in as_completed(futs):
             try:
                 r = fut.result()
@@ -445,9 +455,10 @@ def collect_binance_once():
         print(f"[{ts}] 바이낸스 0개")
         return 0
     try:
-        raw = srv.detect_market_regime(results)
-        srv.current_market_regime_binance = srv.debounce_regime_value(
-            _bn_state["regime"], srv.current_market_regime_binance, raw)
+        if _can_update_regime(ts, "바이낸스", results, len(tickers)):
+            raw = srv.detect_market_regime(results)
+            srv.current_market_regime_binance = srv.debounce_regime_value(
+                _bn_state["regime"], srv.current_market_regime_binance, raw)
     except Exception as e:
         print(f"⚠️ 바이낸스 레짐 판정 실패: {e}")
     try:

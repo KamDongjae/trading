@@ -1,0 +1,70 @@
+✅ DNS 우회 설정 완료
+✅ 데이터 저장 위치: /storage/emulated/0/Documents (공용 저장소)
+⚠️ DISCORD_WEBHOOK.txt를 못 찾음 — 디스코드 알림 기능 꺼짐
+⚠️ upbit/long 로지스틱 모델이 사실상 상수 출력(극단값 차이 3.5점) — 로드 거부, 가산식 사용
+==================================================
+데이터 수집기 시작 (계좌/포지션 없음 — 시세+지표+점수만 CSV로 로깅)
+📂 로그 파일: C:\Users\K\Desktop\trading\market_data_log_v3_20261126_20261128.csv (2026-11-26 ~ 2026-11-28)
+3일마다 파일 자동 분리 | 출력 파일: C:\Users\K\Desktop\trading\market_data_log_v3_20261126_20261128.csv
+수집 주기: 300초 | 기준봉: 1h
+중지: Ctrl+C
+==================================================
+It failed TypeError
+⚠️ 티커 로드 실패, 기본 목록 사용: 'NoneType' object has no attribute 'keys'
+시세 캐시 준비 중... (5초 대기)
+It failedIt failed  TypeErrorTypeError
+
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 펀딩레이트/가격 907개 갱신
+🐶 워치독 켜짐: 20분 넘게 로그 저장이 없으면 자동 재시작
+⬆️ GitHub 자동 push 실행(결과: git_push_log.txt)
+✅ 펀딩레이트/가격 907개 갱신
+✅ 바이낸스 티커 300개 로드
+[2026-11-28 07:42:58] 빗썸 레짐 유지: 채점 10/40, 최소 80%
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+[AVAX] 캔들 조회 실패(재시도 1회 소진): HTTPSConnectionPool(host='api.bithumb.com', port=443): Read timed out. (read timeout=5)
+It failed TypeError
+[2026-11-28 07:42:58] 10개 티커 로그 저장 (레짐 normal) → C:\Users\K\Desktop\trading\market_data_log_v3_20261126_20261128.csv
+✅ 펀딩레이트/가격 907개 갱신
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+💱 원/달러 환율 갱신: 1334.90원 (2026-11-28 기준, 전날 종가)
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+It failed ConnectionError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+✅ 펀딩레이트/가격 907개 갱신
+It failed TypeError
+가격 업데이트 실패: 'NoneType' object has no attribute 'items'
+✅ 펀딩레이트/가격 907개 갱신
