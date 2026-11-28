@@ -1,89 +1,65 @@
 {
- "ts": "2026-11-27 05:28:00",
- "pid": 1656,
+ "ts": "2026-11-28 14:51:46",
+ "pid": 25677,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 699.64,
- "n_positions": 10,
+ "balance": 939.48,
+ "n_positions": 7,
  "positions": [
   {
-   "ticker": "PENDLE",
+   "ticker": "SWELL",
    "type": "long",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 1.2051776,
-   "entry_time": "2026-11-27 00:05:12"
+   "amount": 100.0,
+   "leverage": 10,
+   "entry_price": 0.00061452175,
+   "entry_time": "2026-11-25 06:41:39"
   },
   {
-   "ticker": "SUI",
+   "ticker": "PUFFER",
    "type": "long",
    "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.6602898999999999,
-   "entry_time": "2026-11-27 00:05:12"
+   "leverage": 10,
+   "entry_price": 0.027476448149999996,
+   "entry_time": "2026-11-25 16:47:29"
   },
   {
-   "ticker": "PYTH",
+   "ticker": "ETHFI",
    "type": "long",
    "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.048144669999999994,
-   "entry_time": "2026-11-27 00:05:12"
+   "leverage": 10,
+   "entry_price": 0.45163949999999997,
+   "entry_time": "2026-11-26 03:39:01"
   },
   {
-   "ticker": "AAVE",
-   "type": "long",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 93.651,
-   "entry_time": "2026-11-27 00:05:12"
-  },
-  {
-   "ticker": "AR",
-   "type": "long",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 2.2788409999999995,
-   "entry_time": "2026-11-27 00:05:12"
-  },
-  {
-   "ticker": "COOKIE",
-   "type": "long",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.007673339999999999,
-   "entry_time": "2026-11-27 00:05:12"
-  },
-  {
-   "ticker": "UNI",
-   "type": "long",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 4.6181019999999995,
-   "entry_time": "2026-11-27 00:05:12"
-  },
-  {
-   "ticker": "ENA",
-   "type": "long",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.10065971999999998,
-   "entry_time": "2026-11-27 01:00:35"
-  },
-  {
-   "ticker": "BR",
-   "type": "long",
-   "amount": 30.0,
-   "leverage": 3,
-   "entry_price": 0.3830628,
-   "entry_time": "2026-11-27 01:00:35"
-  },
-  {
-   "ticker": "SEI",
+   "ticker": "HANA",
    "type": "short",
    "amount": 30.0,
+   "leverage": 10,
+   "entry_price": 0.013326059999999999,
+   "entry_time": "2026-11-28 06:29:17"
+  },
+  {
+   "ticker": "GALA",
+   "type": "short",
+   "amount": 30.0,
+   "leverage": 10,
+   "entry_price": 0.001405095,
+   "entry_time": "2026-11-28 06:29:59"
+  },
+  {
+   "ticker": "SENT",
+   "type": "short",
+   "amount": 30.0,
+   "leverage": 10,
+   "entry_price": 0.0229383,
+   "entry_time": "2026-11-28 06:43:19"
+  },
+  {
+   "ticker": "ACE",
+   "type": "short",
+   "amount": 36.0,
    "leverage": 3,
-   "entry_price": 0.038528400000000004,
-   "entry_time": "2026-11-27 01:02:35"
+   "entry_price": 0.08387871000000001,
+   "entry_time": "2026-11-28 08:02:56"
   }
  ],
  "note": "모의 서버 상태 사본. 실시간 손익은 server_account.csv, 청산 기록은 trade_history_usd.csv"

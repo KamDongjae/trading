@@ -1,4 +1,5 @@
 import sys
+import math
 import threading
 import time
 import numpy as np
@@ -2218,11 +2219,80 @@ def debounce_regime_value(state, confirmed, candidate, now=None):
         return candidate
     return confirmed
 
-def _debounce_regime(exchange, candidate):
+# [2026-11-27 수동, 사용자 요청] 재시작 직후 레짐 오판 방지.
+#   근거: 11/27 00:07 서버 재시작 → 바이낸스 레짐 normal 3분 → '하락장' 00:10~00:38(같은 시각 PC 수집기 상승장)
+#   → 클라 '하락장 롱 제외'로 ATOM·REZ·ARB 롱 건너뜀(4h +0.92/+3.92/+3.01%). 원인: 확정 레짐이 normal이면
+#   첫 후보를 바로 확정(디바운스 없음) + 재시작 직후 캔들 조회 실패로 일부 코인만 계산된 사이클.
+#   ① 마지막 확정 레짐을 regime_state.json에 저장 → 재시작 때 30분 이내 값이면 그대로 이어받음
+#   ② 이어받을 값이 없으면 새 후보도 15분(REGIME_CONFIRM_SECONDS) 유지돼야 확정(그동안 normal = 하락장 대기 안 함)
+#   ③ 계산된 코인이 대상의 80% 미만인 사이클은 레짐을 안 바꿈
+#   끄기: REGIME_RESTART_GUARD = False (예전 동작)
+REGIME_RESTART_GUARD = True
+REGIME_RESTORE_MAX_AGE_S = 1800   # 저장된 레짐을 이어받는 최대 경과 시간(초)
+REGIME_MIN_RESULT_RATIO = 0.8     # 계산 성공 코인 비율이 이보다 낮은 사이클은 레짐 갱신 안 함
+REGIME_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'regime_state.json')
+_regime_restore_done = set()
+_regime_state_lock = threading.Lock()
+
+def _regime_state_load():
+    try:
+        with open(REGIME_STATE_FILE, 'r', encoding='utf-8') as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+def _regime_state_save(exchange, regime):
+    if regime in (None, 'normal'):
+        return
+    try:
+        with _regime_state_lock:
+            d = _regime_state_load()
+            d[exchange] = {'regime': regime, 't': time.time()}
+            tmp = REGIME_STATE_FILE + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(d, f, ensure_ascii=False)
+            os.replace(tmp, REGIME_STATE_FILE)
+    except Exception as e:
+        print(f"레짐 저장 실패({exchange}): {e}")
+
+def _debounce_regime(exchange, candidate, n_results=None, n_tickers=None):
     """candidate가 REGIME_CONFIRM_SECONDS 동안 계속 나와야 확정 레짐을 바꾼다."""
     confirmed = {'bithumb': current_market_regime, 'upbit': current_market_regime_upbit,
                  'binance': current_market_regime_binance}.get(exchange, current_market_regime)  # [2026-11-23] 바이낸스 탭
-    return debounce_regime_value(_regime_streak.setdefault(exchange, {'candidate': None, 'since': 0.0}), confirmed, candidate)
+    state = _regime_streak.setdefault(exchange, {'candidate': None, 'since': 0.0})
+    if not REGIME_RESTART_GUARD:
+        return debounce_regime_value(state, confirmed, candidate)
+    now = time.time()
+    if exchange not in _regime_restore_done:  # 재시작 후 첫 호출: 저장된 확정 레짐 이어받기
+        _regime_restore_done.add(exchange)
+        if confirmed in (None, 'normal'):
+            st = _regime_state_load().get(exchange) or {}
+            try:
+                age = now - float(st.get('t', 0))
+            except Exception:
+                age = 1e18
+            if st.get('regime') not in (None, 'normal') and age <= REGIME_RESTORE_MAX_AGE_S:
+                confirmed = st['regime']
+                print(f"🧭 레짐 이어받음({exchange}): {confirmed} ({age/60:.0f}분 전 저장)")
+    if n_tickers and n_results is not None and n_results < REGIME_MIN_RESULT_RATIO * n_tickers:
+        return confirmed  # 일부 코인만 계산된 사이클 — 레짐 그대로
+    if confirmed in (None, 'normal'):  # 이어받을 값 없음 → 새 후보도 15분 유지돼야 확정
+        if candidate in (None, 'normal'):
+            state['candidate'] = None
+            return 'normal'
+        if candidate != state.get('candidate'):
+            state['candidate'] = candidate
+            state['since'] = now
+            return 'normal'
+        if now - state.get('since', now) < REGIME_CONFIRM_SECONDS:
+            return 'normal'
+        state['candidate'] = None
+        new = candidate
+    else:
+        new = debounce_regime_value(state, confirmed, candidate, now)
+    _regime_state_save(exchange, new)
+    return new
 
 def detect_market_regime(results):
     """
@@ -3415,6 +3485,7 @@ def process_ticker(ticker):
             "bb_dwell_low_h": bb_dwell_low_h, "bb_dwell_high_h": bb_dwell_high_h,
             "hl_flag": hl_flag,
             "_pmf": _pm_ticker_features(df, ticker, 'bithumb'),
+            "_long_meta": _long_meta(df, ticker, 'bithumb'),
         }
     except Exception as e:
         print(f"[{ticker}] 데이터 수집 실패: {e}")
@@ -3622,6 +3693,7 @@ def process_ticker_upbit(ticker):
             "max_lev": max_lev,
             "liq_risk": liq_risk,
             "_pmf": _pm_ticker_features(df, ticker, 'upbit'),
+            "_long_meta": _long_meta(df, ticker, 'upbit'),
         }
     except Exception as e:
         print(f"[업비트:{ticker}] 데이터 수집 실패: {e}")
@@ -3789,6 +3861,139 @@ def _short_stop_apply(r, exchange='bithumb'):
 PROB_LONG_MIN = 0.55
 PROB_SHORT_MAX = 0.45
 
+# 롱 전용 개선: 신규 수치는 백테스트 전 시험 설정이다.
+LONG_ENTRY_CONFIRM = os.getenv("LONG_ENTRY_CONFIRM", "1") == "1"
+LONG_ENTRY_MAX_R1_PCT = 2.0
+LONG_STOP_PCT = 3.0
+LONG_STOP_WATCH_H = 24
+LONG_STOP_BLOCK_H = 24
+USE_LONG_STOP_BLOCK = True
+LONG_BTC_R4_MIN = -1.0
+LONG_R7_MIN = -50.0
+LONG_EMA_DIST_MIN = -1.0
+LONG_EMA_DIST_MAX = 2.0
+LONG_RSI_MIN = 35.0
+LONG_RSI_MAX = 60.0
+LONG_EXTRA_FILTER = os.getenv("LONG_EXTRA_FILTER", "1") == "1"
+LONG_AUTO_LEV_CAP = True
+_long_meta_cache = {}
+_long_track = {}
+_long_block = {}
+_long_prev = {}
+_long_lock = threading.RLock()
+
+def _long_hour():
+    return (pd.Timestamp.now(tz="UTC").tz_localize(None) + pd.Timedelta(hours=9)).floor("h")
+
+def _long_meta(df, ticker, exchange):
+    end = _long_hour()
+    key = (exchange, ticker)
+    try:
+        hit = _long_meta_cache.get(key)
+        if hit and hit["end"] == end:
+            return hit
+        if CANDLE_INTERVAL != "1h":
+            fetch = {"binance": fetch_candlestick_binance, "upbit": fetch_candlestick_upbit}.get(exchange, fetch_candlestick)
+            df = fetch(ticker, chart_intervals="1h")
+        if df is None:
+            return None
+        d = df.loc[df.index < end].sort_index()
+        if len(d) < 169 or not d.index[-169:].equals(pd.date_range(end=end-pd.Timedelta(hours=1), periods=169, freq="h")):
+            return None
+        c = d.close.astype(float)
+        f = prob_model.ticker_features(d) if prob_model is not None else None
+        if not f or not all(math.isfinite(float(f[k])) for k in ("r1","r4","r168","rsi","rsi_delta","d_e20","ema20_slope_pct","atr_pct","vol_z")):
+            return None
+        m = dict(f, end=end, green=bool(c.iloc[-1] > float(d.open.iloc[-1])), close=float(c.iloc[-1]),
+                 breakout=bool(c.iloc[-1] > float(d.high.iloc[-2])))
+        _long_meta_cache[key] = m
+        return m
+    except Exception:
+        return None
+
+def _long_reject(r, reason):
+    for k in ("verdict", "verdict_raw"):
+        if r.get(k) == "LONG":
+            r[k] = ""
+            rk = "verdict_reason" if k == "verdict" else "verdict_reason_raw"
+            r[rk] = "롱 대기: " + reason + " · " + str(r.get(rk) or "")
+
+def _long_apply(results, exchange):
+    end = _long_hour()
+    btc = next((r.get("_long_meta") for r in results if r.get("ticker") == "BTC"), None)
+    now = time.time()
+    for r in results:
+        m = r.get("_long_meta")
+        key = (exchange, r.get("ticker"))
+        # 실제 현재가로 역행 추적; 기존 포지션을 강제 청산하지 않는다.
+        px = r.get("price") or 0
+        with _long_lock:
+            tr = _long_track.get(key)
+            if tr and now-tr[1] >= LONG_STOP_WATCH_H*3600:
+                _long_track.pop(key, None)
+            elif USE_LONG_STOP_BLOCK and tr and px > 0 and px <= tr[0]*(1-LONG_STOP_PCT/100):
+                _long_block[key] = now+LONG_STOP_BLOCK_H*3600
+                _long_track.pop(key, None)
+            if _long_block.get(key, 0) <= now:
+                _long_block.pop(key, None)
+            if "LONG" in (r.get("verdict"), r.get("verdict_raw")):
+                p = r.get("p_up_krw") if exchange == "binance" and BINANCE_LONG_MODEL == "krw" else r.get("p_up")
+                e = r.get("exp4_krw") if exchange == "binance" and BINANCE_LONG_MODEL == "krw" else r.get("exp4")
+                why = None
+                if p is None or e is None or not math.isfinite(p) or not math.isfinite(e) or p < PROB_LONG_MIN or e <= V2_LONG_EXP4_MIN:
+                    why = "선택 모델 확률/기대수익 미달 또는 없음"
+                elif LONG_ENTRY_CONFIRM and (not m or m["end"] != end):
+                    why = "최신 1h 확정봉 없음"
+                elif LONG_ENTRY_CONFIRM and (not m["green"] or not 0 < m["r1"] <= LONG_ENTRY_MAX_R1_PCT or m["r4"] <= 0):
+                    why = "확정봉 반등/추격 제한"
+                elif USE_LONG_STOP_BLOCK and key in _long_block:
+                    why = "3% 역행 후 재진입 차단"
+                elif LONG_EXTRA_FILTER and (not m or m["end"] != end):
+                    why = "롱 지표 없음"
+                elif LONG_EXTRA_FILTER and m["r168"] <= LONG_R7_MIN:
+                    why = "7일 과도한 하락"
+                elif LONG_EXTRA_FILTER and btc and btc["end"] == end and btc["r4"] < LONG_BTC_R4_MIN:
+                    why = "BTC 4h 하락"
+                elif LONG_EXTRA_FILTER and exchange == "binance" and (not btc or btc["end"] != end):
+                    why = "BTC 확정봉 없음"
+                elif LONG_EXTRA_FILTER and not (LONG_EMA_DIST_MIN <= m["d_e20"] <= LONG_EMA_DIST_MAX and m["ema20_slope_pct"] > 0):
+                    why = "EMA20 추세/이격 제한"
+                elif LONG_EXTRA_FILTER and not (LONG_RSI_MIN <= m["rsi"] <= LONG_RSI_MAX and m["rsi_delta"] > 0):
+                    why = "RSI 반등 미확인"
+                elif LONG_EXTRA_FILTER and not (m["breakout"] or m["vol_z"] > 0):
+                    why = "고점 돌파 또는 거래량 확인 대기"
+                if why:
+                    _long_reject(r, why)
+                elif m:
+                    r["long_max_lev"] = max(1, min(LIQ_LEV_MAX, int(90 / (5 * max(m["atr_pct"], 0.01)))))
+            # 원본 판정으로 확률/시장 필터를 우회하지 않도록 롱만 동기화.
+            if r.get("verdict_raw") == "LONG" and r.get("verdict") != "LONG":
+                _long_reject(r, "최종 롱 판정 미통과")
+            active = r.get("verdict") == "LONG"
+            if USE_LONG_STOP_BLOCK and active and not _long_prev.get(key) and px > 0 and key not in _long_track:
+                _long_track[key] = (px, now)
+            _long_prev[key] = active
+        # Timestamp는 JSON 직렬화 가능하게 변환
+        if m:
+            r["_long_meta"] = {"end": str(m["end"]), "close": m["close"]}
+
+def _long_force_check(ticker, exchange, leverage):
+    book = {"upbit": score_cache_upbit, "binance": score_cache_binance}.get(exchange, score_cache)
+    with score_lock:
+        r = dict(book.get(ticker) or {})
+    m = r.get("_long_meta") or {}
+    if r.get("verdict") != "LONG" or m.get("end") != str(_long_hour()):
+        return "롱 대기: 최신 확정봉 최종 판정 없음", leverage
+    with _long_lock:
+        if USE_LONG_STOP_BLOCK and _long_block.get((exchange,ticker),0) > time.time():
+            return "롱 대기: 역행 차단 중", leverage
+    if LONG_AUTO_LEV_CAP:
+        cap = r.get("long_max_lev")
+        if not cap:
+            return "롱 대기: 레버리지 산정 실패", leverage
+        leverage = min(leverage, cap)
+    return None, leverage
+
 _pm_feat_cache = {}   # (거래소, 티커) -> (시각, 피처) — 기준봉이 1h가 아닐 때 따로 받은 1h봉 피처 캐시
 _PM_FEAT_TTL = 300
 
@@ -3868,6 +4073,7 @@ def apply_prob_filter(results, exchange='bithumb'):
         r.pop('_pmf', None)
         p = r.get('p_up')
         if p is None:
+            _long_reject(r, '모델 확률 없음')
             _short_futures_apply(r)  # [2026-11-22 복구]
             continue
         v = r.get('verdict', '')
@@ -3883,6 +4089,9 @@ def apply_prob_filter(results, exchange='bithumb'):
             reg = r.get('regime') or _regime_of(exchange)  # [2026-11-23] 거래소별 자기 레짐(업비트도 빗썸 레짐 말고 업비트 레짐)
             if v == 'LONG':
                 _mtag = ''
+                if exchange == 'binance' and BINANCE_LONG_MODEL == 'krw' and (r.get('p_up_krw') is None or r.get('exp4_krw') is None):
+                    _long_reject(r, '원화 모델 예측 실패')
+                    continue
                 if exchange == 'binance' and BINANCE_LONG_MODEL == 'krw' and r.get('p_up_krw') is not None and r.get('exp4_krw') is not None:
                     p, e4, _mtag = r['p_up_krw'], r['exp4_krw'], '원화모델 '  # [2026-11-26 수동, 사용자 요청]
                 if p < PROB_LONG_MIN:
@@ -4072,6 +4281,7 @@ def apply_prob_filter(results, exchange='bithumb'):  # noqa: F811 — 판정 범
             _binance_v3_guard(results, feats)
         except Exception as e:
             print(f"바이낸스 V3 판정 가드 실패: {e}")
+    _long_apply(results, exchange)
     return out
 
 
@@ -4180,7 +4390,7 @@ def score_updater(tickers_ref, exchange='bithumb'):
             if exchange == 'bithumb':
                 global current_min_score, current_market_regime
                 current_min_score = compute_dynamic_min_score(results)
-                current_market_regime = _debounce_regime('bithumb', detect_market_regime(results))
+                current_market_regime = _debounce_regime('bithumb', detect_market_regime(results), len(results), len(tickers))  # [2026-11-27 수동] 부분 사이클 가드
                 with score_lock:
                     score_cache.clear()
                     for r in results:
@@ -4193,7 +4403,7 @@ def score_updater(tickers_ref, exchange='bithumb'):
             elif exchange == 'binance':  # [2026-11-23] 바이낸스 탭
                 global current_min_score_binance, current_market_regime_binance
                 current_min_score_binance = compute_dynamic_min_score(results)
-                current_market_regime_binance = _debounce_regime('binance', detect_market_regime(results))
+                current_market_regime_binance = _debounce_regime('binance', detect_market_regime(results), len(results), len(tickers))  # [2026-11-27 수동] 부분 사이클 가드
                 with score_lock:
                     score_cache_binance.clear()
                     for r in results:
@@ -4206,7 +4416,7 @@ def score_updater(tickers_ref, exchange='bithumb'):
             else:
                 global current_min_score_upbit, current_market_regime_upbit
                 current_min_score_upbit = compute_dynamic_min_score(results)
-                current_market_regime_upbit = _debounce_regime('upbit', detect_market_regime(results))
+                current_market_regime_upbit = _debounce_regime('upbit', detect_market_regime(results), len(results), len(tickers))  # [2026-11-27 수동] 부분 사이클 가드
                 with score_lock:
                     score_cache_upbit.clear()
                     for r in results:
@@ -4608,7 +4818,9 @@ BINANCE_V3_LONG = True  # [2026-11-26 19시 수동, 사용자 요청] 다시 켬
 # [2026-11-26 19시 수동, 사용자 요청] 바이낸스 탭 롱 판정에 쓸 모델: 'krw' = 원화 모델(업비트 42종목 2년 학습, holdout IC p_up 0.136·exp4 0.219)
 #   'v3' = 바이낸스 V3 모델(IC 0.057/0.056 — exp4가 0 근처로 쪼그라들어 오늘 00~19시 exp4>0.2가 0.02%뿐). 숏은 항상 V3.
 #   주의: 원화 모델 바이낸스 롱은 백테스트 안 함. 되돌리기: 'v3' 또는 backups\20261126\trading_server.py_1958
-BINANCE_LONG_MODEL = 'krw'
+BINANCE_LONG_MODEL = os.getenv('BINANCE_LONG_MODEL', 'krw').lower()
+if BINANCE_LONG_MODEL not in ('krw', 'v3'):
+    raise ValueError('BINANCE_LONG_MODEL must be krw or v3')
 BINANCE_V3_STABLES = {"USDT", "USDC", "FDUSD", "TUSD", "BUSD", "USD1", "USDP", "DAI", "USDE", "RLUSD", "PYUSD", "XUSD", "EUR", "BFUSD"}
 BINANCE_SCORE_MIN_CYCLE_SEC = 180  # 바이낸스 탭 채점 주기 최소 간격(300코인 × 캔들 요청 — API 한도 보호)
 BINANCE_OI_TTL = 1800             # 바이낸스 탭 OI·롱숏비 캐시(초) — 심볼별 요청이라 300코인이면 한도(5분 1000회) 넘음
@@ -5131,6 +5343,7 @@ def _process_ticker_binance_raw(ticker):
             "components": components, "max_lev": max_lev, "liq_risk": liq_risk,
             "regime": reg,
             "_pmf": _pmf,
+            "_long_meta": _long_meta(df, ticker, "binance"),
             "_stop_px": (_pmf or {}).get('p') if _closed else None,
         }
     except Exception as e:
@@ -5885,6 +6098,10 @@ def srv_open(ticker, position_type, amount_won, leverage, exchange='bithumb', fo
         return False, "반대 방향 포지션이 이미 있습니다 (먼저 청산 후 진입하세요)"
     if amount_won <= 0: return False, "금액이 올바르지 않습니다"
     if leverage <= 0: leverage = DEFAULT_LEVERAGE
+    if force and position_type == "long":
+        why, leverage = _long_force_check(ticker, exchange, leverage)
+        if why:
+            return False, why
     entry_fee = (amount_won * leverage) * FEE_RATE
     total_cost = amount_won + entry_fee
     # [2026-11-21 추가] force=True(클라 '자동진입' 체크박스의 open_force 명령)면 잔고·유지증거금
@@ -5917,6 +6134,20 @@ def srv_open(ticker, position_type, amount_won, leverage, exchange='bithumb', fo
         fx_rate = get_usd_krw_rate()
     else:
         return False, "시세 없음 (바이낸스에도, 해당 거래소 KRW 시세에도 가격이 없습니다)"
+    if force and position_type == "long":
+        # 확정봉 이후 실제 체결 시점의 추가 급등/역행도 검사한다.
+        with score_lock:
+            row = dict({'upbit': score_cache_upbit, 'binance': score_cache_binance}.get(exchange, score_cache).get(ticker) or {})
+        ref = (row.get('_long_meta') or {}).get('close', 0)
+        live = row.get('price') or 0
+        if exchange == 'binance':
+            live = current_price_usd
+        elif exchange == 'upbit':
+            live = latest_prices_upbit.get(ticker, 0)
+        else:
+            live = latest_prices.get(ticker, 0)
+        if not ref or not live or not -LONG_STOP_PCT < (live/ref-1)*100 <= LONG_ENTRY_MAX_R1_PCT:
+            return False, "롱 대기: 확정봉 이후 가격 이탈"
     fill_price = current_price * (1 + SLIPPAGE_RATE) if position_type == "long" else current_price * (1 - SLIPPAGE_RATE)
     balance -= total_cost
     if balance < 0 and not force: balance = 0
