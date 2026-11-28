@@ -25,7 +25,7 @@ except Exception as _e:
 # 저장 경로
 # ============================================================
 DEFAULT_LEVERAGE = 3
-SAME_SIDE_ENTRY_LIMIT = 3
+MANUAL_SAME_SIDE_WARNING_COUNT = 3
 FALLBACK_MIN_SCORE = 75
 FALLBACK_PP_MIN_SCORE = 80
 FALLBACK_WATCH_MIN_SCORE = 65
@@ -3014,7 +3014,7 @@ class TradingClient:
             except (KeyError, ValueError, TypeError):
                 continue
             recent += 0 <= age < 60
-        if recent >= SAME_SIDE_ENTRY_LIMIT:
+        if recent >= MANUAL_SAME_SIDE_WARNING_COUNT:
             warnings.append(f"최근 1분에 같은 방향 {recent}건 진입")
         if not warnings:
             return True
@@ -3546,7 +3546,6 @@ class TradingClient:
         # [2026-11-22 사용자 요청] 사용자 정의의 current_seed = 총자산(현금 + 포지션 증거금 + 평가손익)
         equity = cash + sum(float(p.get('amount') or 0) + float(p.get('pnl') or 0)
                             for p in (self._account[2] if self._account else []))
-        opened_by_side = {'long': 0, 'short': 0}
         new_signals.sort(key=lambda item: (
             -rows_by_t[item[0]].get('prepump_score' if item[1] == 'LONG' else 'preshort_score', 0),
             item[0],
@@ -3588,9 +3587,6 @@ class TradingClient:
             if t in held:
                 self._auto_log(ex, t, ptype, "skip", "반대 방향 포지션 보유 중")
                 continue
-            if opened_by_side[ptype] >= SAME_SIDE_ENTRY_LIMIT:
-                self._auto_log(ex, t, ptype, "skip", f"이번 스냅샷 같은 방향 {SAME_SIDE_ENTRY_LIMIT}건 제한")
-                continue
             # [2026-11-22 수동, 사용자 요청] 강한 숏(4h예상 ≤ -1.0%)은 진입 금액 2배
             amt = usd
             e4 = row_t.get('exp4')
@@ -3623,7 +3619,6 @@ class TradingClient:
                 amt = amt * AUTO_ENTRY_STRONG_MULT
             try:
                 cmd_id = send_command(action, t, amt, lev, ptype, exchange=ex)
-                opened_by_side[ptype] += 1
                 cash -= amt
                 n_open += 1
             except Exception as e:
