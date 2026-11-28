@@ -34,5 +34,14 @@
   "pnl": -27.04,
   "type": "강제청산",
   "device": "DESKTOP-4RITL9E"
+ },
+ {
+  "ticker": "ELF",
+  "side": "short",
+  "entry_time": "2026-11-28 10:13:35",
+  "exit_time": "2026-11-28 10:51:31",
+  "pnl": -45.2,
+  "type": "강제청산",
+  "device": "DESKTOP-4RITL9E"
  }
 ]

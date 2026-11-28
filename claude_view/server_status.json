@@ -1,9 +1,9 @@
 {
- "ts": "2026-11-28 23:31:03",
- "pid": 21712,
+ "ts": "2026-11-29 00:07:18",
+ "pid": 20804,
  "data_dir": "/storage/emulated/0/Documents",
- "balance": 262.65,
- "n_positions": 24,
+ "balance": 232.61,
+ "n_positions": 25,
  "positions": [
   {
    "ticker": "PENDLE",
@@ -196,6 +196,14 @@
    "leverage": 10,
    "entry_price": 115.80499999999999,
    "entry_time": "2026-11-28 10:12:59"
+  },
+  {
+   "ticker": "GOAT",
+   "type": "short",
+   "amount": 30.0,
+   "leverage": 3,
+   "entry_price": 0.01159824,
+   "entry_time": "2026-11-29 00:02:05"
   }
  ],
  "note": "모의 서버 상태 사본. 실시간 손익은 server_account.csv, 청산 기록은 trade_history_usd.csv"
