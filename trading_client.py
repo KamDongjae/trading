@@ -24,7 +24,8 @@ except Exception as _e:
 # ============================================================
 # 저장 경로
 # ============================================================
-DEFAULT_LEVERAGE = 10
+DEFAULT_LEVERAGE = 3
+SAME_SIDE_ENTRY_LIMIT = 3
 FALLBACK_MIN_SCORE = 75
 FALLBACK_PP_MIN_SCORE = 80
 FALLBACK_WATCH_MIN_SCORE = 65
@@ -156,6 +157,8 @@ LONG_COND_COLOR_OFF = True
 OBSERVE_LONG_ON = True
 OBSERVE_LONG_EXPR = "funding < -0.01 && rsi < 35 && btc_up > 0"
 OBSERVE_LONG_COLOR = "#a0c4ff"
+BINANCE_OBSERVE_LONG = "(rsi < 40 || bb_percent < 30) && rsi_delta > 0 && chg_30m >= 0"
+BINANCE_OBSERVE_SHORT = "(rsi >= 60 || recent_pct > 5) && rsi_delta < 0 && chg_30m < 0"
 _BTC_TREND = {"up": None, "ts": 0.0, "busy": False, "close": None, "ema120": None}
 
 
@@ -252,6 +255,20 @@ def evaluate_condition(expr, row):
         return bool(eval(translated, {"__builtins__": {}}, env))
     except Exception:
         return False
+
+
+def entry_risk_warnings(row, leverage):
+    warnings = []
+    risk = str(row.get('liq_risk') or '')
+    reason = str(row.get('verdict_reason') or '')
+    if 'NOFUT' in risk.split('|') or '선물 없음' in reason:
+        warnings.append('바이낸스 선물 미지원')
+    limit = row.get('max_lev')
+    if not limit:
+        warnings.append('권장 배율 확인 불가')
+    elif leverage > limit:
+        warnings.append(f'주문 {leverage}배 · 권장 상한 {limit}배')
+    return warnings
 
 
 def load_custom_conditions():
@@ -2278,7 +2295,17 @@ class TradingClient:
                 conflict_badge = None
                 # [2026-11-24] 관찰용 롱 조건 — 진입 신호 아님(판정·자동진입과 무관), 표시만
                 obs_badge = None
-                if OBSERVE_LONG_ON and evaluate_condition(OBSERVE_LONG_EXPR, row):
+                if self.current_exchange == 'binance':
+                    observations = []
+                    if evaluate_condition(BINANCE_OBSERVE_LONG, row):
+                        observations.append("관찰 롱 · 과매도 후 반등")
+                    if evaluate_condition(BINANCE_OBSERVE_SHORT, row):
+                        observations.append("관찰 숏 · 과열 후 꺾임")
+                    if observations:
+                        obs_badge = " / ".join(observations)
+                        if bg == "white":
+                            bg = OBSERVE_LONG_COLOR
+                elif OBSERVE_LONG_ON and evaluate_condition(OBSERVE_LONG_EXPR, row):
                     obs_badge = "👀 관찰 롱: 펀딩 음수+과매도+BTC 상승 (1년 48h 60%·검증 중, 진입 신호 아님)"
                     if bg == "white":
                         bg = OBSERVE_LONG_COLOR
@@ -2341,10 +2368,10 @@ class TradingClient:
                 if 'verdict' in row and row.get('verdict') is not None and verdict_supported_flag[0]:
                     if verdict == "LONG":
                         border_color = "#2fa84f"
-                        v_badge = f"✅ 판정 롱 ({row.get('verdict_reason', '')}) · 2년 검증 4h 59%·12h 57%"
+                        v_badge = f"판정 롱 ({row.get('verdict_reason', '')})"
                     elif verdict == "SHORT":
                         border_color = "#e04040"
-                        v_badge = f"✅ 판정 숏 ({row.get('verdict_reason', '')}) · 2년 검증 4h 66%·12h 69%·24h 71%"
+                        v_badge = f"판정 숏 ({row.get('verdict_reason', '')})"
                     else:
                         v_badge = None
                         if border_color in ("#2fa84f", "#e04040"):
@@ -2360,8 +2387,14 @@ class TradingClient:
                         conflict_badge = f"{v_badge}\n{conflict_badge}" if conflict_badge else v_badge
                 if obs_badge:
                     conflict_badge = f"{conflict_badge}\n{obs_badge}" if conflict_badge else obs_badge
+                risk_warnings = entry_risk_warnings(row, DEFAULT_LEVERAGE)
+                if risk_warnings:
+                    warning = f"⚠ 주문 주의 · 기본 {DEFAULT_LEVERAGE}배 기준 · " + " / ".join(risk_warnings)
+                    conflict_badge = f"{warning}\n{conflict_badge}" if conflict_badge else warning
+                    border_color = "#c9a800"
+                    bg = "#fff0c2"
                 display_ticker = f"[{ticker}]" if ticker in self.pinned_tickers else ticker
-                line1 = f"{display_ticker}  {chg24h_str} ({krw_str})  {usd_str}  롱{ls} 숏{ss}  매집{pp} 분산{ps}"
+                line1 = f"{display_ticker}  {chg24h_str} ({krw_str})  {usd_str}  후보 점수 롱{ls} 숏{ss} 매집{pp} 분산{ps}"
                 since_txt = self._signal_since_text(ticker, border_color)
                 if since_txt:
                     line1 += f"   {'롱' if border_color == '#2fa84f' else '숏'} {since_txt}~"
@@ -2952,28 +2985,45 @@ class TradingClient:
         except Exception:
             messagebox.showwarning("경고", "금액/배율을 올바르게 입력하세요.")
             return
-        if amount_won <= 0:
-            messagebox.showwarning("경고", "금액을 올바르게 입력하세요.")
+        if not 0 < amount_won < float('inf') or leverage <= 0:
+            messagebox.showwarning("경고", "금액과 배율을 올바르게 입력하세요.")
             return
         direction = "롱" if position_type == "long" else "숏"
-        # [2026-10-11 추가] 권장 레버리지 초과 경고(서버 calc_liq_risk: 청산선이 ATR 5배 밖에 있도록,
-        # 최대 10x, 선물 미상장은 절반). 막지는 않고 확인만 받는다.
-        try:
-            info_row = self._latest_rows.get(ticker) or {}
-            max_lev = info_row.get('max_lev')
-            if max_lev and leverage > max_lev:
-                risk_txt = info_row.get('liq_risk') or ''
-                if not messagebox.askyesno(
-                        "청산 위험",
-                        f"{ticker} 권장 최대 레버리지는 {max_lev}x야 (지금 {leverage}x).\n"
-                        f"ATR {info_row.get('atr_pct', 0):.2f}% 기준으로 6시간 안에 청산선까지 갈 수 있는 폭이야."
-                        + (f"\n위험요인: {risk_txt}" if risk_txt else "")
-                        + "\n\n그래도 진입할까?"):
-                    return
-        except Exception:
-            pass
+        if not self._confirm_manual_entry(ticker, position_type, leverage, amount_won):
+            return
         self._send_and_wait('open', ticker=ticker, amount=amount_won, leverage=leverage,
                             position_type=position_type, label=f"{direction} 진입")
+
+    def _confirm_manual_entry(self, ticker, direction, leverage, amount, parent=None):
+        row = {}
+        if self._market_mtime and time.time() - self._market_mtime <= STALE_SEC:
+            row = next((item for item in self._last_render_data if item['ticker'] == ticker), {})
+        warnings = entry_risk_warnings(row, leverage)
+        if row and row.get('verdict') != direction.upper():
+            reason = row.get('verdict_reason') or '해당 방향 진입 판정 없음'
+            warnings.append(f"판정 {row.get('verdict') or '대기'} · {reason}")
+        account = read_account_snapshot()
+        positions = account[2] if account else []
+        now = datetime.now()
+        recent = 0
+        for position in positions:
+            if position.get('position_type') != direction:
+                continue
+            try:
+                age = (now - datetime.fromisoformat(position['entry_time'])).total_seconds()
+            except (KeyError, ValueError, TypeError):
+                continue
+            recent += 0 <= age < 60
+        if recent >= SAME_SIDE_ENTRY_LIMIT:
+            warnings.append(f"최근 1분에 같은 방향 {recent}건 진입")
+        if not warnings:
+            return True
+        details = "\n".join(f"• {warning}" for warning in warnings)
+        return messagebox.askyesno(
+            "수동 진입 위험 확인",
+            f"{ticker} · 증거금 ${amount:,.2f} · {leverage}배\n\n{details}\n\n진입을 계속할까요?",
+            default=messagebox.NO, parent=parent or self.root,
+        )
 
     def close_position(self):
         ticker = self.ticker_entry.get().strip().upper()
@@ -3496,6 +3546,11 @@ class TradingClient:
         # [2026-11-22 사용자 요청] 사용자 정의의 current_seed = 총자산(현금 + 포지션 증거금 + 평가손익)
         equity = cash + sum(float(p.get('amount') or 0) + float(p.get('pnl') or 0)
                             for p in (self._account[2] if self._account else []))
+        opened_by_side = {'long': 0, 'short': 0}
+        new_signals.sort(key=lambda item: (
+            -rows_by_t[item[0]].get('prepump_score' if item[1] == 'LONG' else 'preshort_score', 0),
+            item[0],
+        ))
         for t, v in new_signals:
             ptype = 'long' if v == "LONG" else 'short'
             # [2026-11-22 수동, 사용자 요청] 바이낸스 선물 없는 코인(NOFUT)은 롱·숏 모두 자동진입 안 함
@@ -3515,6 +3570,10 @@ class TradingClient:
                 continue
             # [2026-11-22 수동, 사용자 요청] 하락장 롱 제외
             row_t = rows_by_t.get(t, {})
+            max_lev = row_t.get('max_lev')
+            if max_lev and lev > max_lev:
+                self._auto_log(ex, t, ptype, "skip", f"주문 {lev}배 · 권장 상한 {max_lev}배")
+                continue
             # [2026-11-25 수동, 사용자 요청] 레짐은 바이낸스 스냅샷 기준(AUTO_BEAR_REGIME_EX), 못 읽으면 예전처럼
             bear_rg = None
             if ptype == 'long':
@@ -3528,6 +3587,9 @@ class TradingClient:
                 continue
             if t in held:
                 self._auto_log(ex, t, ptype, "skip", "반대 방향 포지션 보유 중")
+                continue
+            if opened_by_side[ptype] >= SAME_SIDE_ENTRY_LIMIT:
+                self._auto_log(ex, t, ptype, "skip", f"이번 스냅샷 같은 방향 {SAME_SIDE_ENTRY_LIMIT}건 제한")
                 continue
             # [2026-11-22 수동, 사용자 요청] 강한 숏(4h예상 ≤ -1.0%)은 진입 금액 2배
             amt = usd
@@ -3561,6 +3623,7 @@ class TradingClient:
                 amt = amt * AUTO_ENTRY_STRONG_MULT
             try:
                 cmd_id = send_command(action, t, amt, lev, ptype, exchange=ex)
+                opened_by_side[ptype] += 1
                 cash -= amt
                 n_open += 1
             except Exception as e:
@@ -4128,7 +4191,7 @@ class TradingClient:
         tk.Radiobutton(dir_row, text="롱", variable=dir_var, value="long", font=("Arial", 11)).pack(side="left")
         tk.Radiobutton(dir_row, text="숏", variable=dir_var, value="short", font=("Arial", 11)).pack(side="left")
 
-        lev_entry = add_row("레버리지", "10")
+        lev_entry = add_row("레버리지", str(DEFAULT_LEVERAGE))
         entry_price_entry = add_row("진입가")
         amount_entry = add_row("투입금액($)")
 
@@ -4140,7 +4203,7 @@ class TradingClient:
             try:
                 entry_price = float(entry_price_entry.get())
                 amount = float(amount_entry.get())
-                lev = float(lev_entry.get() or 10)
+                lev = float(lev_entry.get() or DEFAULT_LEVERAGE)
                 if entry_price <= 0 or amount <= 0 or lev <= 0:
                     raise ValueError
                 fee = amount * lev * 0.0004  # FEE_RATE — 서버 상수와 동일 값
@@ -4164,8 +4227,8 @@ class TradingClient:
             try:
                 entry_price = float(entry_price_entry.get())
                 amount = float(amount_entry.get())
-                lev = int(float(lev_entry.get() or 10))
-                if entry_price <= 0 or amount <= 0 or lev <= 0:
+                lev = int(lev_entry.get() or DEFAULT_LEVERAGE)
+                if not 0 < entry_price < float('inf') or not 0 < amount < float('inf') or lev <= 0:
                     raise ValueError
             except Exception:
                 messagebox.showwarning("경고", "레버리지/진입가/투입금액을 정확히 입력하세요.", parent=win)
@@ -4176,6 +4239,8 @@ class TradingClient:
                 if win.winfo_exists():
                     win.destroy()
 
+            if not self._confirm_manual_entry(ticker, dir_var.get(), lev, amount, parent=win):
+                return
             self._send_and_wait_callback('open_manual', on_success, ticker=ticker, amount=amount,
                                           leverage=lev, position_type=dir_var.get(), entry_price=entry_price,
                                           label="빠른입력 등록")
